@@ -53,7 +53,7 @@ Data for the last 2 preceding years.
 ## Shot Resolution
 For each simulated shot:
 ### Shot Type
-Another **Ridge Regression** for each type, normalize them and choose based on weighted randomness.  
+Another **Ridge Regression** for each type (Head or Foot), normalize them and choose based on weighted randomness.  
 | Feature           | Type        | Description      |
 |-------------------|-------|------------------------|
 | team_A_players    | JSON  | List of team A players |
@@ -62,10 +62,12 @@ Another **Ridge Regression** for each type, normalize them and choose based on w
 | team_B_h/f_shots  | INT   | Total shots by team B  |
 | minutes_played    | INT   | Total minutes played   |
 
-- **Specific players**:
-  - **Shooter**: Determined by weighted randomness favoring players with higher shot volume for the type.
-  - **Assister**: Determined by weighted randomness where headers receive full weight (100%), and foot depend on the shooting player’s ability to generate their own attempts, augmented by key passes (KP).
-- **Shot Quality**: Based on historical XG data:
+### Specific players
+- **Shooter**: Determined by weighted randomness favoring players with higher shot volume for the type.
+- **Assister**: Determined by weighted randomness where headers receive full weight (100%), and foot depend on the shooting player’s ability to generate their own attempts, augmented by key passes (KP).
+
+### Shot Quality
+Based on historical XG data:
   - Defender opposition XG average (head/foot)
   - Shooter and assister XG quality (head/foot)
 *tiros dividirlos por tactical_mode?
