@@ -87,7 +87,3 @@ CREATE TABLE team_data (
 
 ## Notes
 
-- Use JSON fields para almacenar las alineaciones en `match_lineup_summary`.
-- La clave primaria compuesta en `match_player_summary` garantiza registros únicos por jugador y partido.
-- Los coeficientes estadísticos por jugador están en `players_data`.
-- Datos de elevación y geográficos en `team_data` apoyan análisis de viaje y entorno.
