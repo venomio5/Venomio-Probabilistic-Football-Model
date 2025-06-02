@@ -51,4 +51,16 @@ RAS values serve as core inputs to an advanced XGBoost model, which integrates c
 Data for the last 2 preceding years.
 
 ## Shot Resolution
+For each simulated shot:
+- **Shot Type**: Head or foot.
+- **Specific players**:
+  - **Shooter**: Determined by weighted randomness favoring players with higher shot volume for the type.
+  - **Assister**: Determined by weighted randomness where headers receive full weight (100%), and foot depend on the shooting player’s ability to generate their own attempts, augmented by key passes (KP).
+- **Shot Quality**: Based on historical XG data:
+  - Defender opposition XG average (head/foot)
+  - Shooter and assister XG quality (head/foot)
+*tiros dividirlos por tactical_mode?
+Player Finishing Performance Modifier: Based on the difference between xG  and PSxG.
+Goalkeeper Performance Modifier: Based on the difference between PSxG and Goals. 
 
+Log minute and player/team responsibles.
