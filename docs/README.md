@@ -66,6 +66,8 @@ Another **Ridge Regression** for each type (Head or Foot), normalize them and ch
 - **Shooter**: Determined by weighted randomness favoring players with higher shot volume for the type.
 - **Assister**: Determined by weighted randomness where headers receive full weight (100%), and foot depend on the shooting player’s ability to generate their own attempts, augmented by key passes (KP).
 
+Add 1 to everyone for it to always have a probability.
+
 ### Shot Quality
 Based on historical XG data:
   - Defender opposition XG average (head/foot)
