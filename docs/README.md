@@ -104,7 +104,6 @@ Aggregate the ridge data per shot and build a model to learn nonlinear, hierarch
 | Team_elevation_dif  | float         | Elevation difference (km): stadium elevation - avg(league, team) |
 | Team_travel         | float         | Travel distance (km)                                             |
 | Team_rest_days      | int           | Team number of rest days                                         |
-| Team_importance     | bool (0/1)    | Final_Third_Critical (1 = yes, 0 = no)                           |
 | Temperature_C       | float         | Temperature (°C) at kickoff                                      |
 | Is_Raining          | bool          | 1 = yes, 0 = no                                                  |
 | Match_time          | categorical   | (aft, evening, night)                                            |
@@ -113,7 +112,20 @@ Aggregate the ridge data per shot and build a model to learn nonlinear, hierarch
 
 ## Lineup Dynamics
 ### Substitutions
-Based on Managers timing for Subs and the number of subs and the game state for who is substituted on and off.
+1. Pull historical substitution data for both teams from the database.
+2. Compute how many subs each team usually makes in past games.
+3. Based on how many substitutions each team can still make, determine how many they are realistically allowed to do now.
+4. From historical data, find the most common minutes when each team usually makes subs.
+5. Distribute the allowed number of substitutions across these likely minutes.
+6. At each minute, check if it's a substitution minute.
+7. If Yes – Do Substitution:
+  - For players currently playing (active), calculate how likely each is to be subbed out. Factors: their total minutes played and match state.
+  - Randomly pick players to be subbed out based on those weights.
+  - For players on the bench (passive), calculate how likely each is to come in. Factors: their total minutes played and match state.
+  - Randomly pick players to be subbed in based on those weights.
+8. Remove chosen players from active, insert new ones from passive.
+
+Repeat this process each time a substitution minute is reached.
 
 ### Card and Foul Simulation
 Each player has a projected foul per minute rate
