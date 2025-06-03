@@ -22,13 +22,24 @@ CREATE TABLE match_info_summary (
 ### 2. match_lineup_summary
 ```
 CREATE TABLE match_lineup_summary (
-    ras_id INT PRIMARY KEY,
     match_id INT,
     teamA_players JSON,
     teamB_players JSON,
-    teamA_shots INT,
-    teamB_shots INT,
-    minutes_played INT
+    teamA_headers INT,
+    teamA_footers INT,
+    teamB_headers INT,
+    teamB_footers INT,
+    minutes_played INT,
+    PRIMARY KEY (
+        match_id,
+        teamA_players,
+        teamB_players,
+        teamA_headers,
+        teamA_footers,
+        teamB_headers,
+        teamB_footers,
+        minutes_played
+    )
 );
 ```
 ### 3. match_player_summary
