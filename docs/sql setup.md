@@ -52,8 +52,6 @@ CREATE TABLE match_detail (
     player_dif ENUM('-1.5', '-1', '0', '1', '1.5') NOT NULL,
     PRIMARY KEY (
         match_id,
-        teamA_players,
-        teamB_players,
         teamA_headers,
         teamA_footers,
         teamA_hxg,
