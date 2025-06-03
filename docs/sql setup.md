@@ -43,6 +43,9 @@ CREATE TABLE match_detail (
     teamB_headers INT NOT NULL,
     teamB_footers INT NOT NULL,
     minutes_played INT NOT NULL,
+    match_state ENUM('-1.5', '-1', '0', '1', '1.5') NOT NULL,
+    match_segment ENUM('1', '2', '3', '4', '5', '6') NOT NULL,
+    player_dif ENUM('-1.5', '-1', '0', '1', '1.5') NOT NULL,
     PRIMARY KEY (
         match_id,
         teamA_players,
@@ -51,7 +54,10 @@ CREATE TABLE match_detail (
         teamA_footers,
         teamB_headers,
         teamB_footers,
-        minutes_played
+        minutes_played,
+        match_state,
+        match_segment,
+        player_dif
     ),
     CONSTRAINT fk_match_detail_id
         FOREIGN KEY (match_id) REFERENCES match_info (match_id)
