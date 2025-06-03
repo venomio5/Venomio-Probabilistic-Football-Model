@@ -1,7 +1,7 @@
-## Database Setup
+## SQL Setup
 
-CREATE DATABASE soccer_data;
-USE soccer_data;
+CREATE DATABASE vpfm;
+USE vpfm;
 
 ---
 
