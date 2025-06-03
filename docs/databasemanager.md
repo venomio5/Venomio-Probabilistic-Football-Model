@@ -1,3 +1,5 @@
+Initializes a *MySQLConnectionPool* with UTF-8MB4 encoding and disabled autocommit for explicit transactional control.
+
 ```
 db = DatabaseManager(
     host="localhost",
