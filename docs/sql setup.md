@@ -5,9 +5,9 @@ USE vpfm;
 
 ## Tables
 
-### 1. match_info_summary
+### 1. match_info
 ```
-CREATE TABLE match_info_summary (
+CREATE TABLE match_info (
     match_id INT AUTO_INCREMENT PRIMARY KEY,
     match_home_team_id INT NOT NULL,
     match_away_team_id INT NOT NULL,
@@ -32,9 +32,9 @@ CREATE TABLE match_info_summary (
     UNIQUE (match_home_team_id, match_away_team_id, match_date)
 );
 ```
-### 2. match_lineup_summary
+### 2. match_detail
 ```
-CREATE TABLE match_lineup_summary (
+CREATE TABLE match_detail (
     match_id INT NOT NULL,
     teamA_players JSON NOT NULL,
     teamB_players JSON NOT NULL,
@@ -53,14 +53,14 @@ CREATE TABLE match_lineup_summary (
         teamB_footers,
         minutes_played
     ),
-    CONSTRAINT fk_match_lineup_id
-        FOREIGN KEY (match_id) REFERENCES match_info_summary(match_id)
+    CONSTRAINT fk_match_detail_id
+        FOREIGN KEY (match_id) REFERENCES match_info (match_id)
         ON DELETE CASCADE
 );
 ```
-### 3. match_player_summary
+### 3. match_breakdown
 ```
-CREATE TABLE match_player_summary (
+CREATE TABLE match_breakdown (
     match_id INT,
     player_id INT,
     player_head_shots INT DEFAULT 0,
