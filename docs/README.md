@@ -78,18 +78,20 @@ This is a base-level contextual impact. For each player: a regularized coefficie
 | team_A_h/f_xg     | float | Total h/f xg by team A |
 | team_B_h/f_xg     | float | Total h/f xg by team B |
 | shots             | int   | Total minutes played   |
+
 **Output**: Each player's contribution to team shot quality.
 
 #### Full-Factor Shot Quality Model
 Aggregate the ridge data per shot and build a model to learn nonlinear, hierarchical patterns.
 | Feature             | Type          | Description                                                      |
 |---------------------|---------------|------------------------------------------------------------------|
-| Total PLSQA         | float         | General shot quality for type of shot                                    |
+| Total PLSQA         | float         | General shot quality for type of shot                            |
 | Shooter SQ          | float         | Shooter shot quality for type of shot                            |
 | Assister SQ         | float         | Assister shot quality for type of shot                           |
 | Match_state         | categorical   | (-1.5, -1, 0, 1, 1.5)                                            |
 | Match_segment       | categorical   | (1, 2, 3, 4, 5, 6)                                               |
 | Player_dif          | categorical   | (-1.5, -1, 0, 1, 1.5)                                            |
+
 **Output**: Refined shot quality. 
 
 #### Player Performance Modifier
@@ -106,4 +108,27 @@ Aggregate the ridge data per shot and build a model to learn nonlinear, hierarch
 | Temperature_C       | float         | Temperature (°C) at kickoff                                      |
 | Is_Raining          | bool          | 1 = yes, 0 = no                                                  |
 | Match_time          | categorical   | (aft, evening, night)                                            |
+
 **Output**: Refined post shot expected goal.
+
+## Lineup Dynamics
+### Substitutions
+Based on Managers timing for Subs and the number of subs and the game state for who is substituted on and off.
+
+### Card and Foul Simulation
+Each player has a projected foul per minute rate
+
+For each minute:
+- Probabilistically determine if foul occurs
+
+If a foul occurs:
+- Referee-specific probabilistically determine:
+  - Yellow Card
+  - Red Card
+
+On red card (Or two yellows) → player removed, team plays short-handed
+
+## Output Metrics
+Minute-by-minute event log:
+- Score.
+- Players goals, assists, and red cards. 
