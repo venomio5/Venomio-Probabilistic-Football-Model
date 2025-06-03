@@ -78,6 +78,7 @@ This is a base-level contextual impact. For each player: a regularized coefficie
 | team_A_h/f_xg     | float | Total h/f xg by team A |
 | team_B_h/f_xg     | float | Total h/f xg by team B |
 | shots             | int   | Total minutes played   |
+**Output**: Each player's contribution to team shot quality.
 
 #### Full-Factor Shot Quality Model
 Aggregate the ridge data per shot and build a model to learn nonlinear, hierarchical patterns.
@@ -89,9 +90,20 @@ Aggregate the ridge data per shot and build a model to learn nonlinear, hierarch
 | Match_state         | categorical   | (-1.5, -1, 0, 1, 1.5)                                            |
 | Match_segment       | categorical   | (1, 2, 3, 4, 5, 6)                                               |
 | Player_dif          | categorical   | (-1.5, -1, 0, 1, 1.5)                                            |
+**Output**: Refined shot quality. 
 
 #### Player Performance Modifier
-- **Shooter**: Based on the difference between xG  and PSxG.
-- **Goalkeeper**: Based on the difference between PSxG and Goals.
-
-Multiply the *PPM* by the *FFSQ*.
+| Feature             | Type          | Description                                                      |
+|---------------------|---------------|------------------------------------------------------------------|
+| FFSQ                | float         | Refined Shot Quality for type of shot                            |
+| Shooter Ability     | float         | Difference between xG and PSxG in %                              |
+| GK Ability          | float         | Difference between PSxG and Goals in %                           |
+| Team_is_home        | bool          | 1 = home, 0 = away                                               |
+| Team_elevation_dif  | float         | Elevation difference (km): stadium elevation - avg(league, team) |
+| Team_travel         | float         | Travel distance (km)                                             |
+| Team_rest_days      | int           | Team number of rest days                                         |
+| Team_importance     | bool (0/1)    | Final_Third_Critical (1 = yes, 0 = no)                           |
+| Temperature_C       | float         | Temperature (°C) at kickoff                                      |
+| Is_Raining          | bool          | 1 = yes, 0 = no                                                  |
+| Match_time          | categorical   | (aft, evening, night)                                            |
+**Output**: Refined post shot expected goal.
