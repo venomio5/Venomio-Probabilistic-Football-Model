@@ -15,9 +15,9 @@ RAS is derived via **Ridge Regression**:
 |-------------------|-------|------------------------|
 | team_A_players    | JSON  | List of team A players |
 | team_B_players    | JSON  | List of team B players |
-| team_A_shots      | INT   | Total shots by team A  |
-| team_B_shots      | INT   | Total shots by team B  |
-| minutes_played    | INT   | Total minutes played   |
+| team_A_shots      | int   | Total shots by team A  |
+| team_B_shots      | int   | Total shots by team B  |
+| minutes_played    | int   | Total minutes played   |
 
 **Output**: Each player's contribution to team shot production.
 
@@ -58,9 +58,9 @@ Another **Ridge Regression** for each type (Head or Foot), normalize them and ch
 |-------------------|-------|------------------------|
 | team_A_players    | JSON  | List of team A players |
 | team_B_players    | JSON  | List of team B players |
-| team_A_h/f_shots  | INT   | Total shots by team A  |
-| team_B_h/f_shots  | INT   | Total shots by team B  |
-| minutes_played    | INT   | Total minutes played   |
+| team_A_h/f_shots  | int   | Total h/f by team A    |
+| team_B_h/f_shots  | int   | Total h/f by team B    |
+| minutes_played    | int   | Total minutes played   |
 
 ### Specific players
 - **Shooter**: Determined by weighted randomness favoring players with higher shot volume for the type.
@@ -69,10 +69,27 @@ Another **Ridge Regression** for each type (Head or Foot), normalize them and ch
 Add 1 to everyone for it to always have a probability.
 
 ### Shot Quality
-Based on historical XG data:
-  - Defender opposition XG average (head/foot)
-  - Shooter and assister XG quality (head/foot)
-*tiros dividirlos por tactical_mode?
+#### Player-Level Shot Quality Attribution
+This is a base-level contextual impact. For each player: a regularized coefficient reflecting their average influence on xG when present.
+| Feature           | Type        | Description      |
+|-------------------|-------|------------------------|
+| team_A_players    | JSON  | List of team A players |
+| team_B_players    | JSON  | List of team B players |
+| team_A_h/f_xg     | float | Total h/f xg by team A |
+| team_B_h/f_xg     | float | Total h/f xg by team B |
+| shots             | int   | Total minutes played   |
+
+#### Full-Factor Shot Quality Model
+Aggregate the ridge data per shot and build a model to learn nonlinear, hierarchical patterns.
+| Feature             | Type          | Description                                                      |
+|---------------------|---------------|------------------------------------------------------------------|
+| Total PLSQA         | float         | General shot quality for type of shot                                    |
+| Shooter SQ          | float         | Shooter shot quality for type of shot                            |
+| Assister SQ         | float         | Assister shot quality for type of shot                           |
+| Match_state         | categorical   | (-1.5, -1, 0, 1, 1.5)                                            |
+| Match_segment       | categorical   | (1, 2, 3, 4, 5, 6)                                               |
+| Player_dif          | categorical   | (-1.5, -1, 0, 1, 1.5)                                            |
+
 Player Finishing Performance Modifier: Based on the difference between xG  and PSxG.
 Goalkeeper Performance Modifier: Based on the difference between PSxG and Goals. 
 
