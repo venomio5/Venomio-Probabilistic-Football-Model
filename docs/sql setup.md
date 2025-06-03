@@ -8,28 +8,42 @@ USE vpfm;
 ### 1. match_info_summary
 ```
 CREATE TABLE match_info_summary (
-    match_id INT PRIMARY KEY,
-    match_home_team_id INT,
-    match_away_team_id INT,
-    match_date DATETIME,
+    match_id INT AUTO_INCREMENT,
+    match_home_team_id INT NOT NULL,
+    match_away_team_id INT NOT NULL,
+    match_date DATETIME NOT NULL,
     match_league_id INT,
     match_referee_id INT,
     match_total_fouls INT DEFAULT 0,
     match_yellow_cards INT DEFAULT 0,
-    match_red_cards INT DEFAULT 0
+    match_red_cards INT DEFAULT 0,
+    minutes_played INT,
+    home_elevation_dif FLOAT,
+    away_elevation_dif FLOAT,
+    home_travel FLOAT,
+    away_travel FLOAT,
+    home_rest_days INT,
+    away_rest_days INT,
+    home_importance BOOLEAN,
+    away_importance BOOLEAN,
+    temperature_c FLOAT,
+    is_raining BOOLEAN,
+    match_time VARCHAR(20),
+    PRIMARY KEY (match_home_team_id, match_away_team_id, match_date)
+    UNIQUE (match_id)
 );
 ```
 ### 2. match_lineup_summary
 ```
 CREATE TABLE match_lineup_summary (
-    match_id INT,
-    teamA_players JSON,
-    teamB_players JSON,
-    teamA_headers INT,
-    teamA_footers INT,
-    teamB_headers INT,
-    teamB_footers INT,
-    minutes_played INT,
+    match_id INT NOT NULL,
+    teamA_players JSON NOT NULL,
+    teamB_players JSON NOT NULL,
+    teamA_headers INT NOT NULL,
+    teamA_footers INT NOT NULL,
+    teamB_headers INT NOT NULL,
+    teamB_footers INT NOT NULL,
+    minutes_played INT NOT NULL,
     PRIMARY KEY (
         match_id,
         teamA_players,
