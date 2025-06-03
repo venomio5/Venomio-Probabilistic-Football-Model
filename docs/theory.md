@@ -1,15 +1,12 @@
-# Venomio Probabilistic Football Model  
-**Version 7.0.1**
-
-## Theoretical Framework
-### Core Concept - Monte Carlo
+# Theoretical Framework
+## Core Concept - Monte Carlo
 Simulates each minute of a soccer match based on **Shots Per Minute (SPM)**. At each time step, each squad has a projected shots per minute (SPM) value. SPM changes dynamically based on:
 - **Game state**: winning or losing (by 1 or more), or level.
 - **Lineup changes**: substitutions or red cards.
 - **Time segment**: 0-15, 15-30, 30-45, 45-60, 60-75, 75-90.
 
-### Modeling Projected Shots Per Minute
-#### Regularized Adjusted Shots (RAS) 
+## Modeling Projected Shots Per Minute
+### Regularized Adjusted Shots (RAS) 
 RAS is derived via **Ridge Regression**:
 | Feature           | Type        | Description      |
 |-------------------|-------|------------------------|
@@ -23,7 +20,7 @@ RAS is derived via **Ridge Regression**:
 
 Data for the last preceding year.
 
-#### Contextual XGBoost Model
+### Contextual XGBoost Model
 RAS values serve as core inputs to an advanced XGBoost model, which integrates critical external and situational factors to predict final performance metrics (SPM). 
 | Feature             | Type          | Description                                                      |
 |---------------------|---------------|------------------------------------------------------------------|
@@ -50,9 +47,9 @@ RAS values serve as core inputs to an advanced XGBoost model, which integrates c
 
 Data for the last 2 preceding years.
 
-## Shot Resolution
+# Shot Resolution
 For each simulated shot:
-### Shot Type
+## Shot Type
 Another **Ridge Regression** for each type (Head or Foot), normalize them and choose based on weighted randomness.  
 | Feature           | Type        | Description      |
 |-------------------|-------|------------------------|
@@ -62,14 +59,14 @@ Another **Ridge Regression** for each type (Head or Foot), normalize them and ch
 | team_B_h/f_shots  | int   | Total h/f by team B    |
 | minutes_played    | int   | Total minutes played   |
 
-### Specific players
+## Specific players
 - **Shooter**: Determined by weighted randomness favoring players with higher shot volume for the type.
 - **Assister**: Determined by weighted randomness where headers receive full weight (100%), and foot depend on the shooting player’s ability to generate their own attempts, augmented by key passes (KP).
 
 Add 1 to everyone for it to always have a probability.
 
-### Shot Quality
-#### Player-Level Shot Quality Attribution
+## Shot Quality
+### Player-Level Shot Quality Attribution
 This is a base-level contextual impact. For each player: a regularized coefficient reflecting their average influence on xG when present.
 | Feature           | Type        | Description      |
 |-------------------|-------|------------------------|
@@ -81,7 +78,7 @@ This is a base-level contextual impact. For each player: a regularized coefficie
 
 **Output**: Each player's contribution to team shot quality.
 
-#### Full-Factor Shot Quality Model
+### Full-Factor Shot Quality Model
 Aggregate the ridge data per shot and build a model to learn nonlinear, hierarchical patterns.
 | Feature             | Type          | Description                                                      |
 |---------------------|---------------|------------------------------------------------------------------|
@@ -94,7 +91,7 @@ Aggregate the ridge data per shot and build a model to learn nonlinear, hierarch
 
 **Output**: Refined shot quality. 
 
-#### Player Performance Modifier
+### Player Performance Modifier
 | Feature             | Type          | Description                                                      |
 |---------------------|---------------|------------------------------------------------------------------|
 | FFSQ                | float         | Refined Shot Quality for type of shot                            |
@@ -110,8 +107,8 @@ Aggregate the ridge data per shot and build a model to learn nonlinear, hierarch
 
 **Output**: Refined post shot expected goal.
 
-## Lineup Dynamics
-### Substitutions
+# Lineup Dynamics
+## Substitutions
 1. Pull historical substitution data for both teams from the database.
 2. Compute how many subs each team usually makes in past games.
 3. Based on how many substitutions each team can still make, determine how many they are realistically allowed to do now.
@@ -127,7 +124,7 @@ Aggregate the ridge data per shot and build a model to learn nonlinear, hierarch
 
 Repeat this process each time a substitution minute is reached.
 
-### Card and Foul Simulation
+## Card and Foul Simulation
 For each minute:
 - Probabilistically determine if foul occurs by accounting the referee and both teams. (Averages)
 
