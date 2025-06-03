@@ -90,7 +90,8 @@ Aggregate the ridge data per shot and build a model to learn nonlinear, hierarch
 | Match_segment       | categorical   | (1, 2, 3, 4, 5, 6)                                               |
 | Player_dif          | categorical   | (-1.5, -1, 0, 1, 1.5)                                            |
 
-Player Finishing Performance Modifier: Based on the difference between xG  and PSxG.
-Goalkeeper Performance Modifier: Based on the difference between PSxG and Goals. 
+#### Player Performance Modifier
+- **Shooter**: Based on the difference between xG  and PSxG.
+- **Goalkeeper**: Based on the difference between PSxG and Goals.
 
-Log minute and player/team responsibles.
+Multiply the *PPM* by the *FFSQ*.
