@@ -129,7 +129,7 @@ Repeat this process each time a substitution minute is reached.
 
 ### Card and Foul Simulation
 For each minute:
-- Probabilistically determine if foul occurs by accounting the referee and both teams.
+- Probabilistically determine if foul occurs by accounting the referee and both teams. (Averages)
 
 If a foul occurs:
 - Referee-specific probabilistically determine: Yellow Card or Red Card
