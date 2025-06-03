@@ -128,17 +128,13 @@ Aggregate the ridge data per shot and build a model to learn nonlinear, hierarch
 Repeat this process each time a substitution minute is reached.
 
 ### Card and Foul Simulation
-Each player has a projected foul per minute rate
-
 For each minute:
-- Probabilistically determine if foul occurs
+- Probabilistically determine if foul occurs by accounting the referee and both teams.
 
 If a foul occurs:
-- Referee-specific probabilistically determine:
-  - Yellow Card
-  - Red Card
+- Referee-specific probabilistically determine: Yellow Card or Red Card
 
-On red card (Or two yellows) → player removed, team plays short-handed
+On red card (Or two yellows) → player removed, team plays short-handed.
 
 ## Output Metrics
 Minute-by-minute event log:
