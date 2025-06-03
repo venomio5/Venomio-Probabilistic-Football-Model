@@ -8,7 +8,7 @@ USE vpfm;
 ### 1. match_info_summary
 ```
 CREATE TABLE match_info_summary (
-    match_id INT AUTO_INCREMENT,
+    match_id INT AUTO_INCREMENT PRIMARY KEY,
     match_home_team_id INT NOT NULL,
     match_away_team_id INT NOT NULL,
     match_date DATETIME NOT NULL,
@@ -29,8 +29,7 @@ CREATE TABLE match_info_summary (
     temperature_c FLOAT,
     is_raining BOOLEAN,
     match_time VARCHAR(20),
-    PRIMARY KEY (match_home_team_id, match_away_team_id, match_date)
-    UNIQUE (match_id)
+    UNIQUE (match_home_team_id, match_away_team_id, match_date)
 );
 ```
 ### 2. match_lineup_summary
@@ -53,7 +52,10 @@ CREATE TABLE match_lineup_summary (
         teamB_headers,
         teamB_footers,
         minutes_played
-    )
+    ),
+    CONSTRAINT fk_match_lineup_id
+        FOREIGN KEY (match_id) REFERENCES match_info_summary(match_id)
+        ON DELETE CASCADE
 );
 ```
 ### 3. match_player_summary
