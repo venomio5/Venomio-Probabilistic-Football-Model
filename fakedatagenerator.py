@@ -225,8 +225,8 @@ def simula_match_detail(match_id, home_team_id, away_team_id):
 
     detail = {
         "match_id": match_id,
-        "teamA_players": json.dumps(teamA_selected),
-        "teamB_players": json.dumps(teamB_selected),
+        "teamA_players": json.dumps(teamA_selected, ensure_ascii=False),
+        "teamB_players": json.dumps(teamB_selected, ensure_ascii=False),
         "teamA_headers": teamA_headers,
         "teamA_footers": teamA_footers,
         "teamA_hxg": teamA_hxg,
@@ -356,14 +356,11 @@ for row in breakdown_home + breakdown_away:
 
 current_match_id += 1
 #Mostrar los INSERTs generados
-print("-- INSERTS PARA match_info")
 for sql in inserts_match_info:
     print(sql)
 
-print("\n-- INSERTS PARA match_detail")
 for sql in inserts_match_detail:
     print(sql)
 
-print("\n-- INSERTS PARA match_breakdown")
 for sql in inserts_match_breakdown:
     print(sql)
