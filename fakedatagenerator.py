@@ -345,7 +345,7 @@ for i in range(N_PARTIDOS):
     breakdown_home = simula_match_breakdown(current_match_id, home_team, teamA_selected, is_home=True, )
     breakdown_away = simula_match_breakdown(current_match_id, away_team, teamB_selected, is_home=False)
     for row in breakdown_home + breakdown_away:
-        sql_breakdown = ("INSERT INTO finaltest.match_breakdown (match_id, player_id, player_headers, player_footers, player_key_passes, player_non_assisted_footers, "
+        sql_breakdown = ("INSERT INTO finaltest.match_breakdown (match_id, player_id, headers, footers, key_passes, non_assisted_footers, "
                         f"player_hxg, player_fxg, player_kp_hxg, player_kp_fxg, player_hpsxg, player_fpsxg, gk_psxg, gk_ga, player_sub_in, player_sub_out, "
                         f"in_status, out_status, player_fouls_committed, player_fouls_drawn, player_minutes_played) VALUES "
                         f"({row['match_id']}, '{row['player_id']}', {row['player_headers']}, {row['player_footers']}, {row['player_key_passes']}, {row['player_non_assisted_footers']}, "
