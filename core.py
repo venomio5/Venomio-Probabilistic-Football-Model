@@ -4,20 +4,70 @@ from sklearn.linear_model import Ridge
 import scipy.sparse as sp
 import json
 
-# ------------------------------ Fetch & Save data ------------------------------
+DB = databasemanager.DatabaseManager(host="localhost", user="root", password="venomio", database="finaltest")
+
+# --------------- Useful functions ---------------
+def extract_player_ids(players_json_str):
+    players = json.loads(players_json_str)
+    return [player['id'] for player in players]
+
+# ------------------------------ Fetch & Remove Data ------------------------------
+class extract_data:
+    def __init__(self):
+        """"""
+        self.update_pdras()
+
+    def update_pdras(self):
+        """
+        Before fetching new data, update the pre defined RAS from old matches.
+        """
+        non_pdras_matches_df = DB.select("SELECT match_id, teamA_players, teamB_players, minutes_played FROM match_detail WHERE teamA_pdras IS NULL OR teamB_pdras IS NULL;")
+        non_pdras_matches_df['teamA_player_ids'] = non_pdras_matches_df['teamA_players'].apply(extract_player_ids)
+        non_pdras_matches_df['teamB_player_ids'] = non_pdras_matches_df['teamB_players'].apply(extract_player_ids)
+        cols_to_drop = ['teamA_players', 'teamB_players']
+        non_pdras_matches_df = non_pdras_matches_df.drop(columns=cols_to_drop)
+
+        players_needed = set()
+        for idx, row in non_pdras_matches_df.iterrows():
+            players_needed.update(row['teamA_player_ids'])
+            players_needed.update(row['teamB_player_ids'])
+
+        if players_needed:
+            players_str_placeholder = ','.join(['%s'] * len(players_needed))
+            players_sql = f"SELECT player_id, off_sh_coef, def_sh_coef FROM players_data WHERE player_id IN ({players_str_placeholder});"
+            players_coef_df = DB.select(players_sql, list(players_needed))
+            off_sh_coef_dict = players_coef_df.set_index("player_id")["off_sh_coef"].to_dict()
+            def_sh_coef_dict = players_coef_df.set_index("player_id")["def_sh_coef"].to_dict()
+        else:
+            off_sh_coef_dict = {}
+            def_sh_coef_dict = {}
+
+        for idx, row in non_pdras_matches_df.iterrows():
+            minutes = row['minutes_played']
+            teamA_ids = row['teamA_player_ids']
+            teamB_ids = row['teamB_player_ids']
+
+            teamA_offense = sum(off_sh_coef_dict.get(p, 0) for p in teamA_ids)
+            teamB_defense = sum(def_sh_coef_dict.get(p, 0) for p in teamB_ids)
+            teamA_pdras = (teamA_offense - teamB_defense) * minutes
+
+            teamB_offense = sum(off_sh_coef_dict.get(p, 0) for p in teamB_ids)
+            teamA_defense = sum(def_sh_coef_dict.get(p, 0) for p in teamA_ids)
+            teamB_pdras = (teamB_offense - teamA_defense) * minutes
+
+            DB.execute("UPDATE match_detail SET teamA_pdras = %s, teamB_pdras = %s WHERE match_id = %s", (teamA_pdras, teamB_pdras, row['match_id']))
 # ------------------------------ Process data ------------------------------
 class process_data:
     def __init__(self):
         """
         Class to reset the players_data table and fill it with new data.
         """
-        self.db = databasemanager.DatabaseManager(host="localhost", user="root", password="venomio", database="finaltest")
-        self.db.execute("TRUNCATE TABLE players_data;")
+
+        DB.execute("TRUNCATE TABLE players_data;")
 
         self.insert_players_basics()
 
         self.update_players_sh_coef()
-
 
     def insert_players_basics(self):
         """
@@ -28,7 +78,7 @@ class process_data:
         FROM match_detail md 
         JOIN match_info mi ON md.match_id = mi.match_id 
         """
-        result = self.db.select(sql, ())
+        result = DB.select(sql, ())
         
         if result.empty:
             return 0
@@ -47,7 +97,7 @@ class process_data:
                 players_to_insert.append((player["id"], player["name"], away_team))
         
         insert_sql = "INSERT IGNORE INTO players_data (player_id, player_name, current_team) VALUES (%s, %s, %s)"
-        inserted = self.db.execute(insert_sql, players_to_insert, many=True)
+        inserted = DB.execute(insert_sql, players_to_insert, many=True)
         
         return inserted
 
@@ -55,14 +105,11 @@ class process_data:
         """
         Function to update players coefficients per league
         """
-        def extract_player_ids(players_json_str):
-            players = json.loads(players_json_str)
-            return [player['id'] for player in players]
         
-        league_id_df = self.db.select("SELECT league_id FROM league_data")
+        league_id_df = DB.select("SELECT league_id FROM league_data")
 
         for league_id in league_id_df['league_id'].tolist():
-            league_matches_df =self.db.select(f"SELECT match_id FROM match_info WHERE match_league_id = {league_id}")
+            league_matches_df = DB.select(f"SELECT match_id FROM match_info WHERE match_league_id = {league_id}")
             matches_ids = league_matches_df['match_id'].tolist()
             matches_ids_placeholder = ','.join(['%s'] * len(matches_ids))
             matches_sql = f"""
@@ -73,9 +120,9 @@ class process_data:
                 (teamB_headers + teamB_footers) AS teamB_shots, 
                 minutes_played 
             FROM match_detail 
-            WHERE match_id IN ({matches_ids_placeholder}) 
+            WHERE match_id IN ({matches_ids_placeholder});
             """
-            matches_details_df = self.db.select(matches_sql, matches_ids)
+            matches_details_df = DB.select(matches_sql, matches_ids)
             matches_details_df['teamA_player_ids'] = matches_details_df['teamA_players'].apply(extract_player_ids)
             matches_details_df['teamB_player_ids'] = matches_details_df['teamB_players'].apply(extract_player_ids)
             cols_to_drop = ['teamA_players', 'teamB_players']
@@ -147,9 +194,10 @@ class process_data:
                 SET off_sh_coef = %s, def_sh_coef = %s
                 WHERE player_id = %s
                 """
-                self.db.execute(update_coef_query, (off_sh, def_sh, player))
+                DB.execute(update_coef_query, (off_sh, def_sh, player))
 
 # ------------------------------ Monte Carlo ------------------------------
 # ------------------------------ Trading ------------------------------
 # Init
+extract_data()
 process_data()
