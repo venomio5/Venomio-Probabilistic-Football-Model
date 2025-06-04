@@ -118,10 +118,10 @@ CREATE TABLE players_data (
     def_hxg_coef FLOAT DEFAULT NULL,
     off_fxg_coef FLOAT DEFAULT NULL,
     def_fxg_coef FLOAT DEFAULT NULL,
-    headers INT DEFAULT NULL,
-    footers INT DEFAULT NULL,
-    key_passes INT DEFAULT NULL,
-    non_assisted_footers INT DEFAULT NULL
+    headers FLOAT DEFAULT NULL,
+    footers FLOAT DEFAULT NULL,
+    key_passes FLOAT DEFAULT NULL,
+    non_assisted_footers FLOAT DEFAULT NULL
 );
 ```
 ### team_data
