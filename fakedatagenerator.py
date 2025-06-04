@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 
 random.seed(42)
 
-N_PARTIDOS = 1   # número de partidos a generar
+N_PARTIDOS = 5   # número de partidos a generar
 
 """
 Definición de equipos y jugadores
@@ -316,45 +316,45 @@ for i in range(N_PARTIDOS):
     home_team = random.choice(team_ids)
     away_team = random.choice([tid for tid in team_ids if tid != home_team])
 
-def select_players(team_players):
-    first_player = team_players[0]
-    others = team_players[1:]
-    random_4 = random.sample(others, 4)
-    return [first_player] + random_4
-# Se obtienen los jugadores de cada equipo (solo sus nombres e id)
-teamA_players = [{"id": p["id"], "name": p["name"]} for p in teams[home_team]["players"]]
-teamB_players = [{"id": p["id"], "name": p["name"]} for p in teams[away_team]["players"]]
-teamA_selected = select_players(teamA_players)
-teamB_selected = select_players(teamB_players)
+    def select_players(team_players):
+        first_player = team_players[0]
+        others = team_players[1:]
+        random_4 = random.sample(others, 4)
+        return [first_player] + random_4
+    # Se obtienen los jugadores de cada equipo (solo sus nombres e id)
+    teamA_players = [{"id": p["id"], "name": p["name"]} for p in teams[home_team]["players"]]
+    teamB_players = [{"id": p["id"], "name": p["name"]} for p in teams[away_team]["players"]]
+    teamA_selected = select_players(teamA_players)
+    teamB_selected = select_players(teamB_players)
 
-# Generar match_info
-mi = simula_match_info(current_match_id, home_team, away_team)
-# Preparar la instrucción SQL para match_info (valores string se encierran entre comillas)
-sql_match_info = f"INSERT INTO finaltest.match_info (match_id, match_home_team_id, match_away_team_id, match_date, match_league_id, match_referee_id, match_total_fouls, match_yellow_cards, match_red_cards, minutes_played, home_elevation_dif, away_elevation_dif, home_travel, away_travel, home_rest_days, away_rest_days, home_importance, away_importance, temperature_c, is_raining, match_time) VALUES ({mi['match_id']}, {mi['match_home_team_id']}, {mi['match_away_team_id']}, '{mi['match_date']}', {mi['match_league_id']}, {mi['match_referee_id']}, {mi['match_total_fouls']}, {mi['match_yellow_cards']}, {mi['match_red_cards']}, {mi['minutes_played']}, {mi['home_elevation_dif']}, {mi['away_elevation_dif']}, {mi['home_travel']}, {mi['away_travel']}, {mi['home_rest_days']}, {mi['away_rest_days']}, {mi['home_importance']}, {mi['away_importance']}, {mi['temperature_c']}, {mi['is_raining']}, '{mi['match_time']}');"
-inserts_match_info.append(sql_match_info)
+    # Generar match_info
+    mi = simula_match_info(current_match_id, home_team, away_team)
+    # Preparar la instrucción SQL para match_info (valores string se encierran entre comillas)
+    sql_match_info = f"INSERT INTO finaltest.match_info (match_id, match_home_team_id, match_away_team_id, match_date, match_league_id, match_referee_id, match_total_fouls, match_yellow_cards, match_red_cards, minutes_played, home_elevation_dif, away_elevation_dif, home_travel, away_travel, home_rest_days, away_rest_days, home_importance, away_importance, temperature_c, is_raining, match_time) VALUES ({mi['match_id']}, {mi['match_home_team_id']}, {mi['match_away_team_id']}, '{mi['match_date']}', {mi['match_league_id']}, {mi['match_referee_id']}, {mi['match_total_fouls']}, {mi['match_yellow_cards']}, {mi['match_red_cards']}, {mi['minutes_played']}, {mi['home_elevation_dif']}, {mi['away_elevation_dif']}, {mi['home_travel']}, {mi['away_travel']}, {mi['home_rest_days']}, {mi['away_rest_days']}, {mi['home_importance']}, {mi['away_importance']}, {mi['temperature_c']}, {mi['is_raining']}, '{mi['match_time']}');"
+    inserts_match_info.append(sql_match_info)
 
-# Generar match_detail
-md = simula_match_detail(current_match_id, home_team, away_team)
-sql_match_detail = ("INSERT INTO finaltest.match_detail (match_id, teamA_players, teamB_players, teamA_headers, teamA_footers, teamA_hxg, teamA_fxg, "
-                    f"teamB_headers, teamB_footers, teamB_hxg, teamB_fxg, minutes_played, match_state, match_segment, player_dif) VALUES "
-                    f"({md['match_id']}, '{md['teamA_players']}', '{md['teamB_players']}', {md['teamA_headers']}, {md['teamA_footers']}, {md['teamA_hxg']}, {md['teamA_fxg']}, "
-                    f"{md['teamB_headers']}, {md['teamB_footers']}, {md['teamB_hxg']}, {md['teamB_fxg']}, {md['minutes_played']}, '{md['match_state']}', '{md['match_segment']}', '{md['player_dif']}');")
-inserts_match_detail.append(sql_match_detail)
+    # Generar match_detail
+    md = simula_match_detail(current_match_id, home_team, away_team)
+    sql_match_detail = ("INSERT INTO finaltest.match_detail (match_id, teamA_players, teamB_players, teamA_headers, teamA_footers, teamA_hxg, teamA_fxg, "
+                        f"teamB_headers, teamB_footers, teamB_hxg, teamB_fxg, minutes_played, match_state, match_segment, player_dif) VALUES "
+                        f"({md['match_id']}, '{md['teamA_players']}', '{md['teamB_players']}', {md['teamA_headers']}, {md['teamA_footers']}, {md['teamA_hxg']}, {md['teamA_fxg']}, "
+                        f"{md['teamB_headers']}, {md['teamB_footers']}, {md['teamB_hxg']}, {md['teamB_fxg']}, {md['minutes_played']}, '{md['match_state']}', '{md['match_segment']}', '{md['player_dif']}');")
+    inserts_match_detail.append(sql_match_detail)
 
-# Generar match_breakdown para ambos equipos
-breakdown_home = simula_match_breakdown(current_match_id, home_team, teamA_selected, is_home=True, )
-breakdown_away = simula_match_breakdown(current_match_id, away_team, teamB_selected, is_home=False)
-for row in breakdown_home + breakdown_away:
-    sql_breakdown = ("INSERT INTO finaltest.match_breakdown (match_id, player_id, player_headers, player_footers, player_key_passes, player_non_assisted_footers, "
-                     f"player_hxg, player_fxg, player_kp_hxg, player_kp_fxg, player_hpsxg, player_fpsxg, gk_psxg, gk_ga, player_sub_in, player_sub_out, "
-                     f"in_status, out_status, player_fouls_committed, player_fouls_drawn, player_minutes_played) VALUES "
-                     f"({row['match_id']}, '{row['player_id']}', {row['player_headers']}, {row['player_footers']}, {row['player_key_passes']}, {row['player_non_assisted_footers']}, "
-                     f"{row['player_hxg']}, {row['player_fxg']}, {row['player_kp_hxg']}, {row['player_kp_fxg']}, {row['player_hpsxg']}, {row['player_fpsxg']}, "
-                     f"{row['gk_psxg']}, {row['gk_ga']}, {row['player_sub_in']}, {row['player_sub_out']}, '{row['in_status']}', '{row['out_status']}', "
-                     f"{row['player_fouls_committed']}, {row['player_fouls_drawn']}, {row['player_minutes_played']});")
-    inserts_match_breakdown.append(sql_breakdown)
+    # Generar match_breakdown para ambos equipos
+    breakdown_home = simula_match_breakdown(current_match_id, home_team, teamA_selected, is_home=True, )
+    breakdown_away = simula_match_breakdown(current_match_id, away_team, teamB_selected, is_home=False)
+    for row in breakdown_home + breakdown_away:
+        sql_breakdown = ("INSERT INTO finaltest.match_breakdown (match_id, player_id, player_headers, player_footers, player_key_passes, player_non_assisted_footers, "
+                        f"player_hxg, player_fxg, player_kp_hxg, player_kp_fxg, player_hpsxg, player_fpsxg, gk_psxg, gk_ga, player_sub_in, player_sub_out, "
+                        f"in_status, out_status, player_fouls_committed, player_fouls_drawn, player_minutes_played) VALUES "
+                        f"({row['match_id']}, '{row['player_id']}', {row['player_headers']}, {row['player_footers']}, {row['player_key_passes']}, {row['player_non_assisted_footers']}, "
+                        f"{row['player_hxg']}, {row['player_fxg']}, {row['player_kp_hxg']}, {row['player_kp_fxg']}, {row['player_hpsxg']}, {row['player_fpsxg']}, "
+                        f"{row['gk_psxg']}, {row['gk_ga']}, {row['player_sub_in']}, {row['player_sub_out']}, '{row['in_status']}', '{row['out_status']}', "
+                        f"{row['player_fouls_committed']}, {row['player_fouls_drawn']}, {row['player_minutes_played']});")
+        inserts_match_breakdown.append(sql_breakdown)
 
-current_match_id += 1
+    current_match_id += 1
 #Mostrar los INSERTs generados
 for sql in inserts_match_info:
     print(sql)
