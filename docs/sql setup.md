@@ -88,7 +88,7 @@ CREATE TABLE match_breakdown (
     player_hpsxg FLOAT DEFAULT 0.0,
     player_fpsxg FLOAT DEFAULT 0.0,
     gk_psxg FLOAT DEFAULT 0.0,
-    gk_ga INT DEFAULT 0.0,
+    gk_ga INT DEFAULT 0,
     player_sub_in INT DEFAULT 0,
     player_sub_out INT DEFAULT 0,
     in_status VARCHAR(50),
