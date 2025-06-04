@@ -114,6 +114,10 @@ CREATE TABLE players_data (
     def_headers_coef FLOAT DEFAULT NULL,
     off_footers_coef FLOAT DEFAULT NULL,
     def_footers_coef FLOAT DEFAULT NULL,
+    off_hxg_coef FLOAT DEFAULT NULL,
+    def_hxg_coef FLOAT DEFAULT NULL,
+    off_fxg_coef FLOAT DEFAULT NULL,
+    def_fxg_coef FLOAT DEFAULT NULL
 );
 ```
 ### team_data
