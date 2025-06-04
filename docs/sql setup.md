@@ -77,10 +77,10 @@ CREATE TABLE match_detail (
 CREATE TABLE match_breakdown (
     match_id INT,
     player_id VARCHAR(20),
-    player_headers INT DEFAULT 0,
-    player_footers INT DEFAULT 0,
-    player_key_passes INT DEFAULT 0,
-    player_non_assisted_footers INT DEFAULT 0,
+    headers INT DEFAULT 0,
+    footers INT DEFAULT 0,
+    key_passes INT DEFAULT 0,
+    non_assisted_footers INT DEFAULT 0,
     player_hxg FLOAT DEFAULT 0.0,
     player_fxg FLOAT DEFAULT 0.0,
     player_kp_hxg FLOAT DEFAULT 0.0,
@@ -117,7 +117,11 @@ CREATE TABLE players_data (
     off_hxg_coef FLOAT DEFAULT NULL,
     def_hxg_coef FLOAT DEFAULT NULL,
     off_fxg_coef FLOAT DEFAULT NULL,
-    def_fxg_coef FLOAT DEFAULT NULL
+    def_fxg_coef FLOAT DEFAULT NULL,
+    headers INT DEFAULT NULL,
+    footers INT DEFAULT NULL,
+    key_passes INT DEFAULT NULL,
+    non_assisted_footers INT DEFAULT NULL
 );
 ```
 ### team_data
