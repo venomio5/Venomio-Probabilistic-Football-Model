@@ -266,9 +266,9 @@ def simula_match_breakdown(match_id, team_id, selected_players, is_home=True):
         player_hpsxg = round(random.uniform(0,0.3), 2)
         player_fpsxg = round(random.uniform(0,0.3), 2)
         gk_psxg = round(random.uniform(0,0.3), 2) if player_data["pos"]=="GK" else 0.0
-        gk_ga = round(random.uniform(0,1),2) if player_data["pos"]=="GK" else 0.0
-        player_sub_in = random.randint(0,1)
-        player_sub_out = random.randint(0,1)
+        gk_ga = random.uniform(0,1) if player_data["pos"]=="GK" else 0
+        player_sub_in = 0
+        player_sub_out = 90
         in_status = random.choice(["starter", "substituted"])
         out_status = random.choice(["finished", "subbed"])
         player_fouls_committed = random.randint(0,3)

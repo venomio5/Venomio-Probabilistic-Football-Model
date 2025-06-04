@@ -1,0 +1,1708 @@
+from datetime import datetime, timedelta
+import sys
+from PyQt5.QtCore import Qt, QRunnable, QObject, pyqtSignal, QThreadPool, QThread, QTimer
+from PyQt5.QtGui import QColor
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
+                            QComboBox, QScrollArea, QLabel, QPushButton, QCheckBox, QDoubleSpinBox,
+                            QDialog, QListWidget, QListWidgetItem, QTabWidget, QFormLayout, QGraphicsDropShadowEffect,
+                            QPlainTextEdit, QGridLayout, QLineEdit, QGroupBox, QSpinBox)
+import vpfm
+import DatabaseManager
+import warnings 
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+class WorkerSignals(QObject):
+    finished = pyqtSignal() 
+    error = pyqtSignal(tuple) 
+    result = pyqtSignal(object)
+    progress = pyqtSignal(int)
+
+class UpdateWorker(QRunnable):
+    def __init__(self, fn, *args, **kwargs):
+        super(UpdateWorker, self).__init__()
+        self.fn = fn
+        self.args = args
+        self.kwargs = kwargs
+        self.signals = WorkerSignals()
+
+    def run(self):
+        try:
+            result = self.fn(*self.args, **self.kwargs)
+        except Exception as e:
+            import traceback
+            self.signals.error.emit((e.__class__, e, traceback.format_exc()))
+        else:
+            self.signals.result.emit(result)
+        finally:
+            self.signals.finished.emit()
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Venomio Probabilistic Football Model v7")
+        self.setGeometry(100, 100, 1920, 1080)
+        self.showMaximized()
+        self.threadpool = QThreadPool()
+        self.open_windows = []
+        
+        self.vpfm_db = DatabaseManager.DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
+        
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QHBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Left section
+        left_widget = QWidget()
+        left_widget.setStyleSheet("background-color: #1a1a1a;")
+        main_layout.addWidget(left_widget, stretch=7)
+        self.setup_left_section(left_widget)
+
+        # Right section
+        right_widget = QWidget()
+        right_widget.setStyleSheet("background-color: #1a1a1a;")
+        self.setup_right_section(right_widget)
+        main_layout.addWidget(right_widget, stretch=3)
+
+        # Initialize data
+        self.all_matches = []
+        self.load_fixtures()
+
+    def closeEvent(self, event):
+        self.worker.stop()
+        event.accept()
+
+# ----------------------- GAMES SECTION  -----------------------
+    def setup_left_section(self, widget):
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(15)
+
+        self.refresh_btn = QPushButton("⟳")
+        self.refresh_btn.setStyleSheet('color: white;')
+        self.refresh_btn.clicked.connect(self.refresh_fixtures)
+        layout.addWidget(self.refresh_btn)
+
+        filters_layout = QHBoxLayout()
+        self.date_filter = QComboBox()
+        self.date_filter.addItem("Today", "today")
+        self.date_filter.addItem("Past", "past")
+        self.date_filter.addItem("Upcoming", "upcoming")
+        self.date_filter.setStyleSheet("""
+            QComboBox {
+                background: #2a2a2a;
+                color: white;
+                padding: 5px;
+                border-radius: 5px;
+            }
+            QComboBox QAbstractItemView {
+                background: #2a2a2a;
+                color: white;
+                selection-background-color: #138585;
+                selection-color: white;
+            }
+        """)
+
+        self.league_filter = QComboBox()
+        self.league_filter.addItem("All", "all")
+        self.league_filter.setStyleSheet("""
+            QComboBox {
+                background: #2a2a2a;
+                color: white;
+                padding: 5px;
+                border-radius: 5px;
+            }
+            QComboBox QAbstractItemView {
+                background: #2a2a2a;
+                color: white;
+                selection-background-color: #138585;
+                selection-color: white;
+            }
+        """)
+
+        filters_layout.addWidget(self.date_filter)
+        filters_layout.addWidget(self.league_filter)
+        layout.addLayout(filters_layout)
+
+        # Matches scroll area
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet("border: none;")
+
+        self.matches_container = QWidget()
+        self.matches_container.setLayout(QVBoxLayout())
+        self.matches_container.layout().setAlignment(Qt.AlignTop)
+        self.matches_container.layout().setSpacing(10)
+        self.matches_container.layout().setContentsMargins(20, 0, 20, 0)
+        
+        self.scroll_area.setWidget(self.matches_container)
+        layout.addWidget(self.scroll_area)
+
+        # Connect signals
+        self.date_filter.currentIndexChanged.connect(self.filter_matches)
+        self.league_filter.currentIndexChanged.connect(self.filter_matches)
+
+    def refresh_fixtures(self):
+        self.all_matches = []
+        self.load_fixtures()
+
+    def load_fixtures(self):
+        fixtures_query = """
+            SELECT match_id, home_team, away_team, 
+                    match_date, match_local_time, league_name 
+            FROM schedule_data
+        """
+        self.all_matches = self.vpfm_db.select(fixtures_query)
+        self.all_matches['match_datetime'] = self.all_matches.apply(
+            lambda row: datetime.combine(row['match_date'], datetime.min.time()) + row['match_local_time'],
+            axis=1
+        )
+
+        leagues = list({row["league_name"] for idx, row in self.all_matches.iterrows()})
+        leagues.sort()
+        self.league_filter.clear()
+        self.league_filter.addItem("All", "all")
+        for league in leagues:
+            self.league_filter.addItem(league, league)
+
+        self.filter_matches()
+    
+    def filter_matches(self):
+        current_time = datetime.now()
+        two_hours_ago = current_time - timedelta(hours=2.1)
+
+        today_matches = {"inPlay": [], "later": []}
+        upcoming_matches = []
+        past_matches = []
+
+        for idx, row in self.all_matches.iterrows():
+            if row['match_date'] == current_time.date():
+                if two_hours_ago <= row['match_datetime'] <= current_time:
+                    today_matches["inPlay"].append(row)
+                elif row['match_datetime'] > current_time:
+                    today_matches["later"].append(row)
+                else:
+                    past_matches.append(row)
+            else:
+                if row['match_date'] > current_time.date():
+                    upcoming_matches.append(row)
+                else:
+                    past_matches.append(row)
+
+        today_matches["inPlay"].sort(key=lambda match: match["match_datetime"])
+        today_matches["later"].sort(key=lambda match: match["match_datetime"])
+        upcoming_matches.sort(key=lambda match: match["match_date"])
+        past_matches.sort(key=lambda match: match["match_date"])
+
+        # Apply filters
+        selected_date = self.date_filter.currentData()
+        selected_league = self.league_filter.currentData()
+
+        if selected_date == "today":
+            matches_to_display = today_matches["inPlay"] + today_matches["later"]
+        elif selected_date == "past":
+            matches_to_display = past_matches
+        else:
+            matches_to_display = upcoming_matches
+
+        if selected_league != "all":
+            matches_to_display = [m for m in matches_to_display if m["league_name"] == selected_league]
+
+        self.display_matches(matches_to_display, today_matches)
+
+    def display_matches(self, matches, today_matches):
+        while self.matches_container.layout().count():
+            child = self.matches_container.layout().takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+        if not matches:
+            self.matches_container.layout().addWidget(QLabel("No games", styleSheet="color: white;"))
+            return
+
+        selected_date = self.date_filter.currentData()
+        selected_league = self.league_filter.currentData()
+
+        if selected_date == "today":
+            in_play = [m for m in today_matches["inPlay"] if selected_league in ("all", m["league_name"])]
+            later = [m for m in today_matches["later"] if selected_league in ("all", m["league_name"])]
+
+            if in_play:
+                self.add_section_header("In-Play")
+                for match in in_play:
+                    self.create_match_box(match)
+
+            if later:
+                self.add_section_header("Later")
+                for match in later:
+                    self.create_match_box(match)
+        elif selected_date == "past":
+            self.add_section_header("Past")
+            for match in matches:
+                self.create_match_box(match)
+        else:
+            grouped = {}
+            for match in matches:
+                date_str = str(match["match_date"])
+                grouped.setdefault(date_str, []).append(match)
+
+            for date_str, group in sorted(grouped.items()):
+                self.add_section_header(date_str)
+                for match in group:
+                    self.create_match_box(match)
+
+        self.matches_container.layout().addStretch()
+
+    def add_section_header(self, text):
+        header = QLabel(text)
+        header.setStyleSheet("""
+            color: white;
+            font-weight: bold;
+            font-size: 16px;
+            margin-top: 15px;
+            margin-bottom: 5px;
+        """)
+        self.matches_container.layout().addWidget(header)
+
+    def create_match_box(self, match):
+        box = QWidget()
+        box.setStyleSheet("""
+            padding: 15px;
+        """)
+        box.setCursor(Qt.PointingHandCursor)
+        
+        layout = QHBoxLayout(box)
+
+        league = QLabel(match["league_name"])
+        league.setStyleSheet("color: white; font-size: 14px;")
+        league.setFixedWidth(200)
+
+        teams = QLabel(f"{match['home_team']} - {match['away_team']}")
+        teams.setStyleSheet("""
+            color: white;
+            font-size: 16px;
+            font-weight: bold;
+            qproperty-alignment: AlignCenter;
+        """)
+
+        time = QLabel()
+        time.setText(str(match["match_datetime"]))
+        time.setStyleSheet("color: white; font-size: 14px;")
+        time.setFixedWidth(100)
+        time.setAlignment(Qt.AlignRight)
+
+        layout.addWidget(league)
+        layout.addWidget(teams)
+        layout.addWidget(time)
+
+        box.mousePressEvent = lambda event: self.on_match_clicked(match)
+        self.matches_container.layout().addWidget(box)
+
+# ----------------------- MATCH SECTION  -----------------------
+    def on_match_clicked(self, match):
+        match_window = QMainWindow()
+        match_window.setWindowTitle(f"{match['home_team']} vs {match['away_team']}")
+        match_window.setStyleSheet("background-color: #1a1a1a; color: white;")
+        match_window.setWindowState(Qt.WindowMaximized)
+        
+        central_widget = QWidget()
+        match_window.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(5)
+        
+        tabs = QTabWidget()
+        tabs.setStyleSheet("background-color: #1a1a1a; color: white;")
+        main_layout.addWidget(tabs)
+
+        # ------------------- Build Game Tab (default) -------------------
+        build_game_tab = QWidget()
+        build_game_tab.setStyleSheet("background-color: #1a1a1a; color: white;")
+        build_layout = QVBoxLayout(build_game_tab)
+
+        auto_lineups_btn = QPushButton("AutoLineups")
+        auto_lineups_btn.setStyleSheet("background-color: #333; color: white;")
+        build_layout.addWidget(auto_lineups_btn)    
+        
+        form_layout = QFormLayout()
+        
+        home_players_label = QLabel(f"{match['home_team']} Players:")
+        home_players_label.setStyleSheet("color: white;")
+        home_players_input = QPlainTextEdit()
+        home_players_input.setStyleSheet("background-color: #2a2a2a; color: white;")
+        home_players_input.setPlaceholderText(f"Paste {match['home_team']} players here...")
+        form_layout.addRow(home_players_label, home_players_input)
+        
+        away_players_label = QLabel(f"{match['away_team']} Players:")
+        away_players_label.setStyleSheet("color: white;")
+        away_players_input = QPlainTextEdit()
+        away_players_input.setStyleSheet("background-color: #2a2a2a; color: white;")
+        away_players_input.setPlaceholderText(f"Paste {match['away_team']} players here...")
+        form_layout.addRow(away_players_label, away_players_input)
+
+        initial_minute_label = QLabel("Match Initial Minute:")
+        initial_minute_label.setStyleSheet("color: white;")
+        self.initial_minute_spin = QSpinBox()
+        self.initial_minute_spin.setMinimum(0)
+        self.initial_minute_spin.setMaximum(89)
+        self.initial_minute_spin.setValue(0)
+        self.initial_minute_spin.setStyleSheet("background-color: #2a2a2a; color: white;")
+        form_layout.addRow(initial_minute_label, self.initial_minute_spin)
+
+        home_goals_label = QLabel("Home Initial Goals:")
+        home_goals_label.setStyleSheet("color: white;")
+        self.home_goals_spin = QSpinBox()
+        self.home_goals_spin.setMinimum(0)
+        self.home_goals_spin.setMaximum(10)
+        self.home_goals_spin.setValue(0)
+        self.home_goals_spin.setStyleSheet("background-color: #2a2a2a; color: white;")
+        form_layout.addRow(home_goals_label, self.home_goals_spin)
+        
+        away_goals_label = QLabel("Away Initial Goals:")
+        away_goals_label.setStyleSheet("color: white;")
+        self.away_goals_spin = QSpinBox()
+        self.away_goals_spin.setMinimum(0)
+        self.away_goals_spin.setMaximum(10)
+        self.away_goals_spin.setValue(0)
+        self.away_goals_spin.setStyleSheet("background-color: #2a2a2a; color: white;")
+        form_layout.addRow(away_goals_label, self.away_goals_spin)
+        
+        home_subs_label = QLabel("Home Initial # Subs:")
+        home_subs_label.setStyleSheet("color: white;")
+        self.home_subs_spin = QSpinBox()
+        self.home_subs_spin.setMinimum(0)
+        self.home_subs_spin.setMaximum(5)
+        self.home_subs_spin.setValue(5)
+        self.home_subs_spin.setStyleSheet("background-color: #2a2a2a; color: white;")
+        form_layout.addRow(home_subs_label, self.home_subs_spin)
+        
+        away_subs_label = QLabel("Away Initial # Subs:")
+        away_subs_label.setStyleSheet("color: white;")
+        self.away_subs_spin = QSpinBox()
+        self.away_subs_spin.setMinimum(0)
+        self.away_subs_spin.setMaximum(5)
+        self.away_subs_spin.setValue(5)
+        self.away_subs_spin.setStyleSheet("background-color: #2a2a2a; color: white;")
+        form_layout.addRow(away_subs_label, self.away_subs_spin)
+
+        home_red_cards_label = QLabel("Home # Red Cards:")
+        home_red_cards_label.setStyleSheet("color: white;")
+        self.home_red_cards_spin = QSpinBox()
+        self.home_red_cards_spin.setMinimum(0)
+        self.home_red_cards_spin.setMaximum(4)
+        self.home_red_cards_spin.setValue(0)
+        self.home_red_cards_spin.setStyleSheet("background-color: #2a2a2a; color: white;")
+        form_layout.addRow(home_red_cards_label, self.home_red_cards_spin)
+        
+        away_red_cards_label = QLabel("Away # Red Cards:")
+        away_red_cards_label.setStyleSheet("color: white;")
+        self.away_red_cards_spin = QSpinBox()
+        self.away_red_cards_spin.setMinimum(0)
+        self.away_red_cards_spin.setMaximum(4)
+        self.away_red_cards_spin.setValue(0)
+        self.away_red_cards_spin.setStyleSheet("background-color: #2a2a2a; color: white;")
+        form_layout.addRow(away_red_cards_label, self.away_red_cards_spin)
+        
+        build_layout.addLayout(form_layout)
+        
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        submit_button = QPushButton("Run Game Simulations")
+        submit_button.setStyleSheet("background-color: #138585; color: white; padding: 10px;")
+        button_layout.addWidget(submit_button)
+        button_layout.addStretch()
+        build_layout.addLayout(button_layout)
+
+        def auto_lineups():
+            lineups = vpfm.AutoLineups(match["league_name"], f"{match['home_team']} vs {match['away_team']}")
+            home_text = "\n".join(lineups.home_starters) + "\n\n" + "\n".join(lineups.home_subs)
+            away_text = "\n".join(lineups.away_starters) + "\n\n" + "\n".join(lineups.away_subs)
+            home_players_input.setPlainText(home_text)
+            away_players_input.setPlainText(away_text)
+
+        auto_lineups_btn.clicked.connect(auto_lineups)
+        
+        def run_build_game():           
+            match_date_obj = match['match_datetime'].date()
+            midnight = datetime.combine(match_date_obj, datetime.min.time())
+            match_time_delta = match['match_datetime'] - midnight
+
+            home_lineups = home_players_input.toPlainText().strip()
+            away_lineups = away_players_input.toPlainText().strip()
+
+            home_initial_goals = self.home_goals_spin.value()
+            away_initial_goals = self.away_goals_spin.value()
+            match_initial_time = self.initial_minute_spin.value()
+            home_initial_n_subs = self.home_subs_spin.value()
+            away_initial_n_subs = self.away_subs_spin.value()
+            home_initial_n_rc = self.home_red_cards_spin.value()
+            away_initial_n_rc = self.away_red_cards_spin.value()
+
+            task_description = f"Simulating: {match['home_team']} vs {match['away_team']}"
+            list_item = self.add_task_to_queue(task_description)
+        
+            worker = UpdateWorker(
+                vpfm.Alg,
+                home_team=match['home_team'],
+                away_team=match['away_team'],
+                home_lineups=home_lineups,
+                away_lineups=away_lineups,
+                league=match['league_name'],
+                match_date=match_date_obj,
+                match_time=match_time_delta, 
+                match_id=int(match['match_id']),
+                home_initial_goals=home_initial_goals,
+                away_initial_goals=away_initial_goals,
+                match_initial_time=match_initial_time,
+                home_n_subs=home_initial_n_subs,
+                away_n_subs=away_initial_n_subs,
+                home_n_rc=home_initial_n_rc,
+                away_n_rc=away_initial_n_rc
+            )
+            worker.signals.finished.connect(lambda: self.remove_task_from_queue(list_item))
+            worker.signals.error.connect(lambda err: print("Simulation error:", err))
+            worker.signals.result.connect(lambda res: print("Simulation finished with result:", res))
+            self.threadpool.start(worker)
+        
+        submit_button.clicked.connect(run_build_game)
+
+        # ------------------- Odds Tab -------------------
+        odds_tab = QWidget()
+        odds_tab.setStyleSheet("background-color: #1a1a1a; color: white;")
+        odds_layout = QVBoxLayout(odds_tab)
+
+        # ----- Simulation Parameters -----
+        simulation_params_group = QGroupBox("Simulation Parameters")
+        simulation_params_group.setStyleSheet("background-color: #1a1a1a; color: white; font-weight: bold;")
+        sim_params_layout = QVBoxLayout(simulation_params_group)
+
+        minute_frame = QHBoxLayout()
+        current_minute_spin = QSpinBox()
+        current_minute_spin.setRange(0, 90)
+        current_minute_spin.setValue(0)
+
+        current_minute_spin.valueChanged.connect(lambda _: update_odds())
+
+        dash_label = QLabel("-")
+        dash_label.setStyleSheet("color: white;")
+
+        max_minute_spin = QSpinBox()
+        max_minute_spin.setRange(1, 90)
+        max_minute_spin.setValue(90)
+        max_minute_spin.valueChanged.connect(lambda _: update_odds())
+
+        minute_frame.addWidget(current_minute_spin)
+        minute_frame.addWidget(dash_label)
+        minute_frame.addWidget(max_minute_spin)
+        sim_params_layout.addLayout(minute_frame)
+
+        goals_frame = QHBoxLayout()
+
+        home_goals_layout = QVBoxLayout()
+        home_goals_label = QLabel(f"{match['home_team']} Goals:")
+        home_goals_label.setStyleSheet("color: white;")
+        home_goals_spin = QSpinBox()
+        home_goals_spin.setRange(0, 10)
+        home_goals_spin.setValue(0)
+        home_goals_spin.valueChanged.connect(lambda _: update_odds())
+        home_goals_layout.addWidget(home_goals_label)
+        home_goals_layout.addWidget(home_goals_spin)
+
+        home_goal_min_label = QLabel("Home Goal Minute:")
+        home_goal_min_label.setStyleSheet("color: white;")
+        home_goal_min_spin = QSpinBox()
+        home_goal_min_spin.setRange(0, 89)
+        home_goal_min_spin.setValue(0)
+        home_goal_min_spin.valueChanged.connect(lambda _: update_odds())
+        home_goals_layout.addWidget(home_goal_min_label)
+        home_goals_layout.addWidget(home_goal_min_spin)
+
+        away_goals_layout = QVBoxLayout()
+        away_goals_label = QLabel(f"{match['away_team']} Goals:")
+        away_goals_label.setStyleSheet("color: white;")
+        away_goals_spin = QSpinBox()
+        away_goals_spin.setRange(0, 10)
+        away_goals_spin.setValue(0)
+        away_goals_spin.valueChanged.connect(lambda _: update_odds())
+        away_goals_layout.addWidget(away_goals_label)
+        away_goals_layout.addWidget(away_goals_spin)
+
+        away_goal_min_label = QLabel("Away Goal Minute:")
+        away_goal_min_label.setStyleSheet("color: white;")
+        away_goal_min_spin = QSpinBox()
+        away_goal_min_spin.setRange(0, 89)
+        away_goal_min_spin.setValue(0)
+        away_goal_min_spin.valueChanged.connect(lambda _: update_odds())
+        away_goals_layout.addWidget(away_goal_min_label)
+        away_goals_layout.addWidget(away_goal_min_spin)
+
+        goals_frame.addLayout(home_goals_layout)
+        goals_frame.addLayout(away_goals_layout)
+        sim_params_layout.addLayout(goals_frame)
+
+        # xG
+        xg_frame = QHBoxLayout()
+        home_xg_label = QLabel(f"<span style='color:#FFFFFF;'>xG: </span> <span style='color:#138585;'>N/A</span>")
+        home_xg_label.setStyleSheet("color: white;")
+        away_xg_label = QLabel(f"<span style='color:#FFFFFF;'>xG: </span> <span style='color:#138585;'>N/A</span>")
+        away_xg_label.setStyleSheet("color: white;")
+        xg_frame.addWidget(home_xg_label)
+        xg_frame.addWidget(away_xg_label)
+        sim_params_layout.addLayout(xg_frame)
+
+        odds_layout.addWidget(simulation_params_group)
+
+        # --- Match Odds Section
+        match_odds_group = QGroupBox("Match")
+        match_odds_group.setStyleSheet("font-weight: bold;")
+        match_odds_layout = QFormLayout(match_odds_group)
+        home_odds_label = QLabel('0')
+        match_odds_layout.addRow("Home:", home_odds_label)
+        away_odds_label = QLabel('0')
+        match_odds_layout.addRow("Away:", away_odds_label)
+        draw_odds_label = QLabel('0')
+        match_odds_layout.addRow("Draw:", draw_odds_label)
+        odds_layout.addWidget(match_odds_group)
+        home_odds_label.setStyleSheet("color: #138585;")
+        away_odds_label.setStyleSheet("color: #138585;")
+        draw_odds_label.setStyleSheet("color: #138585;")
+
+        # --- Asian Handicap Section ---
+        asian_group = QGroupBox("Asian Handicap")
+        asian_group.setStyleSheet("font-weight: bold;") 
+        asian_layout = QFormLayout(asian_group)
+        asian_dropdown = QComboBox()
+        asian_dropdown.addItems(["+1.5", "+2.5", "-1.5", "-2.5"])
+        asian_layout.addRow("Handicap", asian_dropdown)
+        home_asian_odds_label = QLabel('0')
+        asian_layout.addRow("Home Odds:", home_asian_odds_label)
+        away_asian_odds_label = QLabel('0')
+        asian_layout.addRow("Away Odds:", away_asian_odds_label)
+        odds_layout.addWidget(asian_group)
+        home_asian_odds_label.setStyleSheet("color: #138585;")
+        away_asian_odds_label.setStyleSheet("color: #138585;")
+
+        # --- Total Over/Under Section ---
+        totals_group = QGroupBox("Total Over/Under")
+        totals_group.setStyleSheet("font-weight: bold;")
+        totals_layout = QFormLayout(totals_group)
+        totals_dropdown = QComboBox()
+
+        totals_dropdown.addItems(["0.5", "1.5", "2.5", "3.5", "4.5", "5.5"])
+        totals_layout.addRow("Total", totals_dropdown)
+        under_odds_label = QLabel('0')
+        totals_layout.addRow("Under:", under_odds_label)
+        over_odds_label = QLabel('0')
+        totals_layout.addRow("Over:", over_odds_label)
+        odds_layout.addWidget(totals_group)
+        under_odds_label.setStyleSheet("color: #138585;")
+        over_odds_label.setStyleSheet("color: #138585;")
+
+        # --- Correct Score Section ---
+        score_group = QGroupBox("Correct Score") 
+        score_group.setStyleSheet("font-weight: bold;") 
+        score_layout = QVBoxLayout(score_group) 
+
+        correct_score_labels = {}
+        score_odds_dict = {} 
+
+        correct_scores = [
+            "0-0", "0-1", "0-2", "0-3",
+            "1-0", "1-1", "1-2", "1-3",
+            "2-0", "2-1", "2-2", "2-3",
+            "3-0", "3-1", "3-2", "3-3",
+            "Any Other Home Win", "Any Other Away Win", "Any Other Draw"
+        ]
+
+        for score in correct_scores:
+            label = QLabel(f"<span style='color:#FFFFFF;'>{score}:</span> <span style='color:#138585;'>N/A</span>") 
+            correct_score_labels[score] = label
+            score_layout.addWidget(label)
+
+        odds_layout.addWidget(score_group)
+
+        # --- Team Totals Section ---
+        team_totals_group = QGroupBox("Team Totals")
+        team_totals_group.setStyleSheet("font-weight: bold;")
+        team_totals_layout = QHBoxLayout(team_totals_group)
+
+        # -- Home Subsection --
+        home_team_totals_box = QGroupBox("Home Totals")
+        home_team_totals_box.setStyleSheet("font-weight: bold;")
+        home_team_totals_layout = QFormLayout(home_team_totals_box)
+        home_totals_dropdown = QComboBox()
+        home_totals_dropdown.addItems(["0.5", "1.5", "2.5"])
+        home_team_totals_layout.addRow("Total", home_totals_dropdown)
+        home_team_totals_under_odds = QLabel('0')
+        home_team_totals_layout.addRow("Under:", home_team_totals_under_odds)
+        home_team_totals_over_odds = QLabel('0')
+        home_team_totals_layout.addRow("Over:", home_team_totals_over_odds)
+        team_totals_layout.addWidget(home_team_totals_box)
+        home_team_totals_under_odds.setStyleSheet("color: #138585;")
+        home_team_totals_over_odds.setStyleSheet("color: #138585;")
+
+        # -- Away Subsection --
+        away_team_totals_box = QGroupBox("Away Totals")
+        away_team_totals_box.setStyleSheet("font-weight: bold;")
+        away_team_totals_layout = QFormLayout(away_team_totals_box)
+        away_totals_dropdown = QComboBox()
+        away_totals_dropdown.addItems(["0.5", "1.5", "2.5"])
+        away_team_totals_layout.addRow("Total", away_totals_dropdown)
+        away_team_totals_under_odds = QLabel('0')
+        away_team_totals_layout.addRow("Under:", away_team_totals_under_odds)
+        away_team_totals_over_odds = QLabel('0')
+        away_team_totals_layout.addRow("Over:", away_team_totals_over_odds)
+        team_totals_layout.addWidget(away_team_totals_box)
+        away_team_totals_under_odds.setStyleSheet("color: #138585;")
+        away_team_totals_over_odds.setStyleSheet("color: #138585;")
+
+        odds_layout.addWidget(team_totals_group)
+
+        simulation_data = None
+        def load_simulation_data():
+            nonlocal simulation_data
+            match_id = int(match['match_id']) 
+            sql_query = """SELECT sim_id, minute, home_goals, away_goals 
+                        FROM simulation_data 
+                        WHERE match_id = %s"""
+            simulation_data = self.vpfm_db.select(sql_query, (match_id,))
+        load_simulation_data()
+
+        def update_odds():
+            if simulation_data is None or simulation_data.empty:
+                return
+            
+            current_minute = current_minute_spin.value()
+            max_minute = max_minute_spin.value()
+            home_goals = home_goals_spin.value()
+            away_goals = away_goals_spin.value()
+            home_goal_min = home_goal_min_spin.value()
+            away_goal_min = away_goal_min_spin.value()
+
+            momentum_flag = 0
+            if home_goal_min and current_minute - home_goal_min <= 10:
+                momentum_flag = 1
+            if away_goal_min and current_minute - away_goal_min <= 10 and (momentum_flag == 0 or away_goal_min > home_goal_min):
+                momentum_flag = 2
+
+            filtered_data = simulation_data[
+                (simulation_data['minute'] == current_minute) & 
+                (simulation_data['home_goals'] == home_goals) & 
+                (simulation_data['away_goals'] == away_goals) &
+                ((momentum_flag == 0) | (simulation_data['momentum'] == momentum_flag))
+            ]
+
+            relevant_sim_ids = filtered_data['sim_id'].unique()
+
+            final_data = simulation_data[
+                (simulation_data['minute'] == max_minute) &
+                (simulation_data['sim_id'].isin(relevant_sim_ids))
+            ]
+
+            total_final_data = len(final_data)
+
+            # --- xG ---
+            total_home_goals = final_data["home_goals"].sum() / total_final_data if total_final_data != 0 else 0
+            total_away_goals = final_data["away_goals"].sum() / total_final_data if total_final_data != 0 else 0
+            home_xg_label.setText(f"<span style='color:#FFFFFF;'>xG: </span> <span style='color:#138585;'>{round(total_home_goals, 3)}</span>")
+            away_xg_label.setText(f"<span style='color:#FFFFFF;'>xG: </span> <span style='color:#138585;'>{round(total_away_goals, 3)}</span>")
+
+            # --- Match Odds ---
+            home_wins = len(final_data[final_data['home_goals'] > final_data['away_goals']])
+            away_wins = len(final_data[final_data['home_goals'] < final_data['away_goals']])
+            draws = len(final_data[final_data['home_goals'] == final_data['away_goals']])
+
+            home_odds = round(1 / (home_wins / total_final_data ), 3) if total_final_data != 0 and home_wins != 0 else 0
+            draw_odds = round(1 / (draws / total_final_data ), 3)  if total_final_data != 0 and draws != 0 else 0
+            away_odds = round(1 / (away_wins / total_final_data ), 3) if total_final_data != 0 and away_wins != 0 else 0
+            home_odds_label.setText(str(home_odds))
+            away_odds_label.setText(str(away_odds))
+            draw_odds_label.setText(str(draw_odds))
+
+            # --- Totals (Over/Under) ---
+            teams_totals = float(totals_dropdown.currentText())
+            count_teams_under = len(final_data[final_data['home_goals'] + final_data['away_goals'] < teams_totals])
+            count_teams_over = len(final_data[final_data['home_goals'] + final_data['away_goals'] > teams_totals])
+            under_teams_odds = round(1 / (count_teams_under / total_final_data), 3)   if total_final_data != 0 and count_teams_under != 0 else 0
+            over_teams_odds = round(1 / (count_teams_over / total_final_data), 3)  if total_final_data != 0 and count_teams_over != 0 else 0
+            under_odds_label.setText(str(under_teams_odds))
+            over_odds_label.setText(str(over_teams_odds))
+
+            # --- Correct Score ---
+            score_counts = final_data.groupby(['home_goals', 'away_goals']).size()
+
+            for score in correct_score_labels.keys():
+                if "Any Other" in score:
+                    continue
+
+                home_goals, away_goals = map(int, score.replace(" ", "").split("-"))
+                count = score_counts.get((home_goals, away_goals), 0)
+                odds = round(1 / (count / total_final_data), 3)  if total_final_data != 0 and count != 0 else 0
+
+                if odds == 0:
+                    odds_str = f"<span style='color:#138585;'>N/A</span>"
+                    score_odds_dict[score] = 10**30
+                else:
+                    odds_str = f"<span style='color:#138585;'>{odds}</span>" 
+                    score_odds_dict[score] = odds
+
+                correct_score_labels[score].setText(f"<span style='color:#FFFFFF;'>{score}:</span> {odds_str}")
+
+            any_other_home_win = sum(score_counts[(h, a)] for h in range(4, 11) for a in range(0, 4) if (h, a) in score_counts)
+            any_other_away_win = sum(score_counts[(h, a)] for h in range(0, 4) for a in range(4, 11) if (h, a) in score_counts)
+            any_other_draw = sum(score_counts[(h, h)] for h in range(4, 11) if (h, h) in score_counts)
+
+            aggregated_home_odds = round(1 / (any_other_home_win / total_final_data), 3) if total_final_data != 0 and any_other_home_win != 0 else 10**30
+            aggregated_away_odds = round(1 / (any_other_away_win / total_final_data), 3) if total_final_data != 0 and any_other_away_win != 0 else 10**30
+            aggregated_draw_odds = round(1 / (any_other_draw / total_final_data), 3) if total_final_data != 0 and any_other_draw != 0 else 10**30
+
+            score_odds_dict["Home Win 4+"] = aggregated_home_odds
+            score_odds_dict["Away Win 4+"] = aggregated_away_odds
+            score_odds_dict["Draw +4"] = aggregated_draw_odds
+            
+            correct_score_labels["Any Other Home Win"].setText(
+                f"<span style='color:#FFFFFF;'>Any Other Home Win: </span> <span style='color:#138585;'>{aggregated_home_odds if aggregated_home_odds != 10**30 else 'N/A'}</span>"
+            )
+            correct_score_labels["Any Other Away Win"].setText(
+                f"<span style='color:#FFFFFF;'>Any Other Away Win: </span> <span style='color:#138585;'>{aggregated_away_odds if aggregated_away_odds != 10**30 else 'N/A'}</span>"
+            )
+            correct_score_labels["Any Other Draw"].setText(
+                f"<span style='color:#FFFFFF;'>Any Other Draw: </span> <span style='color:#138585;'>{aggregated_draw_odds if aggregated_draw_odds != 10**30 else 'N/A'}</span>"
+            )
+            # --- Asian Handicap ---
+            handicap_str = asian_dropdown.currentText() 
+            handicap_val = float(handicap_str.replace("+", "").replace("-", ""))
+            if handicap_str.startswith("+"):
+                home_asian_wins = len(final_data[final_data['home_goals'] + handicap_val > final_data['away_goals']])
+                away_asian_wins = len(final_data[final_data['away_goals'] - handicap_val > final_data['home_goals']])
+            elif handicap_str.startswith("-"):
+                home_asian_wins = len(final_data[final_data['home_goals'] - handicap_val > final_data['away_goals']])
+                away_asian_wins = len(final_data[final_data['away_goals'] + handicap_val > final_data['home_goals']])
+            home_asian_odds = round(1 / (home_asian_wins / total_final_data), 3) if total_final_data != 0 and home_asian_wins != 0 else 0
+            away_asian_odds = round(1 / (away_asian_wins / total_final_data), 3) if total_final_data != 0 and away_asian_wins != 0 else 0
+            home_asian_odds_label.setText(str(home_asian_odds))
+            away_asian_odds_label.setText(str(away_asian_odds))
+
+            # -- Home Totals --
+            home_threshold = float(home_totals_dropdown.currentText())
+            count_home_under = len(final_data[final_data['home_goals'] < home_threshold])
+            count_home_over = len(final_data[final_data['home_goals']  > home_threshold])
+            under_home_odds = round(1 / (count_home_under / total_final_data), 3) if total_final_data != 0 and count_home_under != 0 else 0
+            over_home_odds = round(1 / (count_home_over / total_final_data), 3) if total_final_data != 0 and count_home_over != 0 else 0
+            home_team_totals_under_odds.setText(str(under_home_odds))
+            home_team_totals_over_odds.setText(str(over_home_odds))
+
+            # -- Away Totals --
+            away_threshold = float(away_totals_dropdown.currentText())
+            count_away_under = len(final_data[final_data['away_goals'] < away_threshold])
+            count_away_over = len(final_data[final_data['away_goals']  > away_threshold])
+            under_away_odds = round(1 / (count_away_under / total_final_data), 3) if total_final_data != 0 and count_away_under != 0 else 0
+            over_away_odds = round(1 / (count_away_over / total_final_data), 3) if total_final_data != 0 and count_away_over != 0 else 0
+            away_team_totals_under_odds.setText(str(under_away_odds))
+            away_team_totals_over_odds.setText(str(over_away_odds))     
+
+        totals_dropdown.currentIndexChanged.connect(update_odds)
+        asian_dropdown.currentIndexChanged.connect(update_odds)
+        home_totals_dropdown.currentIndexChanged.connect(update_odds)
+        away_totals_dropdown.currentIndexChanged.connect(update_odds)
+
+        update_odds()
+
+        # ------------------- Simulator -------------------
+        simulator_tab = QWidget()
+        simulator_tab.setStyleSheet("background-color: #1a1a1a; color: white;")
+        sim_layout = QVBoxLayout(simulator_tab)
+
+        inner_tabs = QTabWidget()
+        sim_layout.addWidget(inner_tabs)
+        
+        match_tab = QWidget()
+        tw_tab = QWidget()
+        score_tab = QWidget()
+        
+        inner_tabs.addTab(match_tab, "Match")
+        inner_tabs.addTab(tw_tab, "2-Way")
+        inner_tabs.addTab(score_tab, "Score")
+        
+        inner_tabs.setStyleSheet("""
+            QTabBar::tab {
+                background: #1a1a1a;
+                color: white;
+                padding: 10px;
+            }
+            QTabBar::tab:selected {
+                background: #138585;
+            }
+        """)
+
+        # MATCH TAB
+        match_layout = QVBoxLayout(match_tab)
+        main_horizontal = QHBoxLayout()
+        match_layout.addLayout(main_horizontal)
+        results_container = QVBoxLayout()
+        main_horizontal.addLayout(results_container, stretch=1)
+
+        results_grid = QGridLayout()
+        results_container.addLayout(results_grid)
+        match_results_headers = ["Selection", "Profit/Loss", "%", "EV"]
+        for col, header in enumerate(match_results_headers):
+            label = QLabel(header)
+            label.setStyleSheet("font-weight: bold;")
+            results_grid.addWidget(label, 0, col)
+
+        outcomes = ["Home", "Away", "Draw"]
+        match_profit_labels = {}
+        match_probability_labels = {}
+        match_ev_labels = {}
+        for i, outcome in enumerate(outcomes):
+            row = i + 1
+            lbl = QLabel(outcome)
+            results_grid.addWidget(lbl, row, 0)
+
+            profit_lbl = QLabel("$0.00")
+            profit_lbl.setStyleSheet("font-weight: bold;")
+            results_grid.addWidget(profit_lbl, row, 1)
+            match_profit_labels[outcome] = profit_lbl
+
+            probability_lbl = QLabel("0.00%")
+            probability_lbl.setStyleSheet("font-weight: bold;")
+            results_grid.addWidget(probability_lbl, row, 2)
+            match_probability_labels[outcome] = probability_lbl
+
+            ev_lbl = QLabel("$0.00")
+            ev_lbl.setStyleSheet("font-weight: bold;")
+            results_grid.addWidget(ev_lbl, row, 3)
+            match_ev_labels[outcome] = ev_lbl
+
+        total_row = len(outcomes) + 1
+        total_ev_text = QLabel("Total EV:")
+        total_ev_text.setStyleSheet("font-weight: bold;")
+        results_grid.addWidget(total_ev_text, total_row, 0, 1, 3)
+        match_total_ev_label = QLabel("$0.00")
+        match_total_ev_label.setStyleSheet("font-weight: bold;")
+        results_grid.addWidget(match_total_ev_label, total_row, 3)
+
+        bets_container = QVBoxLayout()
+        main_horizontal.addLayout(bets_container, stretch=3)
+
+        match_bets_grid = QGridLayout()
+        bets_container.addLayout(match_bets_grid)
+        bet_headers = ["Bet Selection", "Bet Type", "Odds", "Amount", "Action"]
+        for col, header in enumerate(bet_headers):
+            label = QLabel(header)
+            label.setStyleSheet("font-weight: bold;")
+            match_bets_grid.addWidget(label, 0, col)
+
+        match_bet_widgets = []
+
+        button_layout = QHBoxLayout()
+        add_btn = QPushButton("Add Bet")
+        add_btn.setStyleSheet("background-color: #138585; color: white; padding: 5px;")
+        button_layout.addWidget(add_btn)
+        update_btn = QPushButton("🔄")
+        update_btn.setStyleSheet("background-color: #138585; color: white; padding: 5px;")
+        button_layout.addWidget(update_btn)
+        button_layout.addStretch()
+        match_layout.addLayout(button_layout)
+        
+        def add_match_bet_row():
+            row = 1 + len(match_bet_widgets)
+            combo = QComboBox()
+            combo.addItems(["Home", "Away", "Draw"])
+            match_bets_grid.addWidget(combo, row, 0)
+            
+            type_combo = QComboBox()
+            type_combo.addItems(["Back", "Lay"])
+            match_bets_grid.addWidget(type_combo, row, 1)
+            
+            odds_entry = QLineEdit()
+            match_bets_grid.addWidget(odds_entry, row, 2)
+            
+            amount_entry = QLineEdit()
+            match_bets_grid.addWidget(amount_entry, row, 3)
+            
+            delete_btn = QPushButton("Delete")
+            delete_btn.setStyleSheet("background-color: red; color: white;")
+            delete_btn.clicked.connect(lambda _, r=row: delete_match_bet_row(r))
+            match_bets_grid.addWidget(delete_btn, row, 4)
+            
+            match_bet_widgets.append({
+                "row": row,
+                "combo": combo,
+                "type_combo": type_combo,
+                "odds_entry": odds_entry,
+                "amount_entry": amount_entry,
+                "delete_btn": delete_btn
+            })
+        
+        def delete_match_bet_row(row):
+            for bet in match_bet_widgets:
+                if bet["row"] == row:
+                    for widget in [bet["combo"], bet["type_combo"], bet["odds_entry"], bet["amount_entry"], bet["delete_btn"]]:
+                        widget.deleteLater()
+                    match_bet_widgets.remove(bet)
+                    break
+        
+        def update_match_trading():
+            matched_bets = []
+            for bet in match_bet_widgets:
+                selection = bet["combo"].currentText()
+                bet_type = bet["type_combo"].currentText()
+                try:
+                    odds = float(bet["odds_entry"].text())
+                    amount = float(bet["amount_entry"].text())
+                except ValueError:
+                    continue
+                matched_bets.append({
+                    "Selection": selection,
+                    "Type": bet_type,
+                    "Odds": odds,
+                    "Amount": amount
+                })
+            trading_data = vpfm.MatchTrade(matched_bets)
+            total_ev = 0.0
+            for outcome, profit_label in match_profit_labels.items():
+                pl = trading_data.selections_pl.get(outcome, 0)
+                color = "#4df9a2" if pl >= 0 else "#ce1d2e"
+                profit_label.setText(f"${pl:.2f}")
+                profit_label.setStyleSheet("font-weight: bold; color:" + color + ";")
+                
+                if outcome == "Home":
+                    odds_text = home_odds_label.text()
+                elif outcome == "Away":
+                    odds_text = away_odds_label.text()
+                elif outcome == "Draw":
+                    odds_text = draw_odds_label.text()
+                
+                try:
+                    odds_float = float(odds_text)
+                    percentage = (1 / odds_float) * 100 if odds_float != 0 else 0.0
+                except ValueError:
+                    percentage = 0.0
+                match_probability_labels[outcome].setText(f"{percentage:.2f}%")
+                
+                ev = pl * (percentage / 100)
+                match_ev_labels[outcome].setText(f"${ev:.2f}")
+                total_ev += ev
+            match_total_ev_label.setText(f"${total_ev:.2f}")
+        
+        add_btn.clicked.connect(add_match_bet_row)
+        update_btn.clicked.connect(update_match_trading)
+    
+        # 2-Way TAB  
+        tw_layout = QVBoxLayout(tw_tab)
+        tw_tab.setLayout(tw_layout)
+
+        tw_market_selector = QComboBox()
+        tw_market_selector.addItems(["Totals", "Asian Handicap"])
+        tw_layout.addWidget(tw_market_selector)
+
+        main_horizontal = QHBoxLayout()
+        tw_layout.addLayout(main_horizontal)
+
+        results_container = QVBoxLayout()
+        main_horizontal.addLayout(results_container, stretch=1)
+
+        results_grid = QGridLayout()
+        results_container.addLayout(results_grid)
+
+        def update_tw_results_grid():
+            for i in reversed(range(results_grid.count())):
+                widget = results_grid.itemAt(i).widget()
+                if widget is not None:
+                    widget.setParent(None)
+            headers = ["Selection", "Profit/Loss", "%", "EV"]
+            for col, header in enumerate(headers):
+                label = QLabel(header)
+                label.setStyleSheet("font-weight: bold;")
+                results_grid.addWidget(label, 0, col)
+            if tw_market_selector.currentText() == "Totals":
+                outcomes = ["Under", "Over"]
+            else:
+                outcomes = ["Home AH", "Away AH"]
+            global tw_profit_labels, tw_probability_labels, tw_ev_labels, tw_total_ev_label
+            tw_profit_labels = {}
+            tw_probability_labels = {}
+            tw_ev_labels = {}
+            for i, outcome in enumerate(outcomes):
+                row = i + 1
+                outcome_lbl = QLabel(outcome)
+                results_grid.addWidget(outcome_lbl, row, 0)
+                profit_lbl = QLabel("$0.00")
+                profit_lbl.setStyleSheet("font-weight: bold;")
+                results_grid.addWidget(profit_lbl, row, 1)
+                tw_profit_labels[outcome] = profit_lbl
+                prob_lbl = QLabel("0.00%")
+                prob_lbl.setStyleSheet("font-weight: bold;")
+                results_grid.addWidget(prob_lbl, row, 2)
+                tw_probability_labels[outcome] = prob_lbl
+                ev_lbl = QLabel("$0.00")
+                ev_lbl.setStyleSheet("font-weight: bold;")
+                results_grid.addWidget(ev_lbl, row, 3)
+                tw_ev_labels[outcome] = ev_lbl
+            total_row = len(outcomes) + 1
+            total_ev_text = QLabel("Total EV:")
+            total_ev_text.setStyleSheet("font-weight: bold;")
+            results_grid.addWidget(total_ev_text, total_row, 0, 1, 3)
+            tw_total_ev_label = QLabel("$0.00")
+            tw_total_ev_label.setStyleSheet("font-weight: bold;")
+            results_grid.addWidget(tw_total_ev_label, total_row, 3)
+
+        update_tw_results_grid()
+
+        bets_container = QVBoxLayout()
+        main_horizontal.addLayout(bets_container, stretch=3)
+
+        tw_bets_grid = QGridLayout()
+        bets_container.addLayout(tw_bets_grid)
+
+        bets_headers = ["Bet Selection", "Bet Type", "Odds", "Amount", "Action"]
+        for col, header in enumerate(bets_headers):
+            label = QLabel(header)
+            label.setStyleSheet("font-weight: bold;")
+            tw_bets_grid.addWidget(label, 0, col)
+
+        btn_layout_ou = QHBoxLayout()
+        add_btn_ou = QPushButton("Add Bet")
+        add_btn_ou.setStyleSheet("background-color: #138585; color: white; padding: 5px;")
+        btn_layout_ou.addWidget(add_btn_ou)
+        update_btn_ou = QPushButton("🔄")
+        update_btn_ou.setStyleSheet("background-color: #138585; color: white; padding: 5px;")
+        btn_layout_ou.addWidget(update_btn_ou)
+        btn_layout_ou.addStretch()
+        tw_layout.addLayout(btn_layout_ou)
+
+        ou_bet_widgets = []
+
+        def add_ou_bet_row():
+            row = 1 + len(ou_bet_widgets)
+            combo = QComboBox()
+            if tw_market_selector.currentText() == "Totals":
+                combo.addItems(["Over", "Under"])
+            else:
+                combo.addItems(["Home AH", "Away AH"])
+            tw_bets_grid.addWidget(combo, row, 0)
+            
+            type_combo = QComboBox()
+            type_combo.addItems(["Back", "Lay"])
+            tw_bets_grid.addWidget(type_combo, row, 1)
+            
+            odds_entry = QLineEdit()
+            tw_bets_grid.addWidget(odds_entry, row, 2)
+            
+            amount_entry = QLineEdit()
+            tw_bets_grid.addWidget(amount_entry, row, 3)
+            
+            delete_btn = QPushButton("Delete")
+            delete_btn.setStyleSheet("background-color: red; color: white;")
+            delete_btn.clicked.connect(lambda _, r=row: delete_ou_bet_row(r))
+            tw_bets_grid.addWidget(delete_btn, row, 4)
+            
+            ou_bet_widgets.append({
+                "row": row,
+                "combo": combo,
+                "type_combo": type_combo,
+                "odds_entry": odds_entry,
+                "amount_entry": amount_entry,
+                "delete_btn": delete_btn
+            })
+
+        def delete_ou_bet_row(row):
+            for bet in ou_bet_widgets:
+                if bet["row"] == row:
+                    for widget in [bet["combo"], bet["type_combo"], bet["odds_entry"], bet["amount_entry"], bet["delete_btn"]]:
+                        widget.deleteLater()
+                    ou_bet_widgets.remove(bet)
+                    break
+
+        def update_tw_trading():
+            market_type = tw_market_selector.currentText()
+            matched_bets = []
+            for bet in ou_bet_widgets:
+                selection = bet["combo"].currentText()
+                bet_type = bet["type_combo"].currentText()
+                try:
+                    odds = float(bet["odds_entry"].text())
+                    amount = float(bet["amount_entry"].text())
+                except ValueError:
+                    continue
+                matched_bets.append({
+                    "Selection": selection,
+                    "Type": bet_type,
+                    "Odds": odds,
+                    "Amount": amount
+                })
+            trading_data = vpfm.TWTrade(matched_bets)
+            total_ev = 0.0
+            if market_type == "Totals":
+                try:
+                    under_odds = float(under_odds_label.text())
+                    p_under = (1 / under_odds) * 100 if under_odds != 0 else 0.0
+                except ValueError:
+                    p_under = 0.0
+                p_over = 100 - p_under
+                outcomes = ["Over", "Under"]
+                percentages = {"Over": p_over, "Under": p_under}
+            else:
+                try:
+                    home_ah_odds = float(home_asian_odds_label.text())
+                    p_home_ah = (1 / home_ah_odds) * 100 if home_ah_odds != 0 else 0.0
+                except ValueError:
+                    p_home_ah = 0.0
+                p_away_ah = 100 - p_home_ah
+                outcomes = ["Home AH", "Away AH"]
+                percentages = {"Home AH": p_home_ah, "Away AH": p_away_ah}
+            for outcome in outcomes:
+                pl = trading_data.selections_pl.get(outcome, 0)
+                color = "#4df9a2" if pl >= 0 else "#ce1d2e"
+                tw_profit_labels[outcome].setText(f"${pl:.2f}")
+                tw_profit_labels[outcome].setStyleSheet("font-weight: bold; color:" + color + ";")
+                probability = percentages[outcome]
+                tw_probability_labels[outcome].setText(f"{probability:.2f}%")
+                ev = pl * (probability / 100)
+                tw_ev_labels[outcome].setText(f"${ev:.2f}")
+                total_ev += ev
+            tw_total_ev_label.setText(f"${total_ev:.2f}")
+
+        def update_tw_bet_rows():
+            for bet in ou_bet_widgets:
+                combo = bet["combo"]
+                current = combo.currentText()
+                combo.clear()
+                if tw_market_selector.currentText() == "Totals":
+                    combo.addItems(["Over", "Under"])
+                    if current in ["Over", "Under"]:
+                        combo.setCurrentText(current)
+                else:
+                    combo.addItems(["Home AH", "Away AH"])
+                    if current in ["Home AH", "Away AH"]:
+                        combo.setCurrentText(current)
+
+        tw_market_selector.currentIndexChanged.connect(update_tw_results_grid)
+        tw_market_selector.currentIndexChanged.connect(update_tw_bet_rows)
+
+        add_btn_ou.clicked.connect(add_ou_bet_row)
+        update_btn_ou.clicked.connect(update_tw_trading)
+        
+        # SCORE TAB
+        score_layout = QVBoxLayout(score_tab)
+        score_tab.setLayout(score_layout)
+
+        total_layout = QHBoxLayout()
+        total_label = QLabel("Total Bet:")
+        total_layout.addWidget(total_label)
+        score_total_bet_entry = QLineEdit()
+        total_layout.addWidget(score_total_bet_entry)
+        total_layout.addStretch()
+        score_layout.addLayout(total_layout)
+
+        main_horizontal_score = QHBoxLayout()
+        score_layout.addLayout(main_horizontal_score)
+
+        results_container_score = QVBoxLayout()
+        main_horizontal_score.addLayout(results_container_score, stretch=1)
+        score_results_grid = QGridLayout()
+        results_container_score.addLayout(score_results_grid)
+        score_results_headers = ["Selection", "Profit/Loss", "%", "EV"]
+        for col, header in enumerate(score_results_headers):
+            label = QLabel(header)
+            label.setStyleSheet("font-weight: bold;")
+            score_results_grid.addWidget(label, 0, col)
+        score_outcomes = [
+            "0-0", "0-1", "0-2", "0-3",
+            "1-0", "1-1", "1-2", "1-3",
+            "2-0", "2-1", "2-2", "2-3",
+            "3-0", "3-1", "3-2", "3-3",
+            "Any Other Home Win", "Any Other Away Win", "Any Other Draw"
+        ]
+        score_profit_labels = {}
+        score_probability_labels = {}
+        score_ev_labels = {}
+        for i, outcome in enumerate(score_outcomes):
+            row = i + 1
+            lbl_outcome = QLabel(outcome)
+            score_results_grid.addWidget(lbl_outcome, row, 0)
+
+            profit_lbl = QLabel("$0.00")
+            score_results_grid.addWidget(profit_lbl, row, 1)
+            score_profit_labels[outcome] = profit_lbl
+
+            probability_lbl = QLabel("0.00%")
+            probability_lbl.setStyleSheet("font-weight: bold;")
+            score_results_grid.addWidget(probability_lbl, row, 2)
+            score_probability_labels[outcome] = probability_lbl
+
+            ev_lbl = QLabel("$0.00")
+            ev_lbl.setStyleSheet("font-weight: bold;")
+            score_results_grid.addWidget(ev_lbl, row, 3)
+            score_ev_labels[outcome] = ev_lbl
+
+        total_row = len(score_outcomes) + 1
+        total_ev_text = QLabel("Total EV:")
+        total_ev_text.setStyleSheet("font-weight: bold;")
+        score_results_grid.addWidget(total_ev_text, total_row, 0, 1, 3)
+        score_total_ev_label = QLabel("$0.00")
+        score_total_ev_label.setStyleSheet("font-weight: bold;")
+        score_results_grid.addWidget(score_total_ev_label, total_row, 3)
+
+        bets_container_score = QVBoxLayout()
+        main_horizontal_score.addLayout(bets_container_score, stretch=3)
+        score_bets_grid = QGridLayout()
+        bets_container_score.addLayout(score_bets_grid)
+        bets_headers_score = ["Bet Selection", "Bet Type", "Odds", "Amount", "Action"]
+        for col, header in enumerate(bets_headers_score):
+            label = QLabel(header)
+            label.setStyleSheet("font-weight: bold;")
+            score_bets_grid.addWidget(label, 0, col)
+
+        score_bet_widgets = []
+
+        btn_layout_score = QHBoxLayout()
+        add_btn_score = QPushButton("Add Bet")
+        add_btn_score.setStyleSheet("background-color: #138585; color: white; padding: 5px;")
+        btn_layout_score.addWidget(add_btn_score)
+        update_btn_score = QPushButton("🔄")
+        update_btn_score.setStyleSheet("background-color: #138585; color: white; padding: 5px;")
+        btn_layout_score.addWidget(update_btn_score)
+        btn_layout_score.addStretch()
+        score_layout.addLayout(btn_layout_score)
+        
+        def add_score_bet_row():
+            row = 1 + len(score_bet_widgets)
+            combo = QComboBox()
+            combo.addItems(score_outcomes)
+            score_bets_grid.addWidget(combo, row, 0)
+            type_combo = QComboBox()
+            type_combo.addItems(["Back", "Lay"])
+            score_bets_grid.addWidget(type_combo, row, 1)
+            odds_entry = QLineEdit()
+            score_bets_grid.addWidget(odds_entry, row, 2)
+            amount_entry = QLineEdit()
+            score_bets_grid.addWidget(amount_entry, row, 3)
+            delete_btn = QPushButton("Delete")
+            delete_btn.setStyleSheet("background-color: red; color: white;")
+            delete_btn.clicked.connect(lambda _, r=row: delete_score_bet_row(r))
+            score_bets_grid.addWidget(delete_btn, row, 4)
+            score_bet_widgets.append({
+                "row": row,
+                "combo": combo,
+                "type_combo": type_combo,
+                "odds_entry": odds_entry,
+                "amount_entry": amount_entry,
+                "delete_btn": delete_btn
+            })
+        
+        def delete_score_bet_row(row):
+            for bet in score_bet_widgets:
+                if bet["row"] == row:
+                    for widget in [bet["combo"], bet["type_combo"], bet["odds_entry"], bet["amount_entry"], bet["delete_btn"]]:
+                        widget.deleteLater()
+                    score_bet_widgets.remove(bet)
+                    break
+        
+        def update_score_trading():
+            outcome_key_map = {
+                "Any Other Home Win": "Home Win 4+",
+                "Any Other Away Win": "Away Win 4+",
+                "Any Other Draw": "Draw +4"
+            }
+            matched_bets = []
+            for bet in score_bet_widgets:
+                raw_selection = bet["combo"].currentText()
+                selection = outcome_key_map.get(raw_selection, raw_selection)
+                bet_type = bet["type_combo"].currentText()
+                try:
+                    odds = float(bet["odds_entry"].text())
+                except ValueError:
+                    continue
+                try:
+                    amount = float(bet["amount_entry"].text()) if bet["amount_entry"].text() else 0
+                except ValueError:
+                    amount = 0
+                matched_bets.append({
+                    "Selection": selection,
+                    "Type": bet_type,
+                    "Odds": odds,
+                    "Amount": amount
+                })
+            try:
+                total_bet = float(score_total_bet_entry.text())
+            except ValueError:
+                total_bet = 0
+        
+            trading_data = vpfm.ScoreTrade(matched_bets)
+        
+            if total_bet > 0:
+                dutching_stakes = trading_data.dutching(total_bet, {bet["Selection"]: bet["Odds"] for bet in matched_bets})
+                for bet in score_bet_widgets:
+                    sel = bet["combo"].currentText()
+                    if sel in dutching_stakes:
+                        bet["amount_entry"].setText(f"{dutching_stakes[sel]:.2f}")
+        
+            total_ev = 0.0
+            for outcome in score_profit_labels.keys():
+                trading_key = outcome_key_map.get(outcome, outcome)
+                pl = trading_data.selections_pl.get(trading_key, 0)
+                color = "#4df9a2" if pl >= 0 else "#ce1d2e"
+                score_profit_labels[outcome].setText(f"${pl:.2f}")
+                score_profit_labels[outcome].setStyleSheet("color:" + color + ";")
+
+                odds_float = score_odds_dict.get(trading_key, 0) if outcome in outcome_key_map else score_odds_dict.get(outcome, 0)
+
+                percentage = (100 / odds_float) if odds_float != 0 else 0.0
+                score_probability_labels[outcome].setText(f"{percentage:.2f}%")
+                ev = pl * (percentage / 100)
+                score_ev_labels[outcome].setText(f"${ev:.2f}")
+                total_ev += ev
+            score_total_ev_label.setText(f"${total_ev:.2f}")
+        
+        add_btn_score.clicked.connect(add_score_bet_row)
+        update_btn_score.clicked.connect(update_score_trading)
+
+        # -------------------
+        tabs.addTab(build_game_tab, "Build Game")
+        tabs.addTab(odds_tab, "Odds")
+        tabs.addTab(simulator_tab, "Simulator")
+
+        tabs.setStyleSheet("""
+        QTabBar::tab {
+        background: #1a1a1a;
+        color: white;
+        padding: 10px;
+        }
+        QTabBar::tab:selected {
+        background: #138585;
+        }
+        """)
+
+        self.open_windows.append(match_window)
+        match_window.show()
+
+# ----------------------- UPDATE SECTION  -----------------------
+    def setup_right_section(self, widget):
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(15)
+
+        title = QLabel("Leagues")
+        title.setStyleSheet("color: white; font-size: 18px; font-weight: bold;")
+        layout.addWidget(title)
+        
+        self.league_scroll = QScrollArea()
+        self.league_scroll.setWidgetResizable(True)
+        self.league_scroll.setStyleSheet("border: none;")
+        layout.addWidget(self.league_scroll)
+
+        self.league_container = QWidget()
+        league_layout = QVBoxLayout(self.league_container)
+        league_layout.setAlignment(Qt.AlignTop)
+        league_layout.setSpacing(10)
+        league_layout.setContentsMargins(5, 5, 5, 5)
+        self.league_scroll.setWidget(self.league_container)
+        
+        self.load_leagues()
+
+        compare_evs_button = QPushButton("Compare Profit")
+        compare_evs_button.setStyleSheet("background-color: #138585; color: white; padding: 10px;")
+        compare_evs_button.clicked.connect(self.open_compare_profit)
+        layout.addWidget(compare_evs_button)
+
+        trade_amount_button = QPushButton("TradeAmount")
+        trade_amount_button.setStyleSheet("background-color: #138585; color: white; padding: 10px;")
+        trade_amount_button.clicked.connect(self.open_trade_amount)
+        layout.addWidget(trade_amount_button)
+
+        self.setup_queue_section(layout)
+
+    def load_leagues(self):
+        UPDATED_COLOR = "#7fff7f" 
+        EXPIRED_COLOR = "#ff7f7f"
+            
+        leagues_query = """
+            SELECT league_name, league_last_updated_date
+            FROM leagues_data
+        """
+
+        leagues = self.vpfm_db.select(leagues_query)
+        
+        # Clear existing layout content if any
+        while self.league_container.layout().count():
+            child = self.league_container.layout().takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+        for idx, row in leagues.iterrows():
+            league_name = row["league_name"]
+            today_date = datetime.now().date()
+            days_since = (today_date - row["league_last_updated_date"]).days
+
+            if days_since > 4:
+                indicator_color = EXPIRED_COLOR
+            else:
+                indicator_color = UPDATED_COLOR
+
+            item_widget = QWidget()
+            item_layout = QHBoxLayout(item_widget)
+            item_layout.setContentsMargins(0, 0, 0, 0)
+            item_layout.setSpacing(10)
+
+            indicator = QLabel()
+            indicator.setFixedSize(15, 15)
+            indicator.setStyleSheet(
+                "background-color: %s; border-radius: 7px;" % indicator_color)
+            
+            league_btn = QPushButton(league_name)
+            league_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    color: white;
+                    font-size: 14px;
+                    text-align: left;
+                    border: none;
+                }
+                QPushButton:hover {
+                    color: #138585;
+                }
+            """)
+            league_btn.clicked.connect(lambda checked, ln=league_name: self.open_league_window(ln))
+            
+            date_label = QLabel(f'{days_since} days ago')
+            date_label.setStyleSheet("color: white; font-size: 12px;")
+
+            item_layout.addWidget(indicator)
+            item_layout.addWidget(league_btn)
+            item_layout.addStretch()
+            item_layout.addWidget(date_label)
+
+            self.league_container.layout().addWidget(item_widget)
+
+        self.league_container.layout().addStretch()
+
+    def open_league_window(self, ln):
+        league_dialog = QDialog(self)
+        league_dialog.setWindowTitle(ln)
+        league_dialog.setWindowFlags(league_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        league_dialog.setStyleSheet("background-color: #1a1a1a; color: white;")
+        layout = QVBoxLayout(league_dialog)
+
+        cb_getPastGamesData = QCheckBox("Get Past Games Data")
+        cb_removeOldData = QCheckBox("Remove Old Data")
+        cb_leagueAvg = QCheckBox("League Average")
+        cb_getLPGDate = QCheckBox("Get LPG Date")
+        cb_updateSchedule = QCheckBox("Update Schedule")
+
+        for cb in (cb_getPastGamesData, cb_removeOldData, cb_leagueAvg, cb_getLPGDate, cb_updateSchedule):
+            cb.setChecked(True)
+            layout.addWidget(cb)
+
+        update_btn = QPushButton("Update")
+        layout.addWidget(update_btn)
+
+        def perform_update():
+            tasks = []
+            if cb_getPastGamesData.isChecked():
+                tasks.append(("Get Past Games Data", vpfm.GetPastGamesData))
+            if cb_removeOldData.isChecked():
+                tasks.append(("Remove Old Data", vpfm.RemoveOldData))
+            if cb_leagueAvg.isChecked():
+                tasks.append(("League Average", vpfm.LeagueAvg))
+            if cb_getLPGDate.isChecked():
+                tasks.append(("Get LPG Date", vpfm.GetLPGDate))
+            if cb_updateSchedule.isChecked():
+                tasks.append(("Update Schedule", vpfm.UpdateSchedule))
+            
+            for description, func in tasks:
+                list_item = self.add_task_to_queue(f"{ln}: {description}")
+                worker = UpdateWorker(func, ln)
+
+                worker.signals.finished.connect(lambda li=list_item: self.remove_task_from_queue(li))
+                worker.signals.error.connect(lambda error_info, desc=description:
+                                            print(f"Error in {desc}: {error_info}"))
+                worker.signals.result.connect(lambda result, desc=description:
+                                                print(f"{desc} completed with result: {result}"))
+                self.threadpool.start(worker)
+            league_dialog.accept()
+
+        update_btn.clicked.connect(perform_update)
+        league_dialog.exec_()
+
+# ----------------------- QUEUE SECTION  -----------------------
+    def setup_queue_section(self, parent_layout): 
+        header = QLabel("Update Queue")
+        header.setStyleSheet("color: white; font-weight: bold;")
+        parent_layout.addWidget(header)
+        self.update_queue_list = QListWidget()
+        self.update_queue_list.setStyleSheet("color: white; background-color: #333;")
+        parent_layout.addWidget(self.update_queue_list)
+
+    def add_task_to_queue(self, task_description):
+        item = QListWidgetItem(task_description)
+        self.update_queue_list.addItem(item)
+        return item
+
+    def remove_task_from_queue(self, list_item):
+        row = self.update_queue_list.row(list_item)
+        self.update_queue_list.takeItem(row)
+
+# -------------------- Open Buttons --------------------
+    def open_compare_profit(self):
+        ce_dialog = QDialog()
+        ce_dialog.setWindowTitle("Compare Profit")
+        ce_dialog.setStyleSheet("background-color: #1a1a1a; color: white;")
+        ce_dialog.setWindowFlags(ce_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        
+        back_label = QLabel("Back:")
+        back_spin = QDoubleSpinBox()
+        back_spin.setDecimals(2)
+        back_spin.setRange(1.01, 1000)
+        back_spin.setSingleStep(0.01)
+        back_spin.setValue(2.02)
+        
+        lay_label = QLabel("Lay:")
+        lay_spin = QDoubleSpinBox()
+        lay_spin.setDecimals(2)
+        lay_spin.setRange(1.01, 1000)
+        lay_spin.setSingleStep(0.01)
+        lay_spin.setValue(1.98)
+        
+        result_label = QLabel("Enter odds")
+  
+        main_layout = QVBoxLayout(ce_dialog)
+        
+        back_layout = QHBoxLayout()
+        back_layout.addWidget(back_label)
+        back_layout.addWidget(back_spin)
+
+        lay_layout = QHBoxLayout()
+        lay_layout.addWidget(lay_label)
+        lay_layout.addWidget(lay_spin)
+        
+        main_layout.addLayout(back_layout)
+        main_layout.addLayout(lay_layout)
+        main_layout.addWidget(result_label)
+        
+        def on_calculate():
+            back_odds = back_spin.value()
+            lay_odds = lay_spin.value()
+            
+            try:
+                back_risk = 100 / (back_odds - 1)
+            except ZeroDivisionError:
+                back_risk = float('inf')
+            
+            lay_risk = (lay_odds - 1) * 100
+            
+            if abs(back_risk - lay_risk) < 1e-6:
+                result_text = f"Both options are equivalent in risk. Risk: {back_risk:.2f}"
+            elif back_risk < lay_risk:
+                result_text = f"Backing is more profitable.\nBack Risk: {back_risk:.2f} vs Lay Risk: {lay_risk:.2f}"
+            else:
+                result_text = f"Laying is more profitable.\nLay Risk: {lay_risk:.2f} vs Back Risk: {back_risk:.2f}"
+            
+            result_label.setText(result_text)
+        
+        back_spin.valueChanged.connect(on_calculate)
+        lay_spin.valueChanged.connect(on_calculate)
+
+        self.ce_dialog = ce_dialog
+        ce_dialog.show()
+
+    def open_trade_amount(self):
+        ta_dialog = QDialog()
+        ta_dialog.setWindowTitle("Trade Amount Calculation")
+        ta_dialog.setStyleSheet("background-color: #1a1a1a; color: white;")
+        ta_dialog.setWindowFlags(ta_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+
+        layout = QVBoxLayout(ta_dialog)
+
+        betTypeLayout = QHBoxLayout()
+        betTypeLabel = QLabel("Bet Type:")
+        betTypeCombo = QComboBox()
+        betTypeCombo.addItems(["Backing", "Laying"])
+        betTypeLayout.addWidget(betTypeLabel)
+        betTypeLayout.addWidget(betTypeCombo)
+        layout.addLayout(betTypeLayout)
+
+        myOddsLayout = QHBoxLayout()              
+        myOddsLabel = QLabel("My Odds:")
+        myOddsSpinBox = QDoubleSpinBox() 
+        myOddsSpinBox.setDecimals(3) 
+        myOddsSpinBox.setRange(1.01, 1000)
+        myOddsSpinBox.setSingleStep(0.001)
+        myOddsSpinBox.setValue(2.000)
+        myOddsLayout.addWidget(myOddsLabel)
+        myOddsLayout.addWidget(myOddsSpinBox)
+        layout.addLayout(myOddsLayout)
+
+        exchangeOddsLayout = QHBoxLayout()
+        exchangeOddsLabel = QLabel("Exchange Odds:")
+        exchangeOddsSpinBox = QDoubleSpinBox()
+        exchangeOddsSpinBox.setDecimals(2)
+        exchangeOddsSpinBox.setRange(1.01, 1000)
+        exchangeOddsSpinBox.setSingleStep(0.01)
+        exchangeOddsSpinBox.setValue(2.500)
+        exchangeOddsLayout.addWidget(exchangeOddsLabel)
+        exchangeOddsLayout.addWidget(exchangeOddsSpinBox)
+        layout.addLayout(exchangeOddsLayout)
+
+        bankrollLayout = QHBoxLayout()
+        bankrollLabel = QLabel("Bankroll:")
+        bankrollSpinBox = QDoubleSpinBox()
+        bankrollSpinBox.setDecimals(2)
+        bankrollSpinBox.setRange(0, 10000000)
+        bankrollSpinBox.setSingleStep(1)
+        bankrollSpinBox.setValue(1500.00)
+        bankrollLayout.addWidget(bankrollLabel)
+        bankrollLayout.addWidget(bankrollSpinBox)
+        layout.addLayout(bankrollLayout)
+
+        resultLabel = QLabel("")
+        layout.addWidget(resultLabel)
+
+        def calculate_trade():
+            bet_type = betTypeCombo.currentText()
+            my_odds = myOddsSpinBox.value()
+            exchange_odds = exchangeOddsSpinBox.value()
+            bankroll = bankrollSpinBox.value()         
+
+            if bet_type == "Backing":
+                p = 1 / my_odds
+                edge = exchange_odds * p - 1
+                kelly_fraction = max(edge / (exchange_odds - 1), 0)
+                trade_amount = bankroll * (kelly_fraction / 3)
+                resultLabel.setText(f"Bet Type: Backing\n"
+                                    f"Edge: {edge*100:.2f}%\n"
+                                    f"Trade Amount: ${trade_amount:.2f}")
+            else:
+                p = 1 / my_odds
+                edge = 1 - exchange_odds * p
+                kelly_fraction = max(edge / (exchange_odds - 1), 0)
+                stake = bankroll * (kelly_fraction / 3)
+                liability = stake * (exchange_odds - 1)
+                resultLabel.setText(f"Bet Type: Laying\n"
+                                    f"Edge: {edge*100:.2f}%\n"
+                                    f"Trade Stake: ${stake:.2f}\n"
+                                    f"Liability: ${liability:.2f}")
+
+        myOddsSpinBox.valueChanged.connect(calculate_trade)
+        exchangeOddsSpinBox.valueChanged.connect(calculate_trade)
+        bankrollSpinBox.valueChanged.connect(calculate_trade)
+        betTypeCombo.currentIndexChanged.connect(calculate_trade)
+
+        self.ta_dialog = ta_dialog
+        ta_dialog.show()
+
+    # Function called when the Arbitrage button is pressed
+    def open_arbitrage(self):
+        print("Arbitrage opened.")
+
+    def closeEvent(self, event):
+        self.worker.stop()
+        event.accept()
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())
