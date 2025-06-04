@@ -106,7 +106,7 @@ CREATE TABLE players_data (
     player_id VARCHAR(20) PRIMARY KEY,
     player_name VARCHAR(100),
     current_team VARCHAR(50),
-    player_pos VARCHAR(50),
+    is_gk BOOLEAN,
     off_sh_coeff DECIMAL(6,3) DEFAULT NULL,
     def_sh_coeff DECIMAL(6,3) DEFAULT NULL
 );
