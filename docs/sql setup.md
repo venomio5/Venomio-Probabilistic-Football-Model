@@ -88,7 +88,7 @@ CREATE TABLE match_breakdown (
     player_hpsxg FLOAT DEFAULT 0.0,
     player_fpsxg FLOAT DEFAULT 0.0,
     gk_psxg FLOAT DEFAULT 0.0,
-    gk_ga INT DEFAULT 0.0,
+    gk_ga INT DEFAULT 0,
     player_sub_in INT DEFAULT 0,
     player_sub_out INT DEFAULT 0,
     in_status VARCHAR(50),
@@ -108,8 +108,12 @@ CREATE TABLE players_data (
     player_id VARCHAR(20) PRIMARY KEY,
     player_name VARCHAR(100),
     current_team VARCHAR(50),
-    off_sh_coeff FLOAT DEFAULT NULL,
-    def_sh_coeff FLOAT DEFAULT NULL
+    off_sh_coef FLOAT DEFAULT NULL,
+    def_sh_coef FLOAT DEFAULT NULL,
+    off_headers_coef FLOAT DEFAULT NULL,
+    def_headers_coef FLOAT DEFAULT NULL,
+    off_footers_coef FLOAT DEFAULT NULL,
+    def_footers_coef FLOAT DEFAULT NULL,
 );
 ```
 ### team_data
