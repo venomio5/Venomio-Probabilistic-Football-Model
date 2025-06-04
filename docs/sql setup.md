@@ -5,7 +5,7 @@ USE vpfm;
 
 ## Tables
 
-### 1. match_info
+### match_info
 ```
 CREATE TABLE match_info (
     match_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -20,19 +20,19 @@ CREATE TABLE match_info (
     minutes_played INT,
     home_elevation_dif INT,
     away_elevation_dif INT,
-    home_travel FLOAT,
-    away_travel FLOAT,
+    home_travel INT,
+    away_travel INT,
     home_rest_days INT,
     away_rest_days INT,
     home_importance BOOLEAN,
     away_importance BOOLEAN,
-    temperature_c FLOAT,
+    temperature_c INT,
     is_raining BOOLEAN,
     match_time VARCHAR(20),
     UNIQUE (match_home_team_id, match_away_team_id, match_date)
 );
 ```
-### 2. match_detail
+### match_detail
 ```
 CREATE TABLE match_detail (
     match_id INT NOT NULL,
@@ -70,7 +70,7 @@ CREATE TABLE match_detail (
         ON DELETE CASCADE
 );
 ```
-### 3. match_breakdown
+### match_breakdown
 ```
 CREATE TABLE match_breakdown (
     match_id INT,
@@ -86,7 +86,7 @@ CREATE TABLE match_breakdown (
     player_hpsxg FLOAT DEFAULT 0.0,
     player_fpsxg FLOAT DEFAULT 0.0,
     gk_psxg FLOAT DEFAULT 0.0,
-    gk_ga FLOAT DEFAULT 0.0,
+    gk_ga INT DEFAULT 0.0,
     player_sub_in INT DEFAULT 0,
     player_sub_out INT DEFAULT 0,
     in_status VARCHAR(50),
@@ -100,24 +100,36 @@ CREATE TABLE match_breakdown (
         ON DELETE CASCADE
 );
 ```
-### 4. players_data
+### players_data
 ```
 CREATE TABLE players_data (
     player_id VARCHAR(20) PRIMARY KEY,
     player_name VARCHAR(100),
     current_team VARCHAR(50),
-    off_sh_coeff DECIMAL(6,3) DEFAULT NULL,
-    def_sh_coeff DECIMAL(6,3) DEFAULT NULL
+    off_sh_coeff FLOAT DEFAULT NULL,
+    def_sh_coeff FLOAT DEFAULT NULL
 );
 ```
-### 5. team_data
+### team_data
 ```
 CREATE TABLE team_data (
     team_id INT PRIMARY KEY,
-    team_name VARCHAR(100),
-    team_elevation INT,
-    team_coordinates VARCHAR(50),
-    league VARCHAR(50)
+    team_name VARCHAR(100) NOT NULL,
+    team_elevation INT NOT NULL,
+    team_coordinates VARCHAR(50) NOT NULL,
+    league_id INT NOT NULL,
+    UNIQUE (team_name, team_elevation, team_coordinates),
+    CONSTRAINT fk_league_id
+        FOREIGN KEY (league_id) REFERENCES league_data(league_id)
+        ON DELETE CASCADE
+);
+```
+### league_data
+```
+CREATE TABLE league_data (
+    league_id INT PRIMARY KEY,
+    league_name VARCHAR(100) UNIQUE NOT NULL,
+    league_last_updated_date DATETIME,
 );
 ```
 ## Notes
