@@ -74,7 +74,7 @@ This is a base-level contextual impact. For each player: a regularized coefficie
 | team_B_players    | JSON  | List of team B players |
 | team_A_h/f_xg     | float | Total h/f xg by team A |
 | team_B_h/f_xg     | float | Total h/f xg by team B |
-| shots             | int   | Total minutes played   |
+| shots             | int   | Total shots            |
 
 **Output**: Each player's contribution to team shot quality.
 
