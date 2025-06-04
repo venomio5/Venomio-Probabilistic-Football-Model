@@ -47,6 +47,8 @@ CREATE TABLE match_detail (
     teamB_hxg FLOAT NOT NULL,
     teamB_fxg FLOAT NOT NULL,
     minutes_played INT NOT NULL,
+    teamA_pdras FLOAT,
+    teamB_pdras FLOAT,
     match_state ENUM('-1.5', '-1', '0', '1', '1.5') NOT NULL,
     match_segment ENUM('1', '2', '3', '4', '5', '6') NOT NULL,
     player_dif ENUM('-1.5', '-1', '0', '1', '1.5') NOT NULL,
