@@ -74,7 +74,7 @@ CREATE TABLE match_detail (
 ```
 CREATE TABLE match_breakdown (
     match_id INT,
-    player_id INT,
+    player_id VARCHAR(20),
     player_headers INT DEFAULT 0,
     player_footers INT DEFAULT 0,
     player_key_passes INT DEFAULT 0,
