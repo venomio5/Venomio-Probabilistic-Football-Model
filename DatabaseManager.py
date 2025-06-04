@@ -45,7 +45,6 @@ class DatabaseManager:
         finally:
             cur.close()
 
-    # ───────────────────────────────── public API ───────────────────────────────
     def select(self, sql: str, params: Sequence[Any] | None = None) -> pd.DataFrame:
         with self._connection() as conn, self._cursor(conn) as cur:
             cur.execute(sql, params or ())
