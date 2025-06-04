@@ -108,12 +108,12 @@ CREATE TABLE players_data (
     player_id VARCHAR(20) PRIMARY KEY,
     player_name VARCHAR(100),
     current_team VARCHAR(50),
-    off_sh_coeff FLOAT DEFAULT NULL,
-    def_sh_coeff FLOAT DEFAULT NULL,
-    off_headers_coeff FLOAT DEFAULT NULL,
-    def_headers_coeff FLOAT DEFAULT NULL,
-    off_footers_coeff FLOAT DEFAULT NULL,
-    def_footers_coeff FLOAT DEFAULT NULL,
+    off_sh_coef FLOAT DEFAULT NULL,
+    def_sh_coef FLOAT DEFAULT NULL,
+    off_headers_coef FLOAT DEFAULT NULL,
+    def_headers_coef FLOAT DEFAULT NULL,
+    off_footers_coef FLOAT DEFAULT NULL,
+    def_footers_coef FLOAT DEFAULT NULL,
 );
 ```
 ### team_data
