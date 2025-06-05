@@ -89,8 +89,8 @@ CREATE TABLE match_breakdown (
     fpsxg FLOAT DEFAULT 0.0,
     gk_psxg FLOAT DEFAULT 0.0,
     gk_ga INT DEFAULT 0,
-    player_sub_in INT DEFAULT 0,
-    player_sub_out INT DEFAULT 0,
+    sub_in INT DEFAULT 0,
+    sub_out INT DEFAULT 0,
     in_status VARCHAR(50),
     out_status VARCHAR(50),
     player_fouls_committed INT DEFAULT 0,
@@ -130,7 +130,11 @@ CREATE TABLE players_data (
     hpsxg FLOAT DEFAULT 0.0,
     fpsxg FLOAT DEFAULT 0.0,
     gk_psxg FLOAT DEFAULT 0.0,
-    gk_ga INT DEFAULT 0
+    gk_ga INT DEFAULT 0,
+    sub_in JSON,
+    sub_out JSON,
+    in_status JSON,
+    out_status JSON
 );
 ```
 ### shots_data
