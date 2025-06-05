@@ -81,12 +81,12 @@ CREATE TABLE match_breakdown (
     footers INT DEFAULT 0,
     key_passes INT DEFAULT 0,
     non_assisted_footers INT DEFAULT 0,
-    player_hxg FLOAT DEFAULT 0.0,
-    player_fxg FLOAT DEFAULT 0.0,
-    player_kp_hxg FLOAT DEFAULT 0.0,
-    player_kp_fxg FLOAT DEFAULT 0.0,
-    player_hpsxg FLOAT DEFAULT 0.0,
-    player_fpsxg FLOAT DEFAULT 0.0,
+    hxg FLOAT DEFAULT 0.0,
+    fxg FLOAT DEFAULT 0.0,
+    kp_hxg FLOAT DEFAULT 0.0,
+    kp_fxg FLOAT DEFAULT 0.0,
+    hpsxg FLOAT DEFAULT 0.0,
+    fpsxg FLOAT DEFAULT 0.0,
     gk_psxg FLOAT DEFAULT 0.0,
     gk_ga INT DEFAULT 0,
     player_sub_in INT DEFAULT 0,
@@ -95,7 +95,7 @@ CREATE TABLE match_breakdown (
     out_status VARCHAR(50),
     player_fouls_committed INT DEFAULT 0,
     player_fouls_drawn INT DEFAULT 0,
-    player_minutes_played INT DEFAULT 0,
+    minutes_played INT DEFAULT 0,
     PRIMARY KEY (match_id, player_id),
     CONSTRAINT fk_match_breakdown_id
         FOREIGN KEY (match_id) REFERENCES match_info (match_id)
@@ -121,7 +121,15 @@ CREATE TABLE players_data (
     headers FLOAT DEFAULT NULL,
     footers FLOAT DEFAULT NULL,
     key_passes FLOAT DEFAULT NULL,
-    non_assisted_footers FLOAT DEFAULT NULL
+    non_assisted_footers FLOAT DEFAULT NULL,
+    hxg FLOAT DEFAULT 0.0,
+    fxg FLOAT DEFAULT 0.0,
+    kp_hxg FLOAT DEFAULT 0.0,
+    kp_fxg FLOAT DEFAULT 0.0,
+    hpsxg FLOAT DEFAULT 0.0,
+    fpsxg FLOAT DEFAULT 0.0,
+    gk_psxg FLOAT DEFAULT 0.0,
+    gk_ga INT DEFAULT 0,
 );
 ```
 ### shots_data
