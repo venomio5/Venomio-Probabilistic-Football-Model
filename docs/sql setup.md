@@ -118,6 +118,7 @@ CREATE TABLE players_data (
     def_hxg_coef FLOAT DEFAULT NULL,
     off_fxg_coef FLOAT DEFAULT NULL,
     def_fxg_coef FLOAT DEFAULT NULL,
+    minutes_played INT DEFAULT 0,
     headers FLOAT DEFAULT NULL,
     footers FLOAT DEFAULT NULL,
     key_passes FLOAT DEFAULT NULL,
@@ -129,7 +130,7 @@ CREATE TABLE players_data (
     hpsxg FLOAT DEFAULT 0.0,
     fpsxg FLOAT DEFAULT 0.0,
     gk_psxg FLOAT DEFAULT 0.0,
-    gk_ga INT DEFAULT 0,
+    gk_ga INT DEFAULT 0
 );
 ```
 ### shots_data
