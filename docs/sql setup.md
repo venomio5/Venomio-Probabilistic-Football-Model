@@ -96,7 +96,7 @@ CREATE TABLE match_breakdown (
     fouls_committed INT DEFAULT 0,
     fouls_drawn INT DEFAULT 0,
     yellow_cards INT DEFAULT 0,
-    red_card INT DEFAULT 0,
+    red_cards INT DEFAULT 0,
     minutes_played INT DEFAULT 0,
     PRIMARY KEY (match_id, player_id),
     CONSTRAINT fk_match_breakdown_id
