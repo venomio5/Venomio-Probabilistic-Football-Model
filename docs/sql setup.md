@@ -193,7 +193,8 @@ CREATE TABLE team_data (
 CREATE TABLE league_data (
     league_id INT PRIMARY KEY,
     league_name VARCHAR(100) UNIQUE NOT NULL,
-    league_last_updated_date DATETIME
+    league_last_updated_date DATETIME,
+    is_active BOOLEAN
 );
 ```
 ## Notes
