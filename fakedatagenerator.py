@@ -11,7 +11,7 @@ Se generan INSERTs SQL para las tres tablas:
 import random, json
 from datetime import datetime, timedelta
 
-random.seed(42)
+random.seed(43)
 
 N_PARTIDOS = 5   # número de partidos a generar
 
@@ -269,8 +269,8 @@ def simula_match_breakdown(match_id, team_id, selected_players, is_home=True):
         gk_ga = random.uniform(0,1) if player_data["pos"]=="GK" else 0
         player_sub_in = 0
         player_sub_out = 90
-        in_status = random.choice(["starter", "substituted"])
-        out_status = random.choice(["finished", "subbed"])
+        in_status = random.choice(["trailing", "level", "leading"])
+        out_status = random.choice(["trailing", "level", "leading"])
         player_fouls_committed = random.randint(0,3)
         player_fouls_drawn = random.randint(0,3)
         player_minutes_played = random.randint(60, 90)
@@ -278,28 +278,31 @@ def simula_match_breakdown(match_id, team_id, selected_players, is_home=True):
         row = {
             "match_id": match_id,
             "player_id": player["id"],
-            "player_headers": player_headers,
-            "player_footers": player_footers,
-            "player_key_passes": player_key_passes,
-            "player_non_assisted_footers": player_non_assisted_footers,
-            "player_hxg": player_hxg,
-            "player_fxg": player_fxg,
-            "player_kp_hxg": player_kp_hxg,
-            "player_kp_fxg": player_kp_fxg,
-            "player_hpsxg": player_hpsxg,
-            "player_fpsxg": player_fpsxg,
+            "headers": player_headers,
+            "footers": player_footers,
+            "key_passes": player_key_passes,
+            "non_assisted_footers": player_non_assisted_footers,
+            "hxg": player_hxg,
+            "fxg": player_fxg,
+            "kp_hxg": player_kp_hxg,
+            "kp_fxg": player_kp_fxg,
+            "hpsxg": player_hpsxg,
+            "fpsxg": player_fpsxg,
             "gk_psxg": gk_psxg,
             "gk_ga": gk_ga,
-            "player_sub_in": player_sub_in,
-            "player_sub_out": player_sub_out,
+            "sub_in": player_sub_in,
+            "sub_out": player_sub_out,
             "in_status": in_status,
             "out_status": out_status,
             "player_fouls_committed": player_fouls_committed,
             "player_fouls_drawn": player_fouls_drawn,
-            "player_minutes_played": player_minutes_played
+            "minutes_played": player_minutes_played
         }
         breakdown_rows.append(row)
     return breakdown_rows
+
+
+
 """
 Ahora generamos los datos y mostramos los INSERTs SQL
 Se usarán tres listas para almacenar las instrucciones de Insert
@@ -346,12 +349,12 @@ for i in range(N_PARTIDOS):
     breakdown_away = simula_match_breakdown(current_match_id, away_team, teamB_selected, is_home=False)
     for row in breakdown_home + breakdown_away:
         sql_breakdown = ("INSERT INTO finaltest.match_breakdown (match_id, player_id, headers, footers, key_passes, non_assisted_footers, "
-                        f"player_hxg, player_fxg, player_kp_hxg, player_kp_fxg, player_hpsxg, player_fpsxg, gk_psxg, gk_ga, player_sub_in, player_sub_out, "
-                        f"in_status, out_status, player_fouls_committed, player_fouls_drawn, player_minutes_played) VALUES "
-                        f"({row['match_id']}, '{row['player_id']}', {row['player_headers']}, {row['player_footers']}, {row['player_key_passes']}, {row['player_non_assisted_footers']}, "
-                        f"{row['player_hxg']}, {row['player_fxg']}, {row['player_kp_hxg']}, {row['player_kp_fxg']}, {row['player_hpsxg']}, {row['player_fpsxg']}, "
-                        f"{row['gk_psxg']}, {row['gk_ga']}, {row['player_sub_in']}, {row['player_sub_out']}, '{row['in_status']}', '{row['out_status']}', "
-                        f"{row['player_fouls_committed']}, {row['player_fouls_drawn']}, {row['player_minutes_played']});")
+                        f"hxg, fxg, kp_hxg, kp_fxg, hpsxg, fpsxg, gk_psxg, gk_ga, sub_in, sub_out, "
+                        f"in_status, out_status, player_fouls_committed, player_fouls_drawn, minutes_played) VALUES "
+                        f"({row['match_id']}, '{row['player_id']}', {row['headers']}, {row['footers']}, {row['key_passes']}, {row['non_assisted_footers']}, "
+                        f"{row['hxg']}, {row['fxg']}, {row['kp_hxg']}, {row['kp_fxg']}, {row['hpsxg']}, {row['fpsxg']}, "
+                        f"{row['gk_psxg']}, {row['gk_ga']}, {row['sub_in']}, {row['sub_out']}, '{row['in_status']}', '{row['out_status']}', "
+                        f"{row['player_fouls_committed']}, {row['player_fouls_drawn']}, {row['minutes_played']});")
         inserts_match_breakdown.append(sql_breakdown)
 
     current_match_id += 1

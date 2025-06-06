@@ -203,40 +203,147 @@ class process_data:
 
     def update_players_totals(self):
         """
-        Function to sum all information from all players into players_data from match breakdown.
+        Function to sum all information from all players (& referee) into players_data (referee_data) from match breakdown (match_info).
         """
         players_id_df = DB.select("SELECT DISTINCT player_id FROM players_data")
         
         for player_id in players_id_df["player_id"].tolist():
-            agg_query = """
-                SELECT 
-                    COALESCE(SUM(headers / NULLIF(player_minutes_played, 0)), 0) AS headers,
-                    COALESCE(SUM(footers / NULLIF(player_minutes_played, 0)), 0) AS footers,
-                    COALESCE(SUM(key_passes / NULLIF(player_minutes_played, 0)), 0) AS key_passes,
-                    COALESCE(SUM(non_assisted_footers / NULLIF(player_minutes_played, 0)), 0) AS non_assisted_footers
-                FROM match_breakdown
-                WHERE player_id = %s
+            pagg_query = """
+            SELECT
+                COALESCE(SUM(headers), 0) AS headers,
+                COALESCE(SUM(footers), 0) AS footers,
+                COALESCE(SUM(key_passes), 0) AS key_passes,
+                COALESCE(SUM(non_assisted_footers), 0) AS non_assisted_footers,
+                COALESCE(SUM(minutes_played), 0) AS minutes_played,
+                COALESCE(SUM(hxg), 0) AS hxg,
+                COALESCE(SUM(fxg), 0) AS fxg,
+                COALESCE(SUM(kp_hxg), 0) AS kp_hxg,
+                COALESCE(SUM(kp_fxg), 0) AS kp_fxg,
+                COALESCE(SUM(hpsxg), 0) AS hpsxg,
+                COALESCE(SUM(fpsxg), 0) AS fpsxg,
+                COALESCE(SUM(gk_psxg), 0) AS gk_psxg,
+                COALESCE(SUM(gk_ga), 0) AS gk_ga,
+                COALESCE(SUM(fouls_committed), 0) AS fouls_committed,
+                COALESCE(SUM(fouls_drawn), 0) AS fouls_drawn,
+                COALESCE(SUM(yellow_cards), 0) AS yellow_cards,
+                COALESCE(SUM(red_card), 0) AS red_card
+            FROM match_breakdown
+            WHERE player_id = %s
             """
-            agg_result = DB.select(agg_query, (player_id,))
-            if agg_result.empty:
+            pagg_result = DB.select(pagg_query, (player_id,))
+            if pagg_result.empty:
                 continue
 
-            row = agg_result.iloc[0]
-            update_query = """
-                UPDATE players_data
-                SET 
-                    headers = %s,
-                    footers = %s,
-                    key_passes = %s,
-                    non_assisted_footers = %s
-                WHERE player_id = %s
+            row = pagg_result.iloc[0]
+
+            status_query = """
+            SELECT in_status, out_status, sub_in, sub_out
+            FROM match_breakdown
+            WHERE player_id = %s
             """
-            DB.execute(update_query, (
+            status_result = DB.select(status_query, (player_id,))
+            
+            in_status_dict = {"trailing": 0, "level": 0, "leading": 0}
+            out_status_dict = {"trailing": 0, "level": 0, "leading": 0}
+            subs_in_list = []
+            subs_out_list = []
+            
+            for _, status_row in status_result.iterrows():
+                in_stat = status_row["in_status"]
+                out_stat = status_row["out_status"]
+                if in_stat in in_status_dict:
+                    in_status_dict[in_stat] += 1
+                if out_stat in out_status_dict:
+                    out_status_dict[out_stat] += 1
+                if status_row["sub_in"]:
+                    subs_in_list.append(status_row["sub_in"])
+                if status_row["sub_out"]:
+                    subs_out_list.append(status_row["sub_out"])
+
+            pupdate_query = """
+            UPDATE players_data
+            SET 
+                headers = %s,
+                footers = %s,
+                key_passes = %s,
+                non_assisted_footers = %s,
+                minutes_played = %s,
+                hxg = %s,
+                fxg = %s,
+                kp_hxg = %s,
+                kp_fxg = %s,
+                hpsxg = %s,
+                fpsxg = %s,
+                gk_psxg = %s,
+                gk_ga = %s,
+                fouls_committed = %s,
+                fouls_drawn = %s,
+                yellow_cards = %s,
+                red_cards = %s,
+                in_status = %s,
+                out_status = %s,
+                sub_in = %s,
+                sub_out = %s
+            WHERE player_id = %s
+            """
+            DB.execute(pupdate_query, (
                 row["headers"],
                 row["footers"],
                 row["key_passes"],
                 row["non_assisted_footers"],
-                player_id,
+                row["minutes_played"],
+                row["hxg"],
+                row["fxg"],
+                row["kp_hxg"],
+                row["kp_fxg"],
+                row["hpsxg"],
+                row["fpsxg"],
+                row["gk_psxg"],
+                row["gk_ga"],
+                row["fouls_committed"],
+                row["fouls_drawn"],
+                row["yellow_cards"],
+                row["red_cards"],
+                json.dumps(in_status_dict),
+                json.dumps(out_status_dict),
+                json.dumps(subs_in_list),
+                json.dumps(subs_out_list),
+                player_id
+            ))
+
+        # referee
+        referee_df = DB.select("SELECT DISTINCT match_referee_name FROM match_info")
+        
+        for referee in referee_df["match_referee_name"].tolist():
+            ragg_query = """
+            SELECT
+                COALESCE(SUM(match_total_fouls), 0) AS fouls,
+                COALESCE(SUM(match_yellow_cards), 0) AS yellow_cards,
+                COALESCE(SUM(match_red_cards), 0) AS red_cards
+                COALESCE(SUM(minutes_played), 0) AS minutes_played,
+            FROM match_info
+            WHERE match_referee_name = %s
+            """
+            ragg_result = DB.select(ragg_query, (referee,))
+            if ragg_result.empty:
+                continue
+
+            row = ragg_result.iloc[0]
+
+            rupdate_query = """
+            UPDATE referee_data
+            SET 
+                fouls = %s,
+                yellow_cards = %s,
+                red_cards = %s,
+                minutes_played = %s 
+            WHERE player_id = %s
+            """
+            DB.execute(rupdate_query, (
+                row["fouls"],
+                row["yellow_cards"],
+                row["red_cards"],
+                row["minutes_played"]
             ))
 
     def update_players_xg_coef(self):
@@ -351,5 +458,5 @@ Build contextual xgboost when predicting
 """
 # ------------------------------ Trading ------------------------------
 # Init
-extract_data()
+#extract_data()
 process_data()
