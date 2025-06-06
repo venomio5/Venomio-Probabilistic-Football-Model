@@ -194,7 +194,6 @@ CREATE TABLE league_data (
     league_id INT AUTO_INCREMENT PRIMARY KEY,
     league_name VARCHAR(100) UNIQUE NOT NULL,
     fbref_fixtures_url VARCHAR(200),
-    table_xpath VARCHAR(100),
     last_updated_date DATE,
     is_active BOOLEAN,
     league_sg_url VARCHAR(200)
