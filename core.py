@@ -3,10 +3,21 @@ from contextlib import contextmanager
 from typing import Any, Iterable, Sequence
 import pandas as pd
 from mysql.connector.pooling import MySQLConnectionPool
+from datetime import datetime, date, timedelta
 import numpy as np
+import pandas as pd
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import NoSuchElementException
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from fuzzywuzzy import process, fuzz
+import re
 from sklearn.linear_model import Ridge
 import scipy.sparse as sp
 import json
+from tqdm import tqdm
 
 # ------------------------------ Database Manager ------------------------------
 class DatabaseManager:
@@ -81,10 +92,96 @@ def extract_player_ids(players_json_str):
     return [player['id'] for player in players]
 
 # ------------------------------ Fetch & Remove Data ------------------------------
-class extract_data:
-    def __init__(self):
-        """"""
+class Extract_data:
+    def __init__(self, upto_date: date = None): # datetime.strptime('2025-04-23', '%Y-%m-%d').date()
+        """
+        Get recent games data for match_info, match_detail, match_breakdown, and shots_data.
+        Update the RAS from recent games using the old coefs before updating the coefs.
+        """
+        self.upto_date = upto_date or datetime.now().date()
+        self.get_recent_games_data()
         self.update_pdras()
+
+    def get_recent_games_data(self):
+        # Functions
+        def get_games_info(url, lud):
+            s=Service('chromedriver.exe')
+            options = webdriver.ChromeOptions()
+            options.add_argument("--headless")
+            driver = webdriver.Chrome(service=s, options=options)
+            driver.get(url)
+            driver.execute_script("window.scrollTo(0, 1000);")
+
+            fixtures_table = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.stats_table")))
+            rows = fixtures_table.find_elements(By.XPATH, "./tbody/tr")
+            filtered_games_urls = []
+            games_dates = []
+            game_times = []
+            home_teams = []
+            away_teams = []
+            referees = []
+
+            for row in rows:
+                date_element = row.find_element(By.CSS_SELECTOR, "[data-stat='date']")
+                date_text = date_element.text.strip()
+                cleaned_date_text = re.sub(r'[^0-9-]', '', date_text)
+                if cleaned_date_text:
+                    game_date = datetime.strptime(cleaned_date_text, '%Y-%m-%d').date()
+                else:
+                    continue
+
+                if lud <= game_date < self.upto_date:
+                    games_dates.append(game_date.strftime('%Y-%m-%d'))
+
+                    venue_time_element = row.find_element(By.CSS_SELECTOR, '.venuetime')
+                    venue_time_str = venue_time_element.text.strip("()")
+                    venue_time_obj = datetime.strptime(venue_time_str, "%H:%M").time()
+                    game_times.append(venue_time_obj)
+
+                    try:
+                        href_element = row.find_element(By.CSS_SELECTOR, "[data-stat='match_report'] a")
+                        filtered_games_urls.append(href_element.get_attribute('href'))
+                    except NoSuchElementException:
+                        continue
+
+                    home_name_element = row.find_element(By.CSS_SELECTOR, "[data-stat='home_team']")
+                    home_name = home_name_element.text
+                    home_teams.append(home_name)
+
+                    away_name_element = row.find_element(By.CSS_SELECTOR, "[data-stat='away_team']")
+                    away_name = away_name_element.text
+                    away_teams.append(away_name)
+
+                    referee_name_element = row.find_element(By.CSS_SELECTOR, "[data-stat='referee']")
+                    referee_name = referee_name_element.text           
+                    referees.append(referee_name)
+            driver.quit()
+            
+            return filtered_games_urls, games_dates, game_times, home_teams, away_teams, referees
+    
+        # Init
+        """
+        Create a for loop for each active league.
+        """
+
+        active_leagues_df = DB.select("SELECT * FROM league_data WHERE is_active = 1")
+        
+        for league_id in tqdm(active_leagues_df["league_id"].tolist()):
+            url = active_leagues_df[active_leagues_df['league_id'] == league_id]['fbref_fixtures_url'].values[0]
+            lud = active_leagues_df[active_leagues_df['league_id'] == league_id]['last_updated_date'].values[0]
+            games_url, games_dates, game_times, home_teams, away_teams, referees = get_games_info(url, lud)
+            print(games_url, games_dates, game_times, home_teams, away_teams, referees)
+
+            for i in tqdm(range(len(games_url))):
+                game_url = games_url[i]
+                game_date = games_dates[i]
+                game_time = game_times[i]
+                home_team = home_teams[i]
+                away_team = away_teams[i]
+                referee = referees[i]
+
+        input("Todo bien?")
+
 
     def update_pdras(self):
         """
@@ -127,7 +224,7 @@ class extract_data:
             DB.execute("UPDATE match_detail SET teamA_pdras = %s, teamB_pdras = %s WHERE match_id = %s", (teamA_pdras, teamB_pdras, row['match_id']))
 
 # ------------------------------ Process data ------------------------------
-class process_data:
+class Process_data:
     def __init__(self):
         """
         Class to reset the players_data table and fill it with new data.
@@ -528,5 +625,6 @@ Build contextual xgboost when predicting
 """
 # ------------------------------ Trading ------------------------------
 # Init
-#extract_data()
-process_data()
+upto_date_ven = datetime.strptime('2025-04-01', '%Y-%m-%d').date()
+Extract_data(upto_date_ven)
+#Process_data()
