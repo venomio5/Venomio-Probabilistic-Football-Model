@@ -193,8 +193,11 @@ CREATE TABLE team_data (
 CREATE TABLE league_data (
     league_id INT PRIMARY KEY,
     league_name VARCHAR(100) UNIQUE NOT NULL,
-    league_last_updated_date DATETIME,
-    is_active BOOLEAN
+    fbref_fixtures_url VARCHAR(200),
+    table_xpath VARCHAR(100),
+    last_updated_date DATE,
+    is_active BOOLEAN,
+    league_sg_url VARCHAR(200)
 );
 ```
 ## Notes
