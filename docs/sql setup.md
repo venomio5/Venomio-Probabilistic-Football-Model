@@ -13,7 +13,7 @@ CREATE TABLE match_info (
     match_away_team_id INT NOT NULL,
     match_date DATETIME NOT NULL,
     match_league_id INT,
-    match_referee_id INT,
+    match_referee_name VARCHAR(100),
     match_total_fouls INT DEFAULT 0,
     match_yellow_cards INT DEFAULT 0,
     match_red_cards INT DEFAULT 0,
