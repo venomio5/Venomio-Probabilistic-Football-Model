@@ -191,9 +191,12 @@ CREATE TABLE team_data (
 ### league_data
 ```
 CREATE TABLE league_data (
-    league_id INT PRIMARY KEY,
+    league_id INT AUTO_INCREMENT PRIMARY KEY,
     league_name VARCHAR(100) UNIQUE NOT NULL,
-    league_last_updated_date DATETIME
+    fbref_fixtures_url VARCHAR(200),
+    last_updated_date DATE,
+    is_active BOOLEAN,
+    league_sg_url VARCHAR(200)
 );
 ```
 ## Notes
