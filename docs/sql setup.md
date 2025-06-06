@@ -96,7 +96,7 @@ CREATE TABLE match_breakdown (
     fouls_committed INT DEFAULT 0,
     fouls_drawn INT DEFAULT 0,
     yellow_cards INT DEFAULT 0,
-    red_card BOOLEAN,
+    red_card INT DEFAULT 0,
     minutes_played INT DEFAULT 0,
     PRIMARY KEY (match_id, player_id),
     CONSTRAINT fk_match_breakdown_id
@@ -141,6 +141,16 @@ CREATE TABLE players_data (
     sub_out JSON,
     in_status JSON,
     out_status JSON
+);
+```
+### referee_data
+```
+CREATE TABLE referee_data (
+    referee_name VARCHAR(100) PRIMARY KEY,
+    fouls INT DEFAULT 0,
+    yellow_cards INT DEFAULT 0,
+    red_cards INT DEFAULT 0,
+    minutes_played INT DEFAULT 0 
 );
 ```
 ### shots_data
