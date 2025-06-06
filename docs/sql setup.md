@@ -13,7 +13,7 @@ CREATE TABLE match_info (
     match_away_team_id INT NOT NULL,
     match_date DATETIME NOT NULL,
     match_league_id INT,
-    match_referee_id INT,
+    match_referee_name VARCHAR(100),
     match_total_fouls INT DEFAULT 0,
     match_yellow_cards INT DEFAULT 0,
     match_red_cards INT DEFAULT 0,
@@ -81,21 +81,23 @@ CREATE TABLE match_breakdown (
     footers INT DEFAULT 0,
     key_passes INT DEFAULT 0,
     non_assisted_footers INT DEFAULT 0,
-    player_hxg FLOAT DEFAULT 0.0,
-    player_fxg FLOAT DEFAULT 0.0,
-    player_kp_hxg FLOAT DEFAULT 0.0,
-    player_kp_fxg FLOAT DEFAULT 0.0,
-    player_hpsxg FLOAT DEFAULT 0.0,
-    player_fpsxg FLOAT DEFAULT 0.0,
+    hxg FLOAT DEFAULT 0.0,
+    fxg FLOAT DEFAULT 0.0,
+    kp_hxg FLOAT DEFAULT 0.0,
+    kp_fxg FLOAT DEFAULT 0.0,
+    hpsxg FLOAT DEFAULT 0.0,
+    fpsxg FLOAT DEFAULT 0.0,
     gk_psxg FLOAT DEFAULT 0.0,
     gk_ga INT DEFAULT 0,
-    player_sub_in INT DEFAULT 0,
-    player_sub_out INT DEFAULT 0,
+    sub_in INT DEFAULT 0,
+    sub_out INT DEFAULT 0,
     in_status VARCHAR(50),
     out_status VARCHAR(50),
-    player_fouls_committed INT DEFAULT 0,
-    player_fouls_drawn INT DEFAULT 0,
-    player_minutes_played INT DEFAULT 0,
+    fouls_committed INT DEFAULT 0,
+    fouls_drawn INT DEFAULT 0,
+    yellow_cards INT DEFAULT 0,
+    red_cards INT DEFAULT 0,
+    minutes_played INT DEFAULT 0,
     PRIMARY KEY (match_id, player_id),
     CONSTRAINT fk_match_breakdown_id
         FOREIGN KEY (match_id) REFERENCES match_info (match_id)
@@ -118,10 +120,58 @@ CREATE TABLE players_data (
     def_hxg_coef FLOAT DEFAULT NULL,
     off_fxg_coef FLOAT DEFAULT NULL,
     def_fxg_coef FLOAT DEFAULT NULL,
-    headers FLOAT DEFAULT NULL,
-    footers FLOAT DEFAULT NULL,
-    key_passes FLOAT DEFAULT NULL,
-    non_assisted_footers FLOAT DEFAULT NULL
+    minutes_played INT DEFAULT 0,
+    headers INT DEFAULT NULL,
+    footers INT DEFAULT NULL,
+    key_passes INT DEFAULT NULL,
+    non_assisted_footers INT DEFAULT NULL,
+    hxg FLOAT DEFAULT 0.0,
+    fxg FLOAT DEFAULT 0.0,
+    kp_hxg FLOAT DEFAULT 0.0,
+    kp_fxg FLOAT DEFAULT 0.0,
+    hpsxg FLOAT DEFAULT 0.0,
+    fpsxg FLOAT DEFAULT 0.0,
+    gk_psxg FLOAT DEFAULT 0.0,
+    gk_ga INT DEFAULT 0,
+    fouls_committed INT DEFAULT 0,
+    fouls_drawn INT DEFAULT 0,
+    yellow_cards INT DEFAULT 0,
+    red_cards INT DEFAULT 0,
+    sub_in JSON,
+    sub_out JSON,
+    in_status JSON,
+    out_status JSON
+);
+```
+### referee_data
+```
+CREATE TABLE referee_data (
+    referee_name VARCHAR(100) PRIMARY KEY,
+    fouls INT DEFAULT 0,
+    yellow_cards INT DEFAULT 0,
+    red_cards INT DEFAULT 0,
+    minutes_played INT DEFAULT 0 
+);
+```
+### shots_data
+```
+CREATE TABLE shots_data (
+    match_id INT PRIMARY KEY,
+    actual_xg FLOAT NOT NULL,
+    actual_psxg FLOAT NOT NULL,
+    actual_shooter_id VARCHAR(20) NOT NULL,
+    total_PLSQA FLOAT DEFAULT NULL,
+    shooter_SQ FLOAT DEFAULT NULL,
+    assister_SQ FLOAT DEFAULT NULL,
+    match_state ENUM('-1.5', '-1', '0', '1', '1.5') NOT NULL,
+    match_segment ENUM('1', '2', '3', '4', '5', '6') NOT NULL,
+    player_dif ENUM('-1.5', '-1', '0', '1', '1.5') NOT NULL,
+    RSQ FLOAT DEFAULT NULL,
+    SA FLOAT DEFAULT NULL,
+    GKA FLOAT DEFAULT NULL,
+    CONSTRAINT fk_shots_data_id
+        FOREIGN KEY (match_id) REFERENCES match_info (match_id)
+        ON DELETE CASCADE
 );
 ```
 ### team_data

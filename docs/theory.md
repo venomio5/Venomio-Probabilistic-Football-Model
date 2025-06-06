@@ -125,12 +125,35 @@ Aggregate the ridge data per shot and build a model to learn nonlinear, hierarch
 Repeat this process each time a substitution minute is reached.
 
 ## Card and Foul Simulation
-For each minute:
-- Probabilistically determine if foul occurs by accounting the referee and both teams. (Averages)
+### Fouls per Minute
+| **Feature**                | **Type**    | **Description**                                        |
+| -------------------------- | ----------- | ------------------------------------------------------ |
+| `referee_id`               | Categorical | Encodes referee id                             |
+| `team_id`                  | Categorical | Team committing the foul                               |
+| `opp_id`                   | Categorical | Opposition team                                        |
+| `is_home`                  | bool        | 1 if team is home                                      |
+| `team_avg_fouls_committed` | Numeric     | Historical aggression level                            |
+| `opp_avg_fouls_drawn`      | Numeric     | Tendency to provoke fouls                              |
+| `referee_avg_fouls`        | Numeric     | General foul call rate by referee                      |
+| `total_fouls`              | Numeric     | Total match fouls (optional context)                   |
+| `minutes_played`           | Numeric     | Duration of the match (optional if embedded in target) |
 
-If a foul occurs:
-- Referee-specific probabilistically determine: Yellow Card or Red Card
+**Target**: fouls_committed / minutes_played
 
+### Card per Foul
+2 for each card.
+| **Feature**              | **Type**    | **Description**                       |
+| ------------------------ | ----------- | ------------------------------------- |
+| `referee_id`             | Categorical | Referee ID                            |
+| `team_id`                | Categorical | Team receiving yellow                 |
+| `opp_id`                 | Categorical | Opposition team                       |
+| `is_home`                | Binary      | 1 if team is home                     |
+| `team_cards_per_foul`    | Numeric     | Historical yellow-per-foul rate       |
+| `referee_cards_per_foul` | Numeric     | Ref’s card strictness                 |
+| `total_cards`            | Numeric     | Total cards in match (context)        |
+| `total_fouls`            | Numeric     | Total fouls in match (optional)       |
+
+**Target**: cards / fouls_committed
 On red card (Or two yellows) → player removed, team plays short-handed.
 
 ## Output Metrics
