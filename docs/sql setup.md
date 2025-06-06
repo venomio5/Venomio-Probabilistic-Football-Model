@@ -191,7 +191,7 @@ CREATE TABLE team_data (
 ### league_data
 ```
 CREATE TABLE league_data (
-    league_id INT PRIMARY KEY,
+    league_id INT AUTO_INCREMENT PRIMARY KEY,
     league_name VARCHAR(100) UNIQUE NOT NULL,
     fbref_fixtures_url VARCHAR(200),
     table_xpath VARCHAR(100),
