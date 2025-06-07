@@ -26,7 +26,6 @@ CREATE TABLE match_info (
     away_rest_days INT,
     temperature_c INT,
     is_raining BOOLEAN,
-    time VARCHAR(20),
     url VARCHAR(200),
     UNIQUE (match_home_team_id, match_away_team_id, match_date)
 );
