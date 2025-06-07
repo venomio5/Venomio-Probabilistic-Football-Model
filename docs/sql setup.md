@@ -27,7 +27,7 @@ CREATE TABLE match_info (
     temperature_c INT,
     is_raining BOOLEAN,
     url VARCHAR(200),
-    UNIQUE (match_home_team_id, match_away_team_id, match_date)
+    UNIQUE (home_team_id, away_team_id, date)
 );
 ```
 ### match_detail
