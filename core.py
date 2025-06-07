@@ -12,6 +12,7 @@ from selenium.common.exceptions import NoSuchElementException
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
+import requests
 from fuzzywuzzy import process, fuzz
 import re
 from sklearn.linear_model import Ridge
@@ -84,6 +85,106 @@ class DatabaseManager:
                 cur.execute(sql, params or ())
             return cur.rowcount
 
+# ------------------------------ Fill Teams Data ------------------------------
+class Fill_Teams_Data:
+    def __init__(self, league_id):
+        self.league_id = league_id
+        league_df = DB.select(f"SELECT league_id, fbref_fixtures_url FROM league_data WHERE league_id = {self.league_id}")
+        league_url = league_df['fbref_fixtures_url'].values[0]
+
+        teams_dict = self.get_teams(league_url)
+        insert_data = []
+
+        for team, venue in teams_dict.items():
+            lat, lon = self.get_coordinates(team, venue)
+            coordinates_str = f"{lat},{lon}"
+            elevation = self.get_elevation(lat, lon)
+            insert_data.append((team, elevation, coordinates_str, self.league_id))
+
+        DB.execute(
+            """
+            INSERT INTO team_data (team_name, team_elevation, team_coordinates, league_id)
+            VALUES (%s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                team_elevation = VALUES(team_elevation),
+                team_coordinates = VALUES(team_coordinates)
+            """,
+            insert_data,
+            many=True
+        )
+
+    def get_teams(self, url):
+        s=Service('chromedriver.exe')
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless")
+        driver = webdriver.Chrome(service=s, options=options)
+        driver.get(url)
+        driver.execute_script("window.scrollTo(0, 1000);")
+
+        fixtures_table = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.stats_table")))
+        rows = fixtures_table.find_elements(By.XPATH, "./tbody/tr")
+        team_venue_map = {}
+
+        for row in rows:
+            try:
+                home_element = row.find_element(By.CSS_SELECTOR, "[data-stat='home_team']")
+                venue_element = row.find_element(By.CSS_SELECTOR, "[data-stat='venue']")
+                home_team = home_element.text.strip()
+                venue = venue_element.text.strip()
+
+                if home_team == "Home":
+                    continue
+
+                if home_team and home_team not in team_venue_map:
+                    team_venue_map[home_team] = venue
+
+            except NoSuchElementException:
+                continue
+        driver.quit()
+        
+        return team_venue_map
+
+    def get_coordinates(self, team, place_name):
+        url = "https://nominatim.openstreetmap.org/search"
+        params = {
+            'q': place_name,
+            'format': 'json',
+            'limit': 1
+        }
+        headers = {
+            'User-Agent': 'GeoDataScript/1.0'
+        }
+
+        response = requests.get(url, params=params, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+        if not data:
+            refined_input = input(f"No coordinates found for '{team}: {place_name}'\nEnter a more precise address for this location: ").strip()
+            return self.get_coordinates(team, refined_input)
+        
+        print(f"{team}: {data[0]['display_name']}")
+
+        latitude = float(data[0]['lat'])
+        longitude = float(data[0]['lon'])
+        return latitude, longitude
+
+    def get_elevation(self, latitude, longitude):
+        url = "https://api.open-elevation.com/api/v1/lookup"
+        params = {
+            "locations": f"{latitude},{longitude}"
+        }
+
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+
+        if 'results' not in data or not data['results']:
+            raise ValueError("No elevation data returned.")
+
+        elevation_meters = data['results'][0]['elevation']
+        return int(elevation_meters)
+
 # --------------- Useful functions ---------------
 DB = DatabaseManager(host="localhost", user="root", password="venomio", database="finaltest")
 
@@ -92,7 +193,7 @@ def extract_player_ids(players_json_str):
     return [player['id'] for player in players]
 
 # ------------------------------ Fetch & Remove Data ------------------------------
-class Extract_data:
+class Extract_Data:
     def __init__(self, upto_date: date = None): # datetime.strptime('2025-04-23', '%Y-%m-%d').date()
         """
         Get recent games data for match_info, match_detail, match_breakdown, and shots_data.
@@ -163,7 +264,6 @@ class Extract_data:
         """
         Create a for loop for each active league.
         """
-
         active_leagues_df = DB.select("SELECT * FROM league_data WHERE is_active = 1")
         
         for league_id in tqdm(active_leagues_df["league_id"].tolist()):
@@ -181,7 +281,6 @@ class Extract_data:
                 referee = referees[i]
 
         input("Todo bien?")
-
 
     def update_pdras(self):
         """
@@ -224,7 +323,7 @@ class Extract_data:
             DB.execute("UPDATE match_detail SET teamA_pdras = %s, teamB_pdras = %s WHERE match_id = %s", (teamA_pdras, teamB_pdras, row['match_id']))
 
 # ------------------------------ Process data ------------------------------
-class Process_data:
+class Process_Data:
     def __init__(self):
         """
         Class to reset the players_data table and fill it with new data.
@@ -626,5 +725,6 @@ Build contextual xgboost when predicting
 # ------------------------------ Trading ------------------------------
 # Init
 upto_date_ven = datetime.strptime('2025-04-01', '%Y-%m-%d').date()
-Extract_data(upto_date_ven)
-#Process_data()
+Fill_Teams_Data(1)
+#Extract_Data(upto_date_ven)
+#Process_Data()
