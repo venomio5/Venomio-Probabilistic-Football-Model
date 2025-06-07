@@ -177,12 +177,11 @@ CREATE TABLE shots_data (
 ### team_data
 ```
 CREATE TABLE team_data (
-    team_id INT PRIMARY KEY,
-    team_name VARCHAR(100) NOT NULL,
+    team_id INT AUTO_INCREMENT PRIMARY KEY,
+    team_name VARCHAR(100) NOT NULL UNIQUE,
     team_elevation INT NOT NULL,
     team_coordinates VARCHAR(50) NOT NULL,
     league_id INT NOT NULL,
-    UNIQUE (team_name, team_elevation, team_coordinates),
     CONSTRAINT fk_league_id
         FOREIGN KEY (league_id) REFERENCES league_data(league_id)
         ON DELETE CASCADE
