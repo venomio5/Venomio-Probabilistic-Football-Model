@@ -24,8 +24,6 @@ CREATE TABLE match_info (
     away_travel INT,
     home_rest_days INT,
     away_rest_days INT,
-    home_importance BOOLEAN,
-    away_importance BOOLEAN,
     temperature_c INT,
     is_raining BOOLEAN,
     match_time VARCHAR(20),
