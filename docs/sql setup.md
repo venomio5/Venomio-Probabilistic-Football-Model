@@ -9,14 +9,14 @@ USE vpfm;
 ```
 CREATE TABLE match_info (
     match_id INT AUTO_INCREMENT PRIMARY KEY,
-    match_home_team_id INT NOT NULL,
-    match_away_team_id INT NOT NULL,
-    match_date DATETIME NOT NULL,
-    match_league_id INT,
-    match_referee_name VARCHAR(100),
-    match_total_fouls INT DEFAULT 0,
-    match_yellow_cards INT DEFAULT 0,
-    match_red_cards INT DEFAULT 0,
+    home_team_id INT NOT NULL,
+    away_team_id INT NOT NULL,
+    date DATETIME NOT NULL,
+    league_id INT,
+    referee_name VARCHAR(100),
+    total_fouls INT DEFAULT 0,
+    yellow_cards INT DEFAULT 0,
+    red_cards INT DEFAULT 0,
     minutes_played INT,
     home_elevation_dif INT,
     away_elevation_dif INT,
@@ -26,7 +26,8 @@ CREATE TABLE match_info (
     away_rest_days INT,
     temperature_c INT,
     is_raining BOOLEAN,
-    match_time VARCHAR(20),
+    time VARCHAR(20),
+    url VARCHAR(200),
     UNIQUE (match_home_team_id, match_away_team_id, match_date)
 );
 ```
