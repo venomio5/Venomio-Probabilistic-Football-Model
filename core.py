@@ -192,6 +192,13 @@ def extract_player_ids(players_json_str):
     players = json.loads(players_json_str)
     return [player['id'] for player in players]
 
+def get_team_id_by_name(team_name):
+    query = "SELECT team_id FROM team_data WHERE team_name = %s"
+    result = DB.select(query, (team_name,))
+    if not result.empty:
+        return int(result.iloc[0]["team_id"])
+    return None
+
 # ------------------------------ Fetch & Remove Data ------------------------------
 class Extract_Data:
     def __init__(self, upto_date: date = None): # datetime.strptime('2025-04-23', '%Y-%m-%d').date()
@@ -200,12 +207,12 @@ class Extract_Data:
         Update the RAS from recent games using the old coefs before updating the coefs.
         """
         self.upto_date = upto_date or datetime.now().date()
-        self.get_recent_games_data()
+        self.get_recent_games_match_info()
         self.update_pdras()
 
-    def get_recent_games_data(self):
+    def get_recent_games_match_info(self):
         # Functions
-        def get_games_info(url, lud):
+        def get_games_basic_info(url, lud):
             s=Service('chromedriver.exe')
             options = webdriver.ChromeOptions()
             options.add_argument("--headless")
@@ -232,7 +239,7 @@ class Extract_Data:
                     continue
 
                 if lud <= game_date < self.upto_date:
-                    games_dates.append(game_date.strftime('%Y-%m-%d'))
+                    games_dates.append(game_date)
 
                     venue_time_element = row.find_element(By.CSS_SELECTOR, '.venuetime')
                     venue_time_str = venue_time_element.text.strip("()")
@@ -265,22 +272,82 @@ class Extract_Data:
         Create a for loop for each active league.
         """
         active_leagues_df = DB.select("SELECT * FROM league_data WHERE is_active = 1")
+
+        insert_sql = """
+        INSERT INTO match_info (
+            home_team_id, away_team_id, date, league_id, referee_name,
+            total_fouls, yellow_cards, red_cards, url
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
         
         for league_id in tqdm(active_leagues_df["league_id"].tolist()):
             url = active_leagues_df[active_leagues_df['league_id'] == league_id]['fbref_fixtures_url'].values[0]
             lud = active_leagues_df[active_leagues_df['league_id'] == league_id]['last_updated_date'].values[0]
-            games_url, games_dates, game_times, home_teams, away_teams, referees = get_games_info(url, lud)
-            print(games_url, games_dates, game_times, home_teams, away_teams, referees)
+            games_url, games_dates, game_times, home_teams, away_teams, referees = get_games_basic_info(url, lud)
 
             for i in tqdm(range(len(games_url))):
                 game_url = games_url[i]
                 game_date = games_dates[i]
                 game_time = game_times[i]
+                game_datetime = datetime.combine(game_date, game_time)
                 home_team = home_teams[i]
+                home_id = get_team_id_by_name(home_team)
                 away_team = away_teams[i]
+                away_id = get_team_id_by_name(away_team)
                 referee = referees[i]
 
-        input("Todo bien?")
+                s=Service('chromedriver.exe')
+                options = webdriver.ChromeOptions()
+                options.add_argument("--headless")
+                driver = webdriver.Chrome(service=s, options=options)
+                driver.get(game_url)
+                driver.execute_script("window.scrollTo(0, 1000);")
+                WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "table_wrapper")))
+                tabbed_tables = driver.find_elements(By.CSS_SELECTOR, ".table_wrapper.tabbed")
+
+                total_fouls = 0
+                total_yellow_cards = 0
+                total_red_cards = 0
+                for table in tabbed_tables:
+                    try:
+                        switcher = table.find_element(By.CSS_SELECTOR, ".filter.switcher")
+                        tabs = switcher.find_elements(By.TAG_NAME, "a")
+                        for tab in tabs:
+                            if "Miscellaneous Stats" in tab.text:
+                                driver.execute_script("arguments[0].click();", tab)
+
+                                active_container = WebDriverWait(table, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".table_container.tabbed.is_setup.current")))
+                                
+                                stats_table = active_container.find_element(By.CSS_SELECTOR, ".stats_table.sortable.now_sortable")
+                                tfoot = stats_table.find_element(By.TAG_NAME, "tfoot")
+                                row = tfoot.find_element(By.TAG_NAME, "tr")
+                                
+                                fouls = row.find_element(By.CSS_SELECTOR, '[data-stat="fouls"]').text
+                                yellow = row.find_element(By.CSS_SELECTOR, '[data-stat="cards_yellow"]').text
+                                red = row.find_element(By.CSS_SELECTOR, '[data-stat="cards_red"]').text
+
+                                total_fouls += int(fouls)
+                                total_yellow_cards += int(yellow)
+                                total_red_cards += int(red)
+
+                                break
+                    except Exception as e:
+                        print(f"Error processing table: {e}")
+
+                driver.quit()
+
+                params = (
+                    home_id,
+                    away_id,
+                    game_datetime,
+                    league_id,
+                    referee,
+                    total_fouls,
+                    total_yellow_cards,
+                    total_red_cards,
+                    game_url,
+                )
+                DB.execute(insert_sql, params)
 
     def update_pdras(self):
         """
@@ -341,7 +408,7 @@ class Process_Data:
         Function to insert basic information from all players into players_data from match detail without duplicating.
         """
         sql = """
-        SELECT md.teamA_players, md.teamB_players, mi.match_home_team_id, mi.match_away_team_id 
+        SELECT md.teamA_players, md.teamB_players, mi.home_team_id, mi.away_team_id 
         FROM match_detail md 
         JOIN match_info mi ON md.match_id = mi.match_id 
         """
@@ -354,8 +421,8 @@ class Process_Data:
         for _, row in result.iterrows():
             teamA_players = json.loads(row["teamA_players"])
             teamB_players = json.loads(row["teamB_players"])
-            home_team = int(row["match_home_team_id"])
-            away_team = int(row["match_away_team_id"])
+            home_team = int(row["home_team_id"])
+            away_team = int(row["away_team_id"])
         
             for player in teamA_players:
                 players_set.add((player["id"], player["name"], home_team))
@@ -374,7 +441,7 @@ class Process_Data:
 
         for league_id in league_id_df['league_id'].tolist():
             for shot_type in ["headers", "footers"]:
-                league_matches_df = DB.select(f"SELECT match_id FROM match_info WHERE match_league_id = {league_id}")
+                league_matches_df = DB.select(f"SELECT match_id FROM match_info WHERE league_id = {league_id}")
                 matches_ids = league_matches_df['match_id'].tolist()
                 matches_ids_placeholder = ','.join(['%s'] * len(matches_ids))
                 matches_sql = f"""
@@ -578,17 +645,17 @@ class Process_Data:
             ))
 
         # referee
-        referee_df = DB.select("SELECT DISTINCT match_referee_name FROM match_info")
+        referee_df = DB.select("SELECT DISTINCT referee_name FROM match_info")
         
-        for referee in referee_df["match_referee_name"].tolist():
+        for referee in referee_df["referee_name"].tolist():
             ragg_query = """
             SELECT
-                COALESCE(SUM(match_total_fouls), 0) AS fouls,
-                COALESCE(SUM(match_yellow_cards), 0) AS yellow_cards,
-                COALESCE(SUM(match_red_cards), 0) AS red_cards
+                COALESCE(SUM(total_fouls), 0) AS fouls,
+                COALESCE(SUM(yellow_cards), 0) AS yellow_cards,
+                COALESCE(SUM(red_cards), 0) AS red_cards
                 COALESCE(SUM(minutes_played), 0) AS minutes_played,
             FROM match_info
-            WHERE match_referee_name = %s
+            WHERE referee_name = %s
             """
             ragg_result = DB.select(ragg_query, (referee,))
             if ragg_result.empty:
@@ -621,7 +688,7 @@ class Process_Data:
         for league_id in league_id_df['league_id'].tolist():
             for shot_type in ["headers", "footers"]:
                 prefix = "h" if shot_type == "headers" else "f"
-                league_matches_df = DB.select(f"SELECT match_id FROM match_info WHERE match_league_id = {league_id}")
+                league_matches_df = DB.select(f"SELECT match_id FROM match_info WHERE league_id = {league_id}")
                 matches_ids = league_matches_df['match_id'].tolist()
                 if not matches_ids:
                     continue
@@ -725,6 +792,6 @@ Build contextual xgboost when predicting
 # ------------------------------ Trading ------------------------------
 # Init
 upto_date_ven = datetime.strptime('2025-04-01', '%Y-%m-%d').date()
-Fill_Teams_Data(1)
-#Extract_Data(upto_date_ven)
+#Fill_Teams_Data(1)
+Extract_Data(upto_date_ven)
 #Process_Data()
