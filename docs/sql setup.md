@@ -177,7 +177,7 @@ CREATE TABLE shots_data (
 ### team_data
 ```
 CREATE TABLE team_data (
-    team_id INT PRIMARY KEY,
+    team_id INT AUTO_INCREMENT PRIMARY KEY,
     team_name VARCHAR(100) NOT NULL,
     team_elevation INT NOT NULL,
     team_coordinates VARCHAR(50) NOT NULL,
