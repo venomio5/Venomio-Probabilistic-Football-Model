@@ -59,7 +59,6 @@ CREATE TABLE match_detail (
         teamB_footers,
         teamB_hxg,
         teamB_fxg,
-        minutes_played,
         match_state,
         match_segment,
         player_dif
