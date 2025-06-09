@@ -17,7 +17,6 @@ CREATE TABLE match_info (
     total_fouls INT DEFAULT 0,
     yellow_cards INT DEFAULT 0,
     red_cards INT DEFAULT 0,
-    minutes_played INT,
     home_elevation_dif INT,
     away_elevation_dif INT,
     home_travel INT,
@@ -60,7 +59,6 @@ CREATE TABLE match_detail (
         teamB_footers,
         teamB_hxg,
         teamB_fxg,
-        minutes_played,
         match_state,
         match_segment,
         player_dif
