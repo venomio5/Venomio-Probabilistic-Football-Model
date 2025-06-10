@@ -200,5 +200,25 @@ CREATE TABLE league_data (
     league_sg_url VARCHAR(200)
 );
 ```
+### schedule_data
+```
+CREATE TABLE schedule_data (
+    schedule_id INT AUTO_INCREMENT PRIMARY KEY,
+    home_team_id INT NOT NULL,
+    away_team_id INT NOT NULL,
+    date DATETIME NOT NULL,
+    league_id INT,
+    home_elevation_dif INT,
+    away_elevation_dif INT,
+    home_travel INT,
+    away_travel INT,
+    home_rest_days INT,
+    away_rest_days INT,
+    temperature_c INT,
+    is_raining BOOLEAN,
+    url VARCHAR(200),
+    UNIQUE (home_team_id, away_team_id)
+);
+```
 ## Notes
 
