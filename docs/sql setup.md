@@ -155,6 +155,7 @@ CREATE TABLE shots_data (
     match_id INT PRIMARY KEY,
     xg FLOAT NOT NULL,
     psxg FLOAT NOT NULL,
+    shot_type ENUM('head', 'foot') NOT NULL,
     shooter_id VARCHAR(20) NOT NULL,
     assister_id VARCHAR(20) NOT NULL,
     GK_id VARCHAR(20) NOT NULL,
