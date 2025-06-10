@@ -152,7 +152,8 @@ CREATE TABLE referee_data (
 ### shots_data
 ```
 CREATE TABLE shots_data (
-    match_id INT PRIMARY KEY,
+    shot_id INT AUTO_INCREMENT PRIMARY KEY,
+    match_id INT,
     xg FLOAT NOT NULL,
     psxg FLOAT NOT NULL,
     shot_type ENUM('head', 'foot') NOT NULL,
