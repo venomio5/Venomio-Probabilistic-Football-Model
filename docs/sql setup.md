@@ -153,9 +153,13 @@ CREATE TABLE referee_data (
 ```
 CREATE TABLE shots_data (
     match_id INT PRIMARY KEY,
-    actual_xg FLOAT NOT NULL,
-    actual_psxg FLOAT NOT NULL,
-    actual_shooter_id VARCHAR(20) NOT NULL,
+    xg FLOAT NOT NULL,
+    psxg FLOAT NOT NULL,
+    shooter_id VARCHAR(20) NOT NULL,
+    assister_id VARCHAR(20) NOT NULL,
+    GK_id VARCHAR(20) NOT NULL,
+    off_players JSON NOT NULL,
+    def_players JSON NOT NULL,
     total_PLSQA FLOAT DEFAULT NULL,
     shooter_SQ FLOAT DEFAULT NULL,
     assister_SQ FLOAT DEFAULT NULL,
@@ -163,8 +167,8 @@ CREATE TABLE shots_data (
     match_segment ENUM('1', '2', '3', '4', '5', '6') NOT NULL,
     player_dif ENUM('-1.5', '-1', '0', '1', '1.5') NOT NULL,
     RSQ FLOAT DEFAULT NULL,
-    SA FLOAT DEFAULT NULL,
-    GKA FLOAT DEFAULT NULL,
+    shooter_A FLOAT DEFAULT NULL,
+    GK_A FLOAT DEFAULT NULL,
     CONSTRAINT fk_shots_data_id
         FOREIGN KEY (match_id) REFERENCES match_info (match_id)
         ON DELETE CASCADE
