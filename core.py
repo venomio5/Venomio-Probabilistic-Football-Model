@@ -287,9 +287,8 @@ class Extract_Data:
 
         insert_sql = """
         INSERT INTO match_info (
-            home_team_id, away_team_id, date, league_id, referee_name,
-            total_fouls, yellow_cards, red_cards, url
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            home_team_id, away_team_id, date, league_id, referee_name, url
+        ) VALUES (%s, %s, %s, %s, %s, %s)
         """
         
         for league_id in tqdm(active_leagues_df["league_id"].tolist()):
@@ -308,58 +307,12 @@ class Extract_Data:
                 away_id = get_team_id_by_name(away_team)
                 referee = referees[i]
 
-                s=Service('chromedriver.exe')
-                options = webdriver.ChromeOptions()
-                options.add_argument("--headless")
-                driver = webdriver.Chrome(service=s, options=options)
-                driver.get(game_url)
-                driver.execute_script("window.scrollTo(0, 1000);")
-                WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "table_wrapper")))
-                tabbed_tables = driver.find_elements(By.CSS_SELECTOR, ".table_wrapper.tabbed")
-
-                total_fouls = 0
-                total_yellow_cards = 0
-                total_red_cards = 0
-                for table in tabbed_tables:
-                    heading = table.find_element(By.CLASS_NAME, "section_heading").text
-                    clean_heading = re.sub(r'\bPlayer Stats\b', '', heading).strip()
-                    team_initials = ''.join(word[0].upper() for word in clean_heading.split() if word)
-                    try:
-                        switcher = table.find_element(By.CSS_SELECTOR, ".filter.switcher")
-                        tabs = switcher.find_elements(By.TAG_NAME, "a")
-                        for tab in tabs:
-                            if "Miscellaneous Stats" in tab.text:
-                                driver.execute_script("arguments[0].click();", tab)
-
-                                active_container = WebDriverWait(table, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".table_container.tabbed.is_setup.current")))
-                                
-                                stats_table = active_container.find_element(By.CSS_SELECTOR, ".stats_table.sortable.now_sortable")
-                                tfoot = stats_table.find_element(By.TAG_NAME, "tfoot")
-                                row = tfoot.find_element(By.TAG_NAME, "tr")
-                                
-                                fouls = row.find_element(By.CSS_SELECTOR, '[data-stat="fouls"]').text
-                                yellow = row.find_element(By.CSS_SELECTOR, '[data-stat="cards_yellow"]').text
-                                red = row.find_element(By.CSS_SELECTOR, '[data-stat="cards_red"]').text
-
-                                total_fouls += int(fouls)
-                                total_yellow_cards += int(yellow)
-                                total_red_cards += int(red)
-
-                                break
-                    except Exception as e:
-                        print(f"Error processing table: {e}")
-
-                driver.quit()
-
                 params = (
                     home_id,
                     away_id,
                     game_datetime,
                     league_id,
                     referee,
-                    total_fouls,
-                    total_yellow_cards,
-                    total_red_cards,
                     game_url,
                 )
                 DB.execute(insert_sql, params)
@@ -368,16 +321,60 @@ class Extract_Data:
         """
         Get the matches_id that are missing to update them.
         """
+        def extract_players(data, team_name):
+            team_initials = ''.join(word[0].upper() for word in team_name.split() if word)
+            df = data[0]
+            filtered = df[~df.iloc[:, 1].str.contains("Bench", na=False)]
+            players = [
+                f"{row[1]}_{row[0]}_{team_initials}"
+                for _, row in filtered.iloc[:, :2].iterrows()
+            ]
+            return players
+
+        def initialize_player_stats(player_list):
+            return {
+                player: {
+                    "player_id": player,
+                    "starter": i < 11,
+                    "headers": 0,
+                    "footers": 0,
+                    "key_passes": 0,
+                    "non_assisted_footers": 0,
+                    "hxg": 0.0,
+                    "fxg": 0.0,
+                    "kp_hxg": 0.0,
+                    "kp_fxg": 0.0,
+                    "hpsxg": 0.0,
+                    "fpsxg": 0.0,
+                    "gk_psxg": 0.0,
+                    "gk_ga": 0
+                } for i, player in enumerate(player_list)
+            }
+
         def get_lineups(initial_players, sub_events, current_minute, team):
+            roster_mapping = {}
+            for player in initial_players:
+                key = player.split("_")[0]
+                roster_mapping[key] = player
+
             lineup = initial_players[:11]
+
             filtered_subs = [s for s in sub_events if s[3] == team]
             filtered_subs = sorted(filtered_subs, key=lambda x: x[0])
+
             for sub_minute, player_out, player_in, t in filtered_subs:
                 if sub_minute > current_minute:
                     break
-                if player_out in lineup:
-                    lineup.remove(player_out)
-                    lineup.append(player_in)
+
+                for idx, player in enumerate(lineup):
+                    if player.split("_")[0] == player_out:
+                        if player_in in roster_mapping:
+                            lineup[idx] = roster_mapping[player_in]
+                        else:
+                            lineup[idx] = player_in
+                        break
+
+            lineup = [roster_mapping.get(player.split("_")[0], player) for player in lineup]
             return lineup
 
         match_info = DB.select("SELECT match_id, url, home_team_id, away_team_id FROM match_info")
@@ -404,8 +401,8 @@ class Extract_Data:
             away_table = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, '//*[@id="b"]/table')))
             away_data = pd.read_html(driver.execute_script("return arguments[0].outerHTML;", away_table))
 
-            home_players = home_data[0][~home_data[0].iloc[:, 1].str.contains("Bench", na=False)].iloc[:, 1].tolist()
-            away_players = away_data[0][~away_data[0].iloc[:, 1].str.contains("Bench", na=False)].iloc[:, 1].tolist()
+            home_players = extract_players(home_data, home_team)
+            away_players = extract_players(away_data, away_team)
 
             try:
                 events_wrap = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, '//*[@id="events_wrap"]')))
@@ -540,10 +537,276 @@ class Extract_Data:
                 match_segment = min((seg_start // 15) + 1, 6)
 
                 sql = "INSERT IGNORE INTO match_detail (match_id, teamA_players, teamB_players, teamA_headers, teamA_footers, teamA_hxg, teamA_fxg, teamB_headers, teamB_footers, teamB_hxg, teamB_fxg, minutes_played, match_state, match_segment, player_dif) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
-                params = (match_id, json.dumps(teamA_lineup), json.dumps(teamB_lineup), teamA_headers, teamA_footers, teamA_hxg, teamA_fxg, teamB_headers, teamB_footers, teamB_hxg, teamB_fxg, seg_duration, match_state, match_segment, player_dif)
+                params = (match_id, json.dumps(teamA_lineup, ensure_ascii=False), json.dumps(teamB_lineup, ensure_ascii=False), teamA_headers, teamA_footers, teamA_hxg, teamA_fxg, teamB_headers, teamB_footers, teamB_hxg, teamB_fxg, seg_duration, match_state, match_segment, player_dif)
                 DB.execute(sql, params)
 
+            # Match breakdown
+            home_player_stats = initialize_player_stats(home_players)
+            away_player_stats = initialize_player_stats(away_players)
+
+            for sub_event in subs_events:
+                sub_minute, player_out, player_in, sub_team = sub_event
+                if sub_team == "home":
+                    home_goals = sum(1 for minute, t in goal_events if t == "home" and minute <= sub_minute)
+                    away_goals = sum(1 for minute, t in goal_events if t == "away" and minute <= sub_minute)
+                    state = "leading" if home_goals > away_goals else "level" if home_goals == away_goals else "trailing"
+                    for key in home_player_stats:
+                        if key.split("_")[0] == player_out:
+                            home_player_stats[key]["sub_out_min"] = sub_minute
+                            home_player_stats[key]["out_status"] = state
+                    found_in = False
+                    for key in home_player_stats:
+                        if key.split("_")[0] == player_in:
+                            home_player_stats[key]["sub_in_min"] = sub_minute
+                            home_player_stats[key]["in_status"] = state
+                            found_in = True
+                    if not found_in:
+                        home_player_stats[player_in] = {"starter": False, "sub_in_min": sub_minute, "in_status": state}
+                else:
+                    away_goals = sum(1 for minute, t in goal_events if t == "away" and minute <= sub_minute)
+                    home_goals = sum(1 for minute, t in goal_events if t == "home" and minute <= sub_minute)
+                    state = "leading" if away_goals > home_goals else "level" if away_goals == home_goals else "trailing"
+                    for key in away_player_stats:
+                        if key.split("_")[0] == player_out:
+                            away_player_stats[key]["sub_out_min"] = sub_minute
+                            away_player_stats[key]["out_status"] = state
+                    found_in = False
+                    for key in away_player_stats:
+                        if key.split("_")[0] == player_in:
+                            away_player_stats[key]["sub_in_min"] = sub_minute
+                            away_player_stats[key]["in_status"] = state
+                            found_in = True
+                    if not found_in:
+                        away_player_stats[player_in] = {"starter": False, "sub_in_min": sub_minute, "in_status": state}
+            
+            final_home_goals = sum(1 for minute, t in goal_events if t == "home" and minute <= total_minutes)
+            final_away_goals = sum(1 for minute, t in goal_events if t == "away" and minute <= total_minutes)
+            
+            for key in list(home_player_stats.keys()):
+                stat = home_player_stats[key]
+                if stat.get("starter", True):
+                    if "sub_in_min" not in stat:
+                        stat["sub_in_min"] = 0
+                        stat["in_status"] = "level"
+                    if "sub_out_min" not in stat:
+                        stat["sub_out_min"] = total_minutes
+                        stat["out_status"] = "leading" if final_home_goals > final_away_goals else "level" if final_home_goals == final_away_goals else "trailing"
+                    if stat["sub_out_min"] > 90:
+                        stat["minutes_played"] = stat["sub_out_min"] - stat["sub_in_min"]
+                        stat["sub_out_min"] = 90
+                    else:
+                        stat["minutes_played"] = stat["sub_out_min"] - stat["sub_in_min"]
+                else:
+                    if "sub_out_min" not in stat:
+                        stat["sub_out_min"] = 0
+                    if stat.get("sub_out_min") == 0:
+                        del home_player_stats[key]
+                    else:
+                        if stat["sub_out_min"] > 90:
+                            stat["minutes_played"] = stat["sub_out_min"] - stat["sub_in_min"]
+                            stat["sub_out_min"] = 90
+                        else:
+                            stat["minutes_played"] = stat["sub_out_min"] - stat["sub_in_min"]
+
+            for key in list(away_player_stats.keys()):
+                stat = away_player_stats[key]
+                if stat.get("starter", True):
+                    if "sub_in_min" not in stat:
+                        stat["sub_in_min"] = 0
+                        stat["in_status"] = "level"
+                    if "sub_out_min" not in stat:
+                        stat["sub_out_min"] = total_minutes
+                        stat["out_status"] = "leading" if final_away_goals > final_home_goals else "level" if final_away_goals == final_home_goals else "trailing"
+                    if stat["sub_out_min"] > 90:
+                        stat["minutes_played"] = stat["sub_out_min"] - stat["sub_in_min"]
+                        stat["sub_out_min"] = 90
+                    else:
+                        stat["minutes_played"] = stat["sub_out_min"] - stat["sub_in_min"]
+                else:
+                    if "sub_out_min" not in stat:
+                        stat["sub_out_min"] = 0
+                    if stat.get("sub_out_min") == 0:
+                        del away_player_stats[key]
+                    else:
+                        if stat["sub_out_min"] > 90:
+                            stat["minutes_played"] = stat["sub_out_min"] - stat["sub_in_min"]
+                            stat["sub_out_min"] = 90
+                        else:
+                            stat["minutes_played"] = stat["sub_out_min"] - stat["sub_in_min"]
+
+            all_shots = shots_df.loc[:, [
+                ('Unnamed: 0_level_0', 'Minute'),
+                ('Unnamed: 1_level_0', 'Player'),
+                ('Unnamed: 2_level_0', 'Squad'),
+                ('Unnamed: 3_level_0', 'xG'),
+                ('Unnamed: 4_level_0', 'PSxG'),
+                ('Unnamed: 5_level_0', 'Outcome'),
+                ('Unnamed: 7_level_0', 'Body Part'),
+                ('SCA 1', 'Player'),
+                ('SCA 1', 'Event')
+            ]]
+
+            cleaned_columns = []
+            for col in all_shots.columns:
+                if 'Unnamed' in col[0]:
+                    cleaned_columns.append(col[1])
+                else:
+                    cleaned_columns.append('_'.join(col).strip())
+
+            all_shots.columns = cleaned_columns
+
+            all_shots = all_shots[all_shots['Minute'].notna() & (all_shots['Minute'] != 'Minute')]
+
+            all_shots['Minute'] = all_shots['Minute'].astype(str).str.replace(r'\+.*', '', regex=True).str.strip().astype(float).astype(int)
+            all_shots['xG'] = all_shots['xG'].astype(float)
+            all_shots['PSxG'] = all_shots['PSxG'].astype(float)
+            all_shots['Body Part'] = all_shots['Body Part'].astype(str).str.strip()
+            all_shots['Player'] = all_shots['Player'].astype(str).str.strip()
+            all_shots['SCA 1_Player'] = all_shots['SCA 1_Player'].astype(str).str.strip()
+            all_shots['SCA 1_Event'] = all_shots['SCA 1_Event'].astype(str).str.strip()
+
+            for idx, shot in all_shots.iterrows():
+                shooter_name = shot["Player"].strip()
+                shot_body = shot["Body Part"]
+                shot_xg = float(shot["xG"])
+                shot_psxg = float(shot["PSxG"])
+                outcome = shot["Outcome"]
+                sca_event = shot["SCA 1_Event"]
+                sca_player = shot["SCA 1_Player"].strip()
+                
+                shooter_team_stats = None
+                opponent_gk_stats = None
+                shooter_key = None
+                for key in home_player_stats:
+                    if key.split("_")[0] == shooter_name:
+                        shooter_team_stats = home_player_stats
+                        shooter_key = key
+                        opponent_gk_stats = away_player_stats
+                        break
+                if shooter_key is None:
+                    for key in away_player_stats:
+                        if key.split("_")[0] == shooter_name:
+                            shooter_team_stats = away_player_stats
+                            shooter_key = key
+                            opponent_gk_stats = home_player_stats
+                            break
+                if shooter_key is None:
+                    continue
+                
+                shot_type = None
+                if "Head" in shot_body:
+                    shot_type = "head"
+                elif "Foot" in shot_body:
+                    shot_type = "foot"
+                else:
+                    continue
+                
+                if shot_type == "head":
+                    shooter_team_stats[shooter_key]["headers"] += 1
+                    shooter_team_stats[shooter_key]["hxg"] += shot_xg
+                    shooter_team_stats[shooter_key]["hpsxg"] += shot_psxg
+                elif shot_type == "foot":
+                    shooter_team_stats[shooter_key]["footers"] += 1
+                    shooter_team_stats[shooter_key]["fxg"] += shot_xg
+                    shooter_team_stats[shooter_key]["fpsxg"] += shot_psxg
+                
+                if "Pass" in sca_event:
+                    assist_key = None
+                    for key in shooter_team_stats:
+                        if key.split("_")[0] == sca_player:
+                            assist_key = key
+                            break
+                    if assist_key:
+                        shooter_team_stats[assist_key]["key_passes"] += 1
+                        if shot_type == "head":
+                            shooter_team_stats[assist_key]["kp_hxg"] += shot_xg
+                        elif shot_type == "foot":
+                            shooter_team_stats[assist_key]["kp_fxg"] += shot_xg
+                else:
+                    shooter_team_stats[shooter_key]["non_assisted_footers"] += 1
+                
+                opponent_gk_key = list(opponent_gk_stats.keys())[0]
+                opponent_gk_stats[opponent_gk_key]["gk_psxg"] += shot_psxg
+                if outcome == "Goal":
+                    opponent_gk_stats[opponent_gk_key]["gk_ga"] += 1
+
+            tabbed_tables = driver.find_elements(By.CSS_SELECTOR, ".table_wrapper.tabbed")
+
+            for table in tabbed_tables:
+                heading = table.find_element(By.CLASS_NAME, "section_heading").text
+                clean_heading = heading[:re.search(r'\bPlayer Stats\b', heading).start()].strip() if re.search(r'\bPlayer Stats\b', heading) else heading.strip()
+                team_initials = ''.join(word[0].upper() for word in clean_heading.split() if word)
+                try:
+                    switcher = table.find_element(By.CSS_SELECTOR, ".filter.switcher")
+                    tabs = switcher.find_elements(By.TAG_NAME, "a")
+                    for tab in tabs:
+                        if "Miscellaneous Stats" in tab.text:
+                            driver.execute_script("arguments[0].click();", tab)
+
+                            active_container = WebDriverWait(table, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".table_container.tabbed.is_setup.current")))
+                            
+                            stats_table = active_container.find_element(By.CSS_SELECTOR, ".stats_table.sortable.now_sortable")
+                            tbody = stats_table.find_element(By.TAG_NAME, "tbody")
+                            rows = tbody.find_elements(By.TAG_NAME, "tr")
+
+                            for row in rows:
+                                player_name = row.find_element(By.CSS_SELECTOR, '[data-stat="player"]').text.strip()
+                                shirt_number = row.find_element(By.CSS_SELECTOR, '[data-stat="shirtnumber"]').text.strip()
+                                fouls_committed_text = row.find_element(By.CSS_SELECTOR, '[data-stat="fouls"]').text.strip()
+                                fouls_drawn_text = row.find_element(By.CSS_SELECTOR, '[data-stat="fouled"]').text.strip()
+                                yellow_text = row.find_element(By.CSS_SELECTOR, '[data-stat="cards_yellow"]').text.strip()
+                                red_text = row.find_element(By.CSS_SELECTOR, '[data-stat="cards_red"]').text.strip()
+                                fouls_committed_val = int(fouls_committed_text) if fouls_committed_text.isdigit() else 0
+                                fouls_drawn_val = int(fouls_drawn_text) if fouls_drawn_text.isdigit() else 0
+                                yellow_val = int(yellow_text) if yellow_text.isdigit() else 0
+                                red_val = int(red_text) if red_text.isdigit() else 0
+                                player_key = f"{player_name}_{shirt_number}_{team_initials}"
+                                if player_key in home_player_stats:
+                                    home_player_stats[player_key]["fouls_committed"] = fouls_committed_val
+                                    home_player_stats[player_key]["fouls_drawn"] = fouls_drawn_val
+                                    home_player_stats[player_key]["yellow_cards"] = yellow_val
+                                    home_player_stats[player_key]["red_cards"] = red_val
+                                elif player_key in away_player_stats:
+                                    away_player_stats[player_key]["fouls_committed"] = fouls_committed_val
+                                    away_player_stats[player_key]["fouls_drawn"] = fouls_drawn_val
+                                    away_player_stats[player_key]["yellow_cards"] = yellow_val
+                                    away_player_stats[player_key]["red_cards"] = red_val
+                            break
+                except Exception as e:
+                    print(f"Error processing table: {e}")
+
             driver.quit()
+
+            insert_sql = "INSERT IGNORE INTO match_breakdown (match_id, player_id, headers, footers, key_passes, non_assisted_footers, hxg, fxg, kp_hxg, kp_fxg, hpsxg, fpsxg, gk_psxg, gk_ga, sub_in, sub_out, in_status, out_status, fouls_committed, fouls_drawn, yellow_cards, red_cards, minutes_played) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+
+            for team_stats in (home_player_stats, away_player_stats):
+                for player, stat in team_stats.items():
+                    if stat.get("sub_out_min", 0) == 0:
+                        continue
+                    params = (match_id,
+                            stat["player_id"],
+                            stat["headers"],
+                            stat["footers"],
+                            stat["key_passes"],
+                            stat["non_assisted_footers"],
+                            stat["hxg"],
+                            stat["fxg"],
+                            stat["kp_hxg"],
+                            stat["kp_fxg"],
+                            stat["hpsxg"],
+                            stat["fpsxg"],
+                            stat["gk_psxg"],
+                            stat["gk_ga"],
+                            stat["sub_in_min"],
+                            stat["sub_out_min"],
+                            stat["in_status"],
+                            stat["out_status"],
+                            stat.get("fouls_committed", 0),
+                            stat.get("fouls_drawn", 0),
+                            stat.get("yellow_cards", 0),
+                            stat.get("red_cards", 0),
+                            stat["minutes_played"])
+                    DB.execute(insert_sql, params)
             
     def update_pdras(self):
         """
