@@ -209,10 +209,6 @@ class Fill_Teams_Data:
 # --------------- Useful Functions & Variables ---------------
 DB = DatabaseManager(host="localhost", user="root", password="venomio", database="finaltest")
 
-def extract_player_ids(players_json_str):
-    players = json.loads(players_json_str)
-    return [player['id'] for player in players]
-
 def get_team_name_by_id(team_id):
     query = "SELECT team_name FROM team_data WHERE team_id = %s"
     result = DB.select(query, (team_id,))
@@ -1242,12 +1238,12 @@ class Process_Data:
             away_team = int(row["away_team_id"])
         
             for player in teamA_players:
-                players_set.add((player["id"], player["name"], home_team))
+                players_set.add((player, home_team))
             
             for player in teamB_players:
-                players_set.add((player["id"], player["name"], away_team))
+                players_set.add((player, away_team))
         
-        insert_sql = "INSERT IGNORE INTO players_data (player_id, player_name, current_team) VALUES (%s, %s, %s)"
+        insert_sql = "INSERT IGNORE INTO players_data (player_id, current_team) VALUES (%s, %s)"
         DB.execute(insert_sql, list(players_set), many=True)
 
     def update_players_shots_coef(self):
@@ -1271,16 +1267,13 @@ class Process_Data:
                 FROM match_detail 
                 WHERE match_id IN ({matches_ids_placeholder});
                 """
+                print(matches_sql, matches_ids)
                 matches_details_df = DB.select(matches_sql, matches_ids)
-                matches_details_df['teamA_player_ids'] = matches_details_df['teamA_players'].apply(extract_player_ids)
-                matches_details_df['teamB_player_ids'] = matches_details_df['teamB_players'].apply(extract_player_ids)
-                cols_to_drop = ['teamA_players', 'teamB_players']
-                matches_details_df = matches_details_df.drop(columns=cols_to_drop)
 
                 players_set = set()
                 for idx, row in matches_details_df.iterrows():
-                    players_set.update(row['teamA_player_ids'])
-                    players_set.update(row['teamB_player_ids'])
+                    players_set.update(row['teamA_players'])
+                    players_set.update(row['teamB_players'])
                 players = sorted(list(players_set))
                 num_players = len(players)
                 players_to_index = {player: idx for idx, player in enumerate(players)}
@@ -1296,8 +1289,8 @@ class Process_Data:
                     minutes = row['minutes_played']
                     if minutes == 0:
                         continue
-                    teamA_players = row['teamA_player_ids']
-                    teamB_players = row['teamB_player_ids']
+                    teamA_players = row['teamA_players']
+                    teamB_players = row['teamB_players']
                     teamA_st = row[f'teamA_{shot_type}']
                     teamB_st = row[f'teamB_{shot_type}']
 
@@ -1609,7 +1602,7 @@ Build contextual xgboost when predicting
 # ------------------------------ Trading ------------------------------
 # Init
 upto_date_ven = datetime.strptime('2025-04-01', '%Y-%m-%d').date()
-UpdateSchedule()
+#UpdateSchedule()
 #Fill_Teams_Data(1)
 #Extract_Data(upto_date_ven)
-#Process_Data()
+Process_Data()
