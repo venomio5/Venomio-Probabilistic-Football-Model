@@ -217,7 +217,6 @@ CREATE TABLE schedule_data (
     away_rest_days INT,
     temperature INT,
     is_raining BOOLEAN,
-    url VARCHAR(200),
     UNIQUE (home_team_id, away_team_id)
 );
 ```
