@@ -19,7 +19,6 @@ CREATE TABLE match_info (
     red_cards INT DEFAULT 0,
     home_elevation_dif INT,
     away_elevation_dif INT,
-    home_travel INT,
     away_travel INT,
     home_rest_days INT,
     away_rest_days INT,
