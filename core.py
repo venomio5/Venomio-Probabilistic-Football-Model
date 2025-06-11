@@ -13,6 +13,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 import requests
+import math
 from fuzzywuzzy import process, fuzz
 import re
 from sklearn.linear_model import Ridge
@@ -95,19 +96,21 @@ class Fill_Teams_Data:
         teams_dict = self.get_teams(league_url)
         insert_data = []
 
-        for team, venue in teams_dict.items():
+        for team, (venue, team_page_url) in teams_dict.items():
             lat, lon = self.get_coordinates(team, venue)
             coordinates_str = f"{lat},{lon}"
             elevation = self.get_elevation(lat, lon)
-            insert_data.append((team, elevation, coordinates_str, self.league_id))
+            fixtures_url = self.get_scores_fixtures_url(team_page_url)
+            insert_data.append((team, elevation, coordinates_str, fixtures_url, self.league_id))
 
         DB.execute(
             """
-            INSERT INTO team_data (team_name, team_elevation, team_coordinates, league_id)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO team_data (team_name, team_elevation, team_coordinates, team_fixtures_url, league_id)
+            VALUES (%s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 team_elevation = VALUES(team_elevation),
-                team_coordinates = VALUES(team_coordinates)
+                team_coordinates = VALUES(team_coordinates),
+                team_fixtures_url  = VALUES(team_fixtures_url)
             """,
             insert_data,
             many=True
@@ -129,14 +132,16 @@ class Fill_Teams_Data:
             try:
                 home_element = row.find_element(By.CSS_SELECTOR, "[data-stat='home_team']")
                 venue_element = row.find_element(By.CSS_SELECTOR, "[data-stat='venue']")
-                home_team = home_element.text.strip()
-                venue = venue_element.text.strip()
+                anchor        = home_element.find_element(By.TAG_NAME, "a")  
+                home_team     = anchor.text.strip()
+                team_page_url = anchor.get_attribute("href")
+                venue         = venue_element.text.strip()
 
                 if home_team == "Home":
                     continue
 
                 if home_team and home_team not in team_venue_map:
-                    team_venue_map[home_team] = venue
+                    team_venue_map[home_team] = (venue, team_page_url)
 
             except NoSuchElementException:
                 continue
@@ -185,11 +190,22 @@ class Fill_Teams_Data:
         elevation_meters = data['results'][0]['elevation']
         return int(elevation_meters)
 
-# ------------------------------ Get Schedule ------------------------------
-class Get_Schedule:
-    def __init__(self):
-        pass
-    
+    def get_scores_fixtures_url(self, team_page_url):
+        s = Service('chromedriver.exe')
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless")
+        driver = webdriver.Chrome(service=s, options=options)
+        driver.get(team_page_url)
+
+        nav  = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.ID, "inner_nav"))
+        )
+        link = nav.find_element(By.XPATH, ".//a[normalize-space(text())='Scores & Fixtures']")
+        fixtures_url = link.get_attribute("href")
+
+        driver.quit()
+        return fixtures_url
+
 # --------------- Useful Functions & Variables ---------------
 DB = DatabaseManager(host="localhost", user="root", password="venomio", database="finaltest")
 
@@ -212,6 +228,272 @@ def get_team_id_by_name(team_name):
     return None
 
 # ------------------------------ Fetch & Remove Data ------------------------------
+class UpdateSchedule:
+    def __init__(self):
+        active_leagues_df = DB.select("SELECT * FROM league_data WHERE is_active = 1")
+        
+        for league_id in tqdm(active_leagues_df["league_id"].tolist()):
+            url = active_leagues_df[active_leagues_df['league_id'] == league_id]['fbref_fixtures_url'].values[0]
+            lud = active_leagues_df[active_leagues_df['league_id'] == league_id]['last_updated_date'].values[0]
+            ten_days_date = lud + timedelta(days=10)
+
+            games_dates, games_local_time, games_venue_time, home_teams, away_teams = self.get_games_basic_info(url, lud, ten_days_date)
+
+            for i in tqdm(range(len(games_dates))):
+                game_date = games_dates[i]
+                game_local_time = games_local_time[i]
+                game_venue_time = games_venue_time[i]
+                home_team = home_teams[i]
+                home_id = get_team_id_by_name(home_team)
+                away_team = away_teams[i]
+                away_id = get_team_id_by_name(away_team)
+
+                home_elevation_dif = self.get_team_elevation_dif(home_id, away_id, "home")
+                away_elevation_dif = self.get_team_elevation_dif(home_id, away_id, "away")
+
+                away_travel_dist = self.get_travel_distance(home_id, away_id)
+
+                home_rest_days = self.get_team_rest_days(home_id, game_date)
+                away_rest_days = self.get_team_rest_days(away_id, game_date)
+
+                temp, rain = self.get_weather(home_id, game_date, game_venue_time)
+
+                insert_sql = """
+                INSERT INTO schedule_data (
+                    home_team_id,
+                    away_team_id,
+                    date,
+                    local_time,
+                    venue_time,
+                    league_id,
+                    home_elevation_dif,
+                    away_elevation_dif,
+                    away_travel,
+                    home_rest_days,
+                    away_rest_days,
+                    temperature,
+                    is_raining
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                ON DUPLICATE KEY UPDATE
+                    date   = VALUES(date),
+                    local_time   = VALUES(local_time),
+                    venue_time   = VALUES(venue_time),
+                    temperature  = VALUES(temperature),
+                    is_raining   = VALUES(is_raining);
+                """
+                
+                params = (
+                    home_id,
+                    away_id,
+                    game_date,
+                    game_local_time,
+                    game_venue_time,
+                    league_id,
+                    home_elevation_dif,
+                    away_elevation_dif,
+                    away_travel_dist,
+                    home_rest_days,
+                    away_rest_days,
+                    temp,
+                    rain
+                )
+                
+                DB.execute(insert_sql, params)
+        
+            delete_query = """
+            DELETE FROM schedule_data
+            WHERE match_date < %s
+              AND league_id  = %s
+            """
+            del_params = (datetime.today().date(), league_id)
+            DB.execute(delete_query, del_params)
+    
+    def get_games_basic_info(self, url, lud, ten_days_date):
+        s=Service('chromedriver.exe')
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless")
+        driver = webdriver.Chrome(service=s, options=options)
+        driver.get(url)
+        driver.execute_script("window.scrollTo(0, 1000);")
+
+        fixtures_table = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.stats_table")))
+        rows = fixtures_table.find_elements(By.XPATH, "./tbody/tr")
+        games_dates = []
+        games_local_time = []
+        games_venue_time = []
+        home_teams = []
+        away_teams = []
+
+        for row in rows:
+            date_element = row.find_element(By.CSS_SELECTOR, "[data-stat='date']")
+            date_text = date_element.text.strip()
+            cleaned_date_text = re.sub(r'[^0-9-]', '', date_text)
+            if cleaned_date_text:
+                game_date = datetime.strptime(cleaned_date_text, '%Y-%m-%d').date()
+            else:
+                continue
+
+            if lud <= game_date < ten_days_date:
+                games_dates.append(game_date)
+
+                venue_time_element = row.find_element(By.CSS_SELECTOR, '.venuetime')
+                venue_time_str = venue_time_element.text.strip("()")
+                venue_time_obj = datetime.strptime(venue_time_str, "%H:%M").time()
+                games_venue_time.append(venue_time_obj)
+
+                local_time_element = row.find_element(By.CSS_SELECTOR, '.localtime')
+                local_time_str = local_time_element.text.strip("()")
+                local_time_obj = datetime.strptime(local_time_str, "%H:%M").time()
+                games_local_time.append(local_time_obj)
+
+                home_name_element = row.find_element(By.CSS_SELECTOR, "[data-stat='home_team']")
+                home_name = home_name_element.text
+                home_teams.append(home_name)
+
+                away_name_element = row.find_element(By.CSS_SELECTOR, "[data-stat='away_team']")
+                away_name = away_name_element.text
+                away_teams.append(away_name)
+        driver.quit()
+        
+        return games_dates, games_local_time, games_venue_time, home_teams, away_teams
+
+    def get_team_elevation_dif(self, home_id, away_id, mode):
+        teams_df = DB.select(f"SELECT * FROM team_data WHERE team_id IN ({home_id}, {away_id})")
+
+        home_team = teams_df[teams_df["team_id"] == home_id].iloc[0]
+        away_team = teams_df[teams_df["team_id"] == away_id].iloc[0]
+
+        league_id = home_team["league_id"]
+
+        league_df = DB.select(f"SELECT * FROM team_data WHERE league_id = {league_id}")
+
+        league_elevation_avg = league_df["team_elevation"].mean()
+
+        home_elevation = home_team["team_elevation"]
+        away_elevation = away_team["team_elevation"]
+
+        if mode == "home":
+            reference_avg = (league_elevation_avg + home_elevation) / 2
+        elif mode == "away":
+            reference_avg = (league_elevation_avg + away_elevation) / 2
+        else:
+            raise ValueError(f"Invalid mode: {mode}. Expected 'home' or 'away'.")
+
+        elevation_difference = home_elevation - reference_avg
+        return elevation_difference
+
+    def get_travel_distance(self, home_id, away_id):
+        teams_df = DB.select(f"SELECT * FROM team_data WHERE team_id IN ({home_id}, {away_id})")
+
+        home_team = teams_df[teams_df["team_id"] == home_id].iloc[0]
+        away_team = teams_df[teams_df["team_id"] == away_id].iloc[0]
+
+        lat1, lon1 = map(str.strip, home_team["team_coordinates"].split(','))
+        lat2, lon2 = map(str.strip, away_team["team_coordinates"].split(','))
+    
+        lat1_rad = math.radians(float(lat1))
+        lon1_rad = math.radians(float(lon1))
+        lat2_rad = math.radians(float(lat2))
+        lon2_rad = math.radians(float(lon2))
+
+        R = 6371.0
+
+        dlat = lat2_rad - lat1_rad
+        dlon = lon2_rad - lon1_rad
+        
+        a = math.sin(dlat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon/2)**2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        
+        distance = int(round(R * c))
+        
+        return distance
+
+    def get_team_rest_days(self, team_id, target_date): 
+        team_df = DB.select(f"SELECT * FROM team_data WHERE team_id = {team_id}")
+
+        team_fixtures_url = team_df['team_fixtures_url'].values[0]
+
+        s=Service('chromedriver.exe')
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless")
+        driver = webdriver.Chrome(service=s, options=options)
+        driver.get(team_fixtures_url)
+
+        fixtures_table = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, '//*[@id="matchlogs_for"]')))
+        rows = fixtures_table.find_elements(By.XPATH, "./tbody/tr")
+        prev_game_date = None
+
+        for row in rows:
+            date_element = row.find_element(By.CSS_SELECTOR, "[data-stat='date']")
+            date_text = date_element.text.strip()
+            cleaned_date_text = re.sub(r'[^0-9-]', '', date_text)
+            if cleaned_date_text:
+                game_date = datetime.strptime(cleaned_date_text, '%Y-%m-%d').date()
+            else:
+                continue
+
+            if game_date < target_date:
+                if prev_game_date is None or game_date > prev_game_date:
+                    prev_game_date = game_date
+
+        driver.quit()
+
+        if prev_game_date is None:
+            return None
+
+        rest_days = (target_date - prev_game_date).days
+        return rest_days
+
+    def get_weather(self, home_id, game_date, game_venue_time):
+        team_df = DB.select(f"SELECT * FROM team_data WHERE team_id = {home_id}")
+
+        team_coordinates = team_df['team_coordinates'].values[0]
+        lat, lon = team_coordinates.split(',')
+        today = datetime.today().date()
+        if game_date < today:
+            base_url = "https://archive-api.open-meteo.com/v1/archive?"
+        else:
+            base_url = "https://api.open-meteo.com/v1/forecast?"
+
+        dummy_date = datetime(2000, 1, 1, game_venue_time.hour, game_venue_time.minute)
+
+        start_datetime = dummy_date - timedelta(hours=1)
+        end_datetime = dummy_date + timedelta(hours=2)
+
+        url = (
+            f"{base_url}"
+            f"latitude={lat}&longitude={lon}"
+            f"&start_date={game_date}&end_date={game_date}"
+            f"&hourly=temperature_2m,precipitation"
+            f"&timezone=auto"
+        )
+
+        response = requests.get(url)
+        data = response.json()
+
+        if "hourly" not in data:
+            raise ValueError(f"No data returned for {game_date}")
+
+        times = data["hourly"]["time"]
+        temps = data["hourly"]["temperature_2m"]
+        rains = data["hourly"]["precipitation"]
+
+        filtered_temps = []
+        filtered_rains = []
+
+        for t, temp, rain in zip(times, temps, rains):
+            dt = datetime.fromisoformat(t)
+            if start_datetime.time() <= dt.time() <= end_datetime.time():
+                filtered_temps.append(temp)
+                filtered_rains.append(rain)
+
+        avg_temp = sum(filtered_temps) / len(filtered_temps)
+        rain = any(r > 0.0 for r in filtered_rains)
+
+        return avg_temp, rain
+
 class Extract_Data:
     def __init__(self, upto_date: date = None): # datetime.strptime('2025-04-23', '%Y-%m-%d').date()
         """
@@ -219,9 +501,9 @@ class Extract_Data:
         Update the RAS from recent games using the old coefs before updating the coefs.
         """
         self.upto_date = upto_date or datetime.now().date()
-        # self.get_recent_games_match_info()
+        self.get_recent_games_match_info()
         self.update_matches_info()
-        # self.update_pdras()
+        self.update_pdras()
 
     def get_recent_games_match_info(self):
         """
@@ -384,7 +666,7 @@ class Extract_Data:
 
         missing_matches_df = match_info[~match_info['match_id'].isin(match_detail_ids)]
 
-        for _, row in missing_matches_df.iterrows():
+        for _, row in match_info.iterrows():
             # Match detail
             s = Service('chromedriver.exe')
             options = webdriver.ChromeOptions()
@@ -673,6 +955,12 @@ class Extract_Data:
                 outcome = shot["Outcome"]
                 sca_event = shot["SCA 1_Event"]
                 sca_player = shot["SCA 1_Player"].strip()
+
+                if math.isnan(shot_xg):
+                    shot_xg = 0.00
+
+                if math.isnan(shot_psxg):
+                    shot_psxg = 0.00
                 
                 shooter_team_stats = None
                 opponent_gk_stats = None
@@ -730,6 +1018,76 @@ class Extract_Data:
                 if outcome == "Goal":
                     opponent_gk_stats[opponent_gk_key]["gk_ga"] += 1
 
+                # Shots data
+                shot_minute = int(shot["Minute"])
+
+                if shooter_key in home_player_stats:
+                    shooter_team = "home"
+                else:
+                    shooter_team = "away"
+
+                if shooter_team == "home":
+                    off_players = get_lineups(home_players, subs_events, shot_minute, "home")
+                    def_players = get_lineups(away_players, subs_events, shot_minute, "away")
+                else:
+                    off_players = get_lineups(away_players, subs_events, shot_minute, "away")
+                    def_players = get_lineups(home_players, subs_events, shot_minute, "home")
+
+                cum_goal_home = sum(1 for minute, t in goal_events if minute <= shot_minute and t == "home")
+                cum_goal_away = sum(1 for minute, t in goal_events if minute <= shot_minute and t == "away")
+
+                goal_diff = cum_goal_home - cum_goal_away
+                if goal_diff == 0:
+                    match_state = "0"
+                elif goal_diff == 1:
+                    match_state = "1"
+                elif goal_diff > 1:
+                    match_state = "1.5"
+                elif goal_diff == -1:
+                    match_state = "-1"
+                else:
+                    match_state = "-1.5"
+
+                match_segment = str(min((shot_minute // 15) + 1, 6))
+
+                cum_red_home = sum(1 for minute, t in red_events if minute <= shot_minute and t == "home")
+                cum_red_away = sum(1 for minute, t in red_events if minute <= shot_minute and t == "away")
+
+                red_diff = cum_red_home - cum_red_away
+                if red_diff == 0:
+                    player_dif = "0"
+                elif red_diff == 1:
+                    player_dif = "1"
+                elif red_diff > 1:
+                    player_dif = "1.5"
+                elif red_diff == -1:
+                    player_dif = "-1"
+                else:
+                    player_dif = "-1.5"
+
+                shooter_id = shooter_team_stats[shooter_key]["player_id"]
+                if "Pass" in sca_event and 'assist_key' in locals() and assist_key:
+                    assister_id = shooter_team_stats[assist_key]["player_id"]
+                else:
+                    assister_id = ""
+
+                GK_id = opponent_gk_stats[list(opponent_gk_stats.keys())[0]]["player_id"]
+
+                sql_shot = "INSERT IGNORE INTO shots_data (match_id, xg, psxg, shooter_id, assister_id, GK_id, off_players, def_players, match_state, match_segment, player_dif, shot_type) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                params_shot = (match_id,
+                               shot_xg,
+                               shot_psxg,
+                               shooter_id,
+                               assister_id,
+                               GK_id,
+                               json.dumps(off_players, ensure_ascii=False),
+                               json.dumps(def_players, ensure_ascii=False),
+                               match_state,
+                               match_segment,
+                               player_dif,
+                               shot_type)
+                DB.execute(sql_shot, params_shot)
+
             tabbed_tables = driver.find_elements(By.CSS_SELECTOR, ".table_wrapper.tabbed")
 
             for table in tabbed_tables:
@@ -775,8 +1133,6 @@ class Extract_Data:
                 except Exception as e:
                     print(f"Error processing table: {e}")
 
-            driver.quit()
-
             insert_sql = "INSERT IGNORE INTO match_breakdown (match_id, player_id, headers, footers, key_passes, non_assisted_footers, hxg, fxg, kp_hxg, kp_fxg, hpsxg, fpsxg, gk_psxg, gk_ga, sub_in, sub_out, in_status, out_status, fouls_committed, fouls_drawn, yellow_cards, red_cards, minutes_played) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
 
             for team_stats in (home_player_stats, away_player_stats):
@@ -807,6 +1163,8 @@ class Extract_Data:
                             stat.get("red_cards", 0),
                             stat["minutes_played"])
                     DB.execute(insert_sql, params)
+
+            driver.quit()
             
     def update_pdras(self):
         """
@@ -1251,6 +1609,7 @@ Build contextual xgboost when predicting
 # ------------------------------ Trading ------------------------------
 # Init
 upto_date_ven = datetime.strptime('2025-04-01', '%Y-%m-%d').date()
+UpdateSchedule()
 #Fill_Teams_Data(1)
-Extract_Data(upto_date_ven)
+#Extract_Data(upto_date_ven)
 #Process_Data()
