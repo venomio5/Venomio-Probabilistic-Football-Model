@@ -19,7 +19,6 @@ CREATE TABLE match_info (
     red_cards INT DEFAULT 0,
     home_elevation_dif INT,
     away_elevation_dif INT,
-    home_travel INT,
     away_travel INT,
     home_rest_days INT,
     away_rest_days INT,
@@ -72,7 +71,7 @@ CREATE TABLE match_detail (
 ```
 CREATE TABLE match_breakdown (
     match_id INT,
-    player_id VARCHAR(20),
+    player_id VARCHAR(50),
     headers INT DEFAULT 0,
     footers INT DEFAULT 0,
     key_passes INT DEFAULT 0,
@@ -103,7 +102,7 @@ CREATE TABLE match_breakdown (
 ### players_data
 ```
 CREATE TABLE players_data (
-    player_id VARCHAR(20) PRIMARY KEY,
+    player_id VARCHAR(50) PRIMARY KEY,
     player_name VARCHAR(100),
     current_team VARCHAR(50),
     off_sh_coef FLOAT DEFAULT NULL,
@@ -152,10 +151,16 @@ CREATE TABLE referee_data (
 ### shots_data
 ```
 CREATE TABLE shots_data (
-    match_id INT PRIMARY KEY,
-    actual_xg FLOAT NOT NULL,
-    actual_psxg FLOAT NOT NULL,
-    actual_shooter_id VARCHAR(20) NOT NULL,
+    shot_id INT AUTO_INCREMENT PRIMARY KEY,
+    match_id INT,
+    xg FLOAT NOT NULL,
+    psxg FLOAT NOT NULL,
+    shot_type ENUM('head', 'foot') NOT NULL,
+    shooter_id VARCHAR(50) NOT NULL,
+    assister_id VARCHAR(50) NOT NULL,
+    GK_id VARCHAR(50) NOT NULL,
+    off_players JSON NOT NULL,
+    def_players JSON NOT NULL,
     total_PLSQA FLOAT DEFAULT NULL,
     shooter_SQ FLOAT DEFAULT NULL,
     assister_SQ FLOAT DEFAULT NULL,
@@ -163,8 +168,8 @@ CREATE TABLE shots_data (
     match_segment ENUM('1', '2', '3', '4', '5', '6') NOT NULL,
     player_dif ENUM('-1.5', '-1', '0', '1', '1.5') NOT NULL,
     RSQ FLOAT DEFAULT NULL,
-    SA FLOAT DEFAULT NULL,
-    GKA FLOAT DEFAULT NULL,
+    shooter_A FLOAT DEFAULT NULL,
+    GK_A FLOAT DEFAULT NULL,
     CONSTRAINT fk_shots_data_id
         FOREIGN KEY (match_id) REFERENCES match_info (match_id)
         ON DELETE CASCADE
@@ -177,6 +182,7 @@ CREATE TABLE team_data (
     team_name VARCHAR(100) NOT NULL UNIQUE,
     team_elevation INT NOT NULL,
     team_coordinates VARCHAR(50) NOT NULL,
+    team_fixtures_url VARCHAR(200) NOT NULL,
     league_id INT NOT NULL,
     CONSTRAINT fk_league_id
         FOREIGN KEY (league_id) REFERENCES league_data(league_id)
@@ -192,6 +198,27 @@ CREATE TABLE league_data (
     last_updated_date DATE,
     is_active BOOLEAN,
     league_sg_url VARCHAR(200)
+);
+```
+### schedule_data
+```
+CREATE TABLE schedule_data (
+    schedule_id INT AUTO_INCREMENT PRIMARY KEY,
+    home_team_id INT NOT NULL,
+    away_team_id INT NOT NULL,
+    date DATE NOT NULL,
+    local_time TIME NOT NULL,
+    venue_time TIME NOT NULL,
+    league_id INT NOT NULL,
+    home_elevation_dif INT,
+    away_elevation_dif INT,
+    away_travel INT,
+    home_rest_days INT,
+    away_rest_days INT,
+    temperature INT,
+    is_raining BOOLEAN,
+    url VARCHAR(200),
+    UNIQUE (home_team_id, away_team_id)
 );
 ```
 ## Notes
