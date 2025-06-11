@@ -103,7 +103,6 @@ CREATE TABLE match_breakdown (
 ```
 CREATE TABLE players_data (
     player_id VARCHAR(50) PRIMARY KEY,
-    player_name VARCHAR(100),
     current_team VARCHAR(50),
     off_sh_coef FLOAT DEFAULT NULL,
     def_sh_coef FLOAT DEFAULT NULL,
@@ -217,7 +216,6 @@ CREATE TABLE schedule_data (
     away_rest_days INT,
     temperature INT,
     is_raining BOOLEAN,
-    url VARCHAR(200),
     UNIQUE (home_team_id, away_team_id)
 );
 ```
