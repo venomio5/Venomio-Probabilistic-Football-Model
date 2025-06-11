@@ -182,6 +182,7 @@ CREATE TABLE team_data (
     team_name VARCHAR(100) NOT NULL UNIQUE,
     team_elevation INT NOT NULL,
     team_coordinates VARCHAR(50) NOT NULL,
+    team_fixtures_url VARCHAR(200),
     league_id INT NOT NULL,
     CONSTRAINT fk_league_id
         FOREIGN KEY (league_id) REFERENCES league_data(league_id)
