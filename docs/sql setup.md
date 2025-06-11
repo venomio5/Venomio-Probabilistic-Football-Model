@@ -206,7 +206,7 @@ CREATE TABLE schedule_data (
     schedule_id INT AUTO_INCREMENT PRIMARY KEY,
     home_team_id INT NOT NULL,
     away_team_id INT NOT NULL,
-    date DATETIME NOT NULL,
+    date DATE NOT NULL,
     local_time TIME NOT NULL,
     venue_time TIME NOT NULL,
     league_id INT NOT NULL,
