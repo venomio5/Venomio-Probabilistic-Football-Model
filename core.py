@@ -20,6 +20,7 @@ from sklearn.linear_model import Ridge
 import scipy.sparse as sp
 import json
 from tqdm import tqdm
+import ast
 
 # ------------------------------ Database Manager ------------------------------
 class DatabaseManager:
@@ -1250,7 +1251,7 @@ class Process_Data:
         """
         Function to update players shot types coefficients per league
         """
-        league_id_df = DB.select("SELECT league_id FROM league_data")
+        league_id_df = DB.select("SELECT league_id FROM league_data WHERE is_active = 1")
 
         for league_id in league_id_df['league_id'].tolist():
             for shot_type in ["headers", "footers"]:
@@ -1267,8 +1268,14 @@ class Process_Data:
                 FROM match_detail 
                 WHERE match_id IN ({matches_ids_placeholder});
                 """
-                print(matches_sql, matches_ids)
                 matches_details_df = DB.select(matches_sql, matches_ids)
+
+                matches_details_df['teamA_players'] = matches_details_df['teamA_players'].apply(
+                    lambda v: v if isinstance(v, list) else ast.literal_eval(v)
+                )
+                matches_details_df['teamB_players'] = matches_details_df['teamB_players'].apply(
+                    lambda v: v if isinstance(v, list) else ast.literal_eval(v)
+                )
 
                 players_set = set()
                 for idx, row in matches_details_df.iterrows():
@@ -1369,7 +1376,7 @@ class Process_Data:
                 COALESCE(SUM(fouls_committed), 0) AS fouls_committed,
                 COALESCE(SUM(fouls_drawn), 0) AS fouls_drawn,
                 COALESCE(SUM(yellow_cards), 0) AS yellow_cards,
-                COALESCE(SUM(red_card), 0) AS red_card
+                COALESCE(SUM(red_cards), 0) AS red_cards
             FROM match_breakdown
             WHERE player_id = %s
             """
@@ -1462,8 +1469,8 @@ class Process_Data:
             SELECT
                 COALESCE(SUM(total_fouls), 0) AS fouls,
                 COALESCE(SUM(yellow_cards), 0) AS yellow_cards,
-                COALESCE(SUM(red_cards), 0) AS red_cards
-                COALESCE(SUM(minutes_played), 0) AS minutes_played,
+                COALESCE(SUM(red_cards), 0) AS red_cards,
+                COUNT(*) * 90 AS minutes_played
             FROM match_info
             WHERE referee_name = %s
             """
@@ -1480,13 +1487,14 @@ class Process_Data:
                 yellow_cards = %s,
                 red_cards = %s,
                 minutes_played = %s 
-            WHERE player_id = %s
+            WHERE referee_name = %s
             """
             DB.execute(rupdate_query, (
-                row["fouls"],
-                row["yellow_cards"],
-                row["red_cards"],
-                row["minutes_played"]
+                int(row["fouls"]),
+                int(row["yellow_cards"]),
+                int(row["red_cards"]),
+                int(row["minutes_played"]),
+                referee
             ))
 
     def update_players_xg_coef(self):
@@ -1515,49 +1523,50 @@ class Process_Data:
                 WHERE match_id IN ({matches_ids_placeholder});
                 """
                 matches_details_df = DB.select(matches_sql, matches_ids)
-                matches_details_df['teamA_player_ids'] = matches_details_df['teamA_players'].apply(extract_player_ids)
-                matches_details_df['teamB_player_ids'] = matches_details_df['teamB_players'].apply(extract_player_ids)
-                cols_to_drop = ['teamA_players', 'teamB_players']
-                matches_details_df = matches_details_df.drop(columns=cols_to_drop)
+
+                matches_details_df['teamA_players'] = matches_details_df['teamA_players'].apply(
+                    lambda v: v if isinstance(v, list) else ast.literal_eval(v)
+                )
+                matches_details_df['teamB_players'] = matches_details_df['teamB_players'].apply(
+                    lambda v: v if isinstance(v, list) else ast.literal_eval(v)
+                )
                 
                 players_set = set()
-                for idx, row in matches_details_df.iterrows():
-                    players_set.update(row['teamA_player_ids'])
-                    players_set.update(row['teamB_player_ids'])
+                for _, row in matches_details_df.iterrows():
+                    players_set.update(row['teamA_players'])
+                    players_set.update(row['teamB_players'])
                 players = sorted(list(players_set))
                 num_players = len(players)
                 players_to_index = {player: idx for idx, player in enumerate(players)}
                 
-                rows = []
-                cols = []
-                data_vals = []
-                y = []
-                sample_weights = []
+                rows, cols, data_vals, y, sample_weights = [], [], [], [], []
                 row_num = 0
                 
-                for idx, row in matches_details_df.iterrows():
+                for _, row in matches_details_df.iterrows():
                     shots_teamA = row[f'teamA_{shot_type}']
                     shots_teamB = row[f'teamB_{shot_type}']
+                    
                     if shots_teamA > 0:
                         xg_teamA = row['teamA_xg']
-                        for p in row['teamA_player_ids']:
+                        for p in row['teamA_players']:
                             rows.append(row_num)
                             cols.append(players_to_index[p])
                             data_vals.append(1)
-                        for p in row['teamB_player_ids']:
+                        for p in row['teamB_players']:
                             rows.append(row_num)
                             cols.append(num_players + players_to_index[p])
                             data_vals.append(-1)
                         y.append(xg_teamA / shots_teamA)
                         sample_weights.append(shots_teamA)
                         row_num += 1
+                        
                     if shots_teamB > 0:
                         xg_teamB = row['teamB_xg']
-                        for p in row['teamB_player_ids']:
+                        for p in row['teamB_players']:
                             rows.append(row_num)
                             cols.append(players_to_index[p])
                             data_vals.append(1)
-                        for p in row['teamA_player_ids']:
+                        for p in row['teamA_players']:
                             rows.append(row_num)
                             cols.append(num_players + players_to_index[p])
                             data_vals.append(-1)
@@ -1581,24 +1590,603 @@ class Process_Data:
                 for player in players:
                     off_coef = offensive_ratings[player]
                     def_coef = defensive_ratings[player]
+                    
                     if shot_type == "headers":
-                        update_coef_query = f"""
+                        update_coef_query = """
                         UPDATE players_data
                         SET off_hxg_coef = %s, def_hxg_coef = %s
                         WHERE player_id = %s
                         """
                     else:
-                        update_coef_query = f"""
+                        update_coef_query = """
                         UPDATE players_data
                         SET off_fxg_coef = %s, def_fxg_coef = %s
                         WHERE player_id = %s
                         """
+                    
                     DB.execute(update_coef_query, (off_coef, def_coef, player))
-
 # ------------------------------ Monte Carlo ------------------------------
-"""
-Build contextual xgboost when predicting
-"""
+class Alg:
+    def __init__(self, home_team, away_team, home_lineups, away_lineups, league, match_date, match_time, match_id, home_initial_goals, away_initial_goals, match_initial_time, home_n_subs, away_n_subs, home_n_rc, away_n_rc):
+        self.home_team = home_team
+        self.away_team = away_team
+        self.league = league
+        self.match_date = match_date
+        self.match_time = match_time
+        self.match_id = match_id
+        self.home_lineups = home_lineups
+        self.away_lineups = away_lineups
+        self.home_initial_goals = home_initial_goals
+        self.away_initial_goals = away_initial_goals
+        self.match_initial_time = match_initial_time
+        self.home_n_subs = home_n_subs
+        self.away_n_subs = away_n_subs
+        self.home_n_rc = home_n_rc
+        self.away_n_rc = away_n_rc
+
+        self.home_starters, self.home_subs = self.divide_matched_players(self.home_team, self.league, self.home_lineups)
+        self.away_starters, self.away_subs = self.divide_matched_players(self.away_team, self.league, self.away_lineups)
+
+        self.home_players_data = self.get_players_data(self.home_team, self.home_starters, self.home_subs, self.league)
+        self.away_players_data = self.get_players_data(self.away_team, self.away_starters, self.away_subs, self.league)
+
+        self.league_avg = self.get_league_avg(self.league)
+        self.home_sub_minutes, self.away_sub_minutes = self.get_sub_minutes(self.home_team, self.away_team, self.league, self.match_initial_time, self.home_n_subs, self.away_n_subs)
+        self.all_sub_minutes = list(set(list(self.home_sub_minutes.keys()) + list(self.away_sub_minutes.keys())))
+
+        self.home_features = self.compute_features(self.home_team, self.away_team, self.league, True, self.match_date, self.match_time)
+        self.away_features = self.compute_features(self.away_team, self.home_team, self.league, False, self.match_date, self.match_time)
+
+        if self.match_initial_time >= 75:
+            range_value = 10000
+        elif self.match_initial_time >= 60:
+            range_value = 20000
+        elif self.match_initial_time >= 45:
+            range_value = 30000
+        elif self.match_initial_time >= 30:
+            range_value = 40000
+        elif self.match_initial_time >= 15:
+            range_value = 50000
+        elif self.match_initial_time < 15:
+            range_value = 60000
+
+        all_rows = []
+
+        for i in tqdm(range(range_value)):
+            home_goals = self.home_initial_goals
+            away_goals = self.away_initial_goals
+            home_active_players = self.home_starters
+            away_active_players = self.away_starters
+            home_passive_players = self.home_subs
+            away_passive_players = self.away_subs
+            sql_momentum = 0
+
+            home_last_goal_time = None
+            away_last_goal_time = None
+
+            home_natural_projected_goals = self.get_teams_natural_projected_goals(home_active_players, away_active_players, self.home_players_data, self.away_players_data, self.league_avg)
+            away_natural_projected_goals = self.get_teams_natural_projected_goals(away_active_players, home_active_players, self.away_players_data, self.home_players_data, self.league_avg)
+
+            self.home_rc_offensive_penalty = 1 if self.home_n_rc == 0 else 0.5 ** self.home_n_rc
+            self.home_rc_defensive_penalty = 1 if self.home_n_rc == 0 else 1.6 ** self.home_n_rc
+
+            self.away_rc_offensive_penalty = 1 if self.away_n_rc == 0 else 0.5 ** self.away_n_rc
+            self.away_rc_defensive_penalty = 1 if self.away_n_rc == 0 else 1.6 ** self.away_n_rc
+
+            for minute in range(self.match_initial_time, 91):
+                all_rows.append((i, minute, home_goals, away_goals, sql_momentum))
+                home_status, away_status = self.get_status(home_goals, away_goals)
+                time_segment = self.get_time_segment(minute)
+
+                if minute in self.all_sub_minutes:
+                    if minute in list(self.home_sub_minutes.keys()):
+                        home_active_players, home_passive_players = self.swap_players(home_active_players, home_passive_players, self.home_players_data, self.home_sub_minutes[minute], home_status)
+                    if minute in list(self.away_sub_minutes.keys()):
+                        away_active_players, away_passive_players = self.swap_players(away_active_players, away_passive_players, self.away_players_data, self.away_sub_minutes[minute], away_status)
+                    home_natural_projected_goals = self.get_teams_natural_projected_goals(home_active_players, away_active_players, self.home_players_data, self.away_players_data, self.league_avg)
+                    away_natural_projected_goals = self.get_teams_natural_projected_goals(away_active_players, home_active_players, self.away_players_data, self.home_players_data, self.league_avg)
+
+                home_recent = home_last_goal_time is not None and (minute - home_last_goal_time) <= 10
+                away_recent = away_last_goal_time is not None and (minute - away_last_goal_time) <= 10
+
+                if home_last_goal_time is None and away_last_goal_time is None:
+                    last_team = None
+                elif away_last_goal_time is None or (home_last_goal_time and home_last_goal_time > away_last_goal_time):
+                    last_team = "home"
+                else:
+                    last_team = "away"
+
+                home_momentum = 1.02 if (home_recent and last_team == "home") else 1.0
+                away_momentum = 1.02 if (away_recent and last_team == "away") else 1.0
+
+                sql_momentum = 1 if home_momentum > 1.0 else 2 if away_momentum > 1.0 else 0
+
+                home_proj_xg = home_natural_projected_goals * self.home_features['hna'] * self.home_features[time_segment] * self.home_features[home_status] * self.home_features['Travel'] * self.home_features['Elevation'] * self.home_features['Rest'] * self.home_features['Time'] * home_momentum * self.home_rc_offensive_penalty * self.away_rc_defensive_penalty
+                away_proj_xg = away_natural_projected_goals * self.away_features['hna'] * self.away_features[time_segment] * self.away_features[away_status] * self.away_features['Travel'] * self.away_features['Elevation'] * self.away_features['Rest'] * self.away_features['Time'] * away_momentum * self.home_rc_defensive_penalty * self.away_rc_offensive_penalty
+
+                home_goals_scored = np.random.poisson(home_proj_xg)
+                away_goals_scored = np.random.poisson(away_proj_xg)
+
+                home_goals += home_goals_scored
+                away_goals += away_goals_scored
+
+        self.insert_sim_data(all_rows, self.match_id)
+
+    def divide_matched_players(self, team, league, lineups):
+        clean_list = [line for line in lineups.split('\n') if line and not any(char.isdigit() for char in line)]
+
+        unmatched_starters = clean_list[:11]
+        unmatched_subs = clean_list[11:]
+
+        db = DatabaseManager.DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
+        sql_query = """
+            SELECT DISTINCT players_name
+            FROM players_data
+            WHERE league_name = %s
+            AND team_name = %s;
+        """
+        players_df = db.select(sql_query, (league, team))
+        db_players = [row['players_name'] for idx, row in players_df.iterrows()]
+
+        matched_starters = []
+        matched_subs = []
+
+        threshold = 80
+        while unmatched_starters:
+            remaining_players = []
+            for player in unmatched_starters:
+                closest_match = process.extractOne(player, db_players, score_cutoff=threshold)
+                if closest_match:
+                    matched_starters.append(closest_match[0])
+                    db_players.remove(closest_match[0])
+                else:
+                    remaining_players.append(player)
+            if not remaining_players:
+                break
+            unmatched_starters = remaining_players
+            threshold -= 20
+        threshold = 80
+        while unmatched_subs:
+            remaining_players = []
+            for player in unmatched_subs:
+                closest_match = process.extractOne(player, db_players, score_cutoff=threshold)
+                if closest_match:
+                    matched_subs.append(closest_match[0])
+                    db_players.remove(closest_match[0])
+                else:
+                    remaining_players.append(player)
+            if not remaining_players:
+                break
+            unmatched_subs = remaining_players
+            threshold -= 20
+
+        return matched_starters, matched_subs
+
+    def get_players_data(self, team, team_starters, team_subs, league):
+        all_players = team_starters + team_subs
+        players_dict = {}
+
+        self.db = DatabaseManager.DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
+        escaped_players = [player.replace("'", "''") for player in all_players]
+
+        team_starters_str = ", ".join([f"'{player}'" for player in escaped_players])
+
+        sql_query = f"""
+            SELECT 
+                players_name, off_xg, def_xg, minutes_played, sub_in, sub_out, in_status, out_status
+            FROM players_data
+            WHERE league_name = '{league}'
+            AND team_name = '{team}'
+            AND players_name IN ({team_starters_str});
+        """
+        result = self.db.select(sql_query)
+
+        for player in all_players:
+            in_status_dict = {'Leading': 0, 'Level': 0, 'Trailing': 0}
+            out_status_dict = {'Leading': 0, 'Level': 0, 'Trailing': 0}
+            player_off_xg = float(sum(result[result['players_name'] == player]['off_xg']))
+            player_def_xg = float(sum(result[result['players_name'] == player]['def_xg']))
+            player_minutes = int(sum(result[result['players_name'] == player]['minutes_played']))
+
+            in_status_data = (
+                result[(result['players_name'] == player) & (result['sub_in'] != 0)]
+                .groupby('in_status')
+                .size()
+            )
+
+            if not in_status_data.empty:
+                in_status_dict.update(in_status_data.to_dict())
+
+                total_in = sum(in_status_dict.values())
+                for key in in_status_dict:
+                    in_status_dict[key] = (in_status_dict[key] / total_in)
+
+            out_status_data = (
+                result[(result['players_name'] == player) & (result['sub_out'] <= 90)]
+                .groupby('out_status')
+                .size()
+            )
+
+            if not out_status_data.empty:
+                out_status_dict.update(out_status_data.to_dict())
+
+                total_out = sum(out_status_dict.values())
+                for key in out_status_dict:
+                    out_status_dict[key] = (out_status_dict[key] / total_out)
+
+            players_dict[player] = {'off_xg': player_off_xg, 'def_xg': player_def_xg, 'total_minutes': player_minutes, 'in_status_dict': in_status_dict, 'out_status_dict': out_status_dict}
+
+        return players_dict 
+
+    def get_league_avg(self, league):
+        self.db = DatabaseManager.DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
+
+        league_avg_query = f"""
+            SELECT 
+                league_avg_xg_pm
+            FROM leagues_data
+            WHERE league_name = '{league}';
+        """
+
+        league_result = self.db.select(league_avg_query)
+
+        return float(league_result['league_avg_xg_pm'][0])  
+
+    def get_sub_minutes(self, team, opponent, league, match_initial_time, home_n_subs_avail, away_n_subs_avail):
+        self.db = DatabaseManager.DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
+
+        teams_data_query = f"""
+            SELECT 
+                team_name, date, sub_in, sub_out, in_status, out_status
+            FROM players_data
+            WHERE league_name = '{league}'
+            AND team_name IN ('{team}', '{opponent}');
+        """
+
+        query_df = self.db.select(teams_data_query)
+
+        team_avg_subs = round(
+            query_df[(query_df['team_name'] == team) & (query_df['sub_in'] != 0)]
+            .groupby('date')
+            .size()
+            .mean()
+        )
+
+        opponent_avg_subs = round(
+            query_df[(query_df['team_name'] == opponent) & (query_df['sub_in'] != 0)]
+            .groupby('date')
+            .size()
+            .mean()
+        )
+
+        effective_team_subs = max(0, min(team_avg_subs - (5 - home_n_subs_avail), home_n_subs_avail))
+        effective_opponent_subs = max(0, min(opponent_avg_subs - (5 - away_n_subs_avail), away_n_subs_avail))
+
+        def get_distribution(team_name, avail_subs):
+            if avail_subs == 0:
+                return {100: 0}
+            if avail_subs == 1:
+                n_windows = 1
+            elif avail_subs < 5:
+                n_windows = 2
+            else:
+                n_windows = 3
+
+            top_minutes = (
+                query_df[(query_df['team_name'] == team_name) &
+                        (query_df['sub_in'] != 0) &
+                        (query_df['sub_in'] > match_initial_time)]
+                ['sub_in']
+                .value_counts()
+                .head(n_windows)
+                .index
+                .tolist()
+            )
+
+            base = avail_subs // n_windows
+            remainder = avail_subs % n_windows
+            distribution = {}
+            for i in range(n_windows):
+                distribution[top_minutes[i]] = base + 1 if i < remainder else base
+            return distribution
+
+        team_distribution = get_distribution(team, effective_team_subs)
+        opponent_distribution = get_distribution(opponent, effective_opponent_subs)
+
+        return team_distribution, opponent_distribution
+
+    def swap_players(self, active_players, passive_players, players_data, subs, game_status):
+        total_active_minutes = 0
+        for player in active_players:
+            total_active_minutes += players_data[player]['total_minutes']
+
+        active_players_dict = {}
+
+        for player in active_players:
+            active_players_dict[player] = (players_data[player]['total_minutes'] / total_active_minutes) * (players_data[player]['out_status_dict'][game_status])
+
+        total_active_p = sum(active_players_dict.values())
+        if total_active_p == 0:
+            num_players = len(active_players_dict)
+            normalized_active_p = {key: 1.0 / num_players for key in active_players_dict.keys()}
+        else:
+            normalized_active_p = {key: value / total_active_p for key, value in active_players_dict.items()}
+            probabilities = list(normalized_active_p.values())
+            if subs > 1 and probabilities.count(1.0) == 1:
+                max_index = probabilities.index(1.0)
+                probabilities[max_index] = 0.99
+                small_probability = 0.01 / (len(probabilities) - 1)
+                for i in range(len(probabilities)):
+                    if i != max_index:
+                        probabilities[i] = small_probability
+            for i, key in enumerate(normalized_active_p.keys()):
+                normalized_active_p[key] = probabilities[i]
+
+        active_weights = list(normalized_active_p.values())      
+
+        picked_out_players = np.random.choice(active_players, p=active_weights, replace=False, size=subs)
+
+        total_passive_minutes = 0
+        for player in passive_players:
+            total_passive_minutes += players_data[player]['total_minutes']
+
+        passive_players_dict = {}
+
+        for player in passive_players:
+            passive_players_dict[player] = (players_data[player]['total_minutes'] / total_passive_minutes) * (players_data[player]['in_status_dict'][game_status])
+
+        total_passive_p = sum(passive_players_dict.values())
+        if total_passive_p == 0:
+            num_players = len(passive_players_dict)
+            normalized_passive_p = {key: 1.0 / num_players for key in passive_players_dict.keys()}
+        else:
+            normalized_passive_p = {key: value / total_passive_p for key, value in passive_players_dict.items()}
+            probabilities = list(normalized_passive_p.values())
+            if subs > 1 and probabilities.count(1.0) == 1:
+                max_index = probabilities.index(1.0)
+                probabilities[max_index] = 0.99
+                small_probability = 0.01 / (len(probabilities) - 1)
+                for i in range(len(probabilities)):
+                    if i != max_index:
+                        probabilities[i] = small_probability
+            for i, key in enumerate(normalized_passive_p.keys()):
+                normalized_passive_p[key] = probabilities[i]
+
+        passive_weights = list(normalized_passive_p.values())   
+
+        picked_in_players = np.random.choice(passive_players, p=passive_weights, replace=False, size=subs)
+
+        active_players = [player for player in active_players if player not in picked_out_players]
+        active_players.extend(picked_in_players)
+        passive_players = [player for player in passive_players if player not in picked_in_players]
+
+        return active_players, passive_players
+
+    def get_teams_natural_projected_goals(self, offensive_players, defensive_players, offensive_data, defensive_data, league_avg):
+        total_off_xg = 0
+        total_off_minutes_played = 0
+        for player in offensive_players:
+            total_off_xg += offensive_data[player]['off_xg']
+            total_off_minutes_played += offensive_data[player]['total_minutes']
+        total_off_pm = total_off_xg/total_off_minutes_played
+
+        total_def_xg = 0
+        total_def_minutes_played = 0
+        for player in defensive_players:
+            total_def_xg += defensive_data[player]['def_xg']
+            total_def_minutes_played += defensive_data[player]['total_minutes']
+        total_def_pm = total_def_xg/total_def_minutes_played
+
+        team_natural_proj_goals = (total_off_pm/league_avg)*(total_def_pm/league_avg)*league_avg
+
+        return team_natural_proj_goals
+
+    def compute_features(self, team, opponent, league, is_home, match_date, match_time):
+        if is_home:
+            hna_mp = 1.1
+            distance_mp = self.compute_travel_distance_mp(team, opponent, league)
+            elevation_mp = self.compute_elevation_mp(opponent, team, league)
+        else:
+            hna_mp = 0.9
+            distance_mp = 1
+            elevation_mp = 1
+
+        rest_mp = self.compute_rest_mp(opponent, league, match_date)
+        time_mp = self.compute_time_mp(match_time)
+
+        features = {
+            'hna': hna_mp,
+            '00-15': 0.85,
+            '15-30': 0.95,
+            '30-45': 1.05,
+            '45-60': 1.03,
+            '60-75': 1.02,
+            '75-90': 1.1,
+            'Level': 0.97,
+            'Trailing': 1.02,
+            'Leading': 1.01,
+            'Travel': distance_mp,
+            'Elevation': elevation_mp,
+            'Rest': rest_mp,
+            'Time': time_mp
+        }
+
+        return features
+    
+    def compute_travel_distance_mp(self, team, opponent, league):
+        self.db = DatabaseManager.DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
+
+        location_query = f"""
+            SELECT 
+                team_name, coordinates
+            FROM teams_data
+            WHERE league_name = '{league}'
+            AND team_name IN ('{team}', '{opponent}');
+        """
+        location_df = self.db.select(location_query)
+
+        team_coordinates = location_df[location_df['team_name'] == team]['coordinates'].values[0]
+        lat1, lon1 = map(str.strip, team_coordinates.split(','))
+        opponent_coordinates = location_df[location_df['team_name'] == opponent]['coordinates'].values[0]
+        lat2, lon2 = map(str.strip, opponent_coordinates.split(','))
+    
+        lat1_rad = math.radians(float(lat1))
+        lon1_rad = math.radians(float(lon1))
+        lat2_rad = math.radians(float(lat2))
+        lon2_rad = math.radians(float(lon2))
+
+        R = 6371.0
+
+        dlat = lat2_rad - lat1_rad
+        dlon = lon2_rad - lon1_rad
+        
+        a = math.sin(dlat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon/2)**2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        
+        distance = int(round(R * c))
+        
+        increments = distance // 100
+        
+        penalization_percent = increments * 1
+        
+        if penalization_percent > 20:
+            penalization_percent = 20
+        
+        result = 1 + (penalization_percent / 100)
+        
+        return result
+    
+    def compute_elevation_mp(self, team, opponent, league):
+        self.db = DatabaseManager.DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
+
+        elevation_query = f"""
+            SELECT 
+                team_name, elevation
+            FROM teams_data
+            WHERE league_name = '{league}'
+            AND team_name IN ('{team}', '{opponent}');
+        """
+        elevation_df = self.db.select(elevation_query)
+
+        team_elevation = elevation_df[elevation_df['team_name'] == team]['elevation'].values[0]
+        opponent_elevation = elevation_df[elevation_df['team_name'] == opponent]['elevation'].values[0]
+
+        elevation_dif = opponent_elevation - team_elevation
+        
+        increments = elevation_dif // 100
+        penalization_percent = 0
+
+        if increments > 0:
+            penalization_percent = min(increments * 1, 15)
+            result = 1 + (penalization_percent / 100)
+
+        elif increments < 0:
+            penalization_percent = max(increments * 1, -15)
+            result = 1 + (penalization_percent / 100)
+        
+        result = 1 + (penalization_percent / 100)
+        
+        return result
+    
+    def compute_rest_mp(self, opponent, league, match_date):
+        self.db = DatabaseManager.DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
+
+        lpg_query = f"""
+            SELECT 
+                team_name, last_played_game
+            FROM teams_data
+            WHERE league_name = '{league}'
+            AND team_name = '{opponent}';
+        """
+        lpg_df = self.db.select(lpg_query)
+
+        opponent_lpg = lpg_df[lpg_df['team_name'] == opponent]['last_played_game'].values[0]
+
+        opponent_rest_days = (match_date - opponent_lpg).days
+
+        rest_days = {2: 15, 7: -3, 14: 10}
+        sorted_items = sorted(rest_days.items())
+        
+        if opponent_rest_days <= sorted_items[0][0]:
+            rest_opponent_adjustment = sorted_items[0][1]
+        elif opponent_rest_days >= sorted_items[-1][0]:
+            rest_opponent_adjustment = sorted_items[-1][1]
+        else:
+            for (x0, y0), (x1, y1) in zip(sorted_items[:-1], sorted_items[1:]):
+                if x0 <= opponent_rest_days <= x1:
+                    rest_opponent_adjustment = y0 + (opponent_rest_days - x0) * (y1 - y0) / (x1 - x0)
+                    break
+        penalization_percent = min(rest_opponent_adjustment, 15)
+        result = 1 + (penalization_percent / 100)
+        
+        return result
+    
+    def compute_time_mp(self, match_time):
+        total_seconds = match_time.total_seconds()
+        hours = int(total_seconds // 3600) % 24
+
+        if 0 <= hours < 13:
+            category = "Afternoon"
+        elif 13 <= hours < 20:
+            category = "Evening"
+        elif 20 <= hours <= 23:
+            category = "Night"
+
+        if category == "Afternoon":
+            penalization_percent = 6
+        elif category == "Evening":
+            penalization_percent = -2
+        elif category == "Night":
+            penalization_percent = -4
+        
+        result = 1 - (penalization_percent / 100)
+        
+        return result
+    
+    def get_status(self, home_goals, away_goals):
+        if home_goals > away_goals:
+            return "Leading", "Trailing"
+        elif home_goals < away_goals:
+            return "Trailing", "Leading"
+        else:
+            return "Level", "Level"
+
+    def get_time_segment(self, minute):
+        if minute < 15:
+            return "00-15"
+        elif minute < 30:
+            return "15-30"
+        elif minute < 45:
+            return "30-45"
+        elif minute < 60:
+            return "45-60"
+        elif minute < 75:
+            return "60-75"
+        else:
+            return "75-90"
+        
+    def insert_sim_data(self, rows, match_id):
+        delete_query  = """
+        DELETE FROM simulation_data 
+        WHERE match_id = %s
+        """
+
+        self.db.execute(delete_query, (match_id,))
+
+        batch_size = 200
+        for i in range(0, len(rows), batch_size):
+            chunk = rows[i:i + batch_size]
+            placeholders = ', '.join(['(%s, %s, %s, %s, %s, %s)'] * len(chunk))
+            insert_sql = f"""
+            INSERT INTO simulation_data 
+                (match_id, sim_id, minute, home_goals, away_goals, momentum)
+            VALUES {placeholders}
+            """
+            params = []
+            for row in chunk:
+                params.extend([match_id] + list(row))
+
+            self.db.execute(insert_sql, params)    
 # ------------------------------ Trading ------------------------------
 # Init
 upto_date_ven = datetime.strptime('2025-04-01', '%Y-%m-%d').date()
