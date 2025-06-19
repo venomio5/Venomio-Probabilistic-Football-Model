@@ -1,13 +1,12 @@
 from datetime import datetime, timedelta
 import sys
-from PyQt5.QtCore import Qt, QRunnable, QObject, pyqtSignal, QThreadPool, QThread, QTimer
+from PyQt5.QtCore import Qt, QRunnable, QObject, pyqtSignal, QThreadPool, QDate
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                             QComboBox, QScrollArea, QLabel, QPushButton, QCheckBox, QDoubleSpinBox,
-                            QDialog, QListWidget, QListWidgetItem, QTabWidget, QFormLayout, QGraphicsDropShadowEffect,
-                            QPlainTextEdit, QGridLayout, QLineEdit, QGroupBox, QSpinBox)
-import vpfm
-import DatabaseManager
+                            QDialog, QListWidget, QListWidgetItem, QTabWidget, QFormLayout, QPlainTextEdit,
+                            QGridLayout, QLineEdit, QGroupBox, QSpinBox, QDateEdit)
+import core
 import warnings 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
@@ -45,7 +44,7 @@ class MainWindow(QMainWindow):
         self.threadpool = QThreadPool()
         self.open_windows = []
         
-        self.vpfm_db = DatabaseManager.DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
+        self.vpfm_db = core.DB
         
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -149,21 +148,22 @@ class MainWindow(QMainWindow):
 
     def load_fixtures(self):
         fixtures_query = """
-            SELECT match_id, home_team, away_team, 
-                    match_date, match_local_time, league_name 
+            SELECT schedule_id, home_team_id, away_team_id, 
+                    date, local_time, league_id
             FROM schedule_data
         """
         self.all_matches = self.vpfm_db.select(fixtures_query)
-        self.all_matches['match_datetime'] = self.all_matches.apply(
-            lambda row: datetime.combine(row['match_date'], datetime.min.time()) + row['match_local_time'],
+        self.all_matches['datetime'] = self.all_matches.apply(
+            lambda row: datetime.combine(row['date'], datetime.min.time()) + row['local_time'],
             axis=1
         )
 
-        leagues = list({row["league_name"] for idx, row in self.all_matches.iterrows()})
-        leagues.sort()
+        league_ids = {row["league_id"] for _, row in self.all_matches.iterrows()}
+        league_names = [core.get_league_name_by_id(league_id) for league_id in league_ids if core.get_league_name_by_id(league_id) is not None]
+        league_names.sort()
         self.league_filter.clear()
         self.league_filter.addItem("All", "all")
-        for league in leagues:
+        for league in league_names:
             self.league_filter.addItem(league, league)
 
         self.filter_matches()
@@ -177,23 +177,23 @@ class MainWindow(QMainWindow):
         past_matches = []
 
         for idx, row in self.all_matches.iterrows():
-            if row['match_date'] == current_time.date():
-                if two_hours_ago <= row['match_datetime'] <= current_time:
+            if row['date'] == current_time.date():
+                if two_hours_ago <= row['datetime'] <= current_time:
                     today_matches["inPlay"].append(row)
-                elif row['match_datetime'] > current_time:
+                elif row['datetime'] > current_time:
                     today_matches["later"].append(row)
                 else:
                     past_matches.append(row)
             else:
-                if row['match_date'] > current_time.date():
+                if row['date'] > current_time.date():
                     upcoming_matches.append(row)
                 else:
                     past_matches.append(row)
 
-        today_matches["inPlay"].sort(key=lambda match: match["match_datetime"])
-        today_matches["later"].sort(key=lambda match: match["match_datetime"])
-        upcoming_matches.sort(key=lambda match: match["match_date"])
-        past_matches.sort(key=lambda match: match["match_date"])
+        today_matches["inPlay"].sort(key=lambda match: match["datetime"])
+        today_matches["later"].sort(key=lambda match: match["datetime"])
+        upcoming_matches.sort(key=lambda match: match["date"])
+        past_matches.sort(key=lambda match: match["date"])
 
         # Apply filters
         selected_date = self.date_filter.currentData()
@@ -244,7 +244,7 @@ class MainWindow(QMainWindow):
         else:
             grouped = {}
             for match in matches:
-                date_str = str(match["match_date"])
+                date_str = str(match["date"])
                 grouped.setdefault(date_str, []).append(match)
 
             for date_str, group in sorted(grouped.items()):
@@ -287,7 +287,7 @@ class MainWindow(QMainWindow):
         """)
 
         time = QLabel()
-        time.setText(str(match["match_datetime"]))
+        time.setText(str(match["datetime"]))
         time.setStyleSheet("color: white; font-size: 14px;")
         time.setFixedWidth(100)
         time.setAlignment(Qt.AlignRight)
@@ -424,9 +424,9 @@ class MainWindow(QMainWindow):
         auto_lineups_btn.clicked.connect(auto_lineups)
         
         def run_build_game():           
-            match_date_obj = match['match_datetime'].date()
+            match_date_obj = match['datetime'].date()
             midnight = datetime.combine(match_date_obj, datetime.min.time())
-            match_time_delta = match['match_datetime'] - midnight
+            match_time_delta = match['datetime'] - midnight
 
             home_lineups = home_players_input.toPlainText().strip()
             away_lineups = away_players_input.toPlainText().strip()
@@ -1385,9 +1385,48 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(15)
 
-        title = QLabel("Leagues")
-        title.setStyleSheet("color: white; font-size: 18px; font-weight: bold;")
-        layout.addWidget(title)
+        date_edit = QDateEdit()
+        date_edit.setCalendarPopup(True)
+        date_edit.setDate(QDate.currentDate())
+        date_edit.setStyleSheet("""
+            QDateEdit {
+                color: white;
+                qproperty-alignment: 'AlignCenter';
+                background-color: #1a1a1a;
+                border: 1px solid #444;
+                padding: 5px;
+            }
+            QDateEdit::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 20px;
+                border-left: 1px solid #444;
+            }
+            QDateEdit QAbstractItemView {
+                background-color: #1a1a1a;
+                color: white;
+                selection-background-color: #7289da;
+            }
+            QCalendarWidget QToolButton {
+                background-color: #1a1a1a;
+                color: white;
+                font-weight: bold;
+                border: none;
+            }
+            QCalendarWidget QSpinBox {
+                color: white;
+            }
+            QCalendarWidget QWidget {
+                background-color: #1a1a1a;
+                color: white;
+            }
+            QCalendarWidget QAbstractItemView:enabled {
+                background-color: #1a1a1a;
+                color: white;
+                selection-background-color: #7289da;
+            }
+        """)
+        layout.addWidget(date_edit)
         
         self.league_scroll = QScrollArea()
         self.league_scroll.setWidgetResizable(True)
@@ -1420,8 +1459,8 @@ class MainWindow(QMainWindow):
         EXPIRED_COLOR = "#ff7f7f"
             
         leagues_query = """
-            SELECT league_name, league_last_updated_date
-            FROM leagues_data
+            SELECT league_name, last_updated_date
+            FROM league_data
         """
 
         leagues = self.vpfm_db.select(leagues_query)
@@ -1435,7 +1474,7 @@ class MainWindow(QMainWindow):
         for idx, row in leagues.iterrows():
             league_name = row["league_name"]
             today_date = datetime.now().date()
-            days_since = (today_date - row["league_last_updated_date"]).days
+            days_since = (today_date - row["last_updated_date"]).days
 
             if days_since > 4:
                 indicator_color = EXPIRED_COLOR

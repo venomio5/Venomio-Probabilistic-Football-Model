@@ -22,8 +22,32 @@ import json
 from tqdm import tqdm
 import ast
 
-# ------------------------------ Database Manager ------------------------------
+# --------------- Useful Classes, Functions & Variables ---------------
 class DatabaseManager:
+    """
+    Optimizes the initializaiton of a MySQLConnectionPool with UTF-8MB4 encoding.
+
+    Usage Example:
+    db = DatabaseManager(
+        host="localhost",
+        user="admin",
+        password="secret",
+        database="production"
+    )
+
+    Select example
+    df = db.select("SELECT * FROM users WHERE status = %s", ("active",))
+
+    Insert example
+    affected = db.execute("INSERT INTO logs (event) VALUES (%s)", ("startup",))
+
+    Batch insert
+    affected = db.execute(
+        "INSERT INTO metrics (key, value) VALUES (%s, %s)",
+        [("cpu", 0.93), ("ram", 0.72)],
+        many=True
+    )
+    """
     def __init__(
         self,
         host: str,
@@ -76,10 +100,6 @@ class DatabaseManager:
         params: Sequence[Any] | None = None,
         many: bool = False,
     ) -> int:
-        """
-        Ejecuta INSERT/UPDATE/DELETE.
-        ↩️  Devuelve filas afectadas.
-        """
         with self._connection() as conn, self._cursor(conn) as cur:
             if many and isinstance(params, Iterable):
                 cur.executemany(sql, params)  # type: ignore[arg-type]
@@ -87,7 +107,6 @@ class DatabaseManager:
                 cur.execute(sql, params or ())
             return cur.rowcount
 
-# ------------------------------ Fill Teams Data ------------------------------
 class Fill_Teams_Data:
     def __init__(self, league_id):
         self.league_id = league_id
@@ -207,7 +226,6 @@ class Fill_Teams_Data:
         driver.quit()
         return fixtures_url
 
-# --------------- Useful Functions & Variables ---------------
 DB = DatabaseManager(host="localhost", user="root", password="venomio", database="finaltest")
 
 def get_team_name_by_id(team_id):
@@ -222,6 +240,13 @@ def get_team_id_by_name(team_name):
     result = DB.select(query, (team_name,))
     if not result.empty:
         return int(result.iloc[0]["team_id"])
+    return None
+
+def get_league_name_by_id(league_id):
+    query = "SELECT league_name FROM league_data WHERE league_id = %s"
+    result = DB.select(query, (league_id,))
+    if not result.empty:
+        return result.iloc[0]["league_name"]
     return None
 
 # ------------------------------ Fetch & Remove Data ------------------------------
@@ -1605,6 +1630,7 @@ class Process_Data:
                         """
                     
                     DB.execute(update_coef_query, (off_coef, def_coef, player))
+
 # ------------------------------ Monte Carlo ------------------------------
 class Alg:
     def __init__(self, home_team, away_team, home_lineups, away_lineups, league, match_date, match_time, match_id, home_initial_goals, away_initial_goals, match_initial_time, home_n_subs, away_n_subs, home_n_rc, away_n_rc):
@@ -2187,7 +2213,9 @@ class Alg:
                 params.extend([match_id] + list(row))
 
             self.db.execute(insert_sql, params)    
+
 # ------------------------------ Trading ------------------------------
+
 # Init
 upto_date_ven = datetime.strptime('2025-04-01', '%Y-%m-%d').date()
 #UpdateSchedule()
