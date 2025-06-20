@@ -1,11 +1,11 @@
 from datetime import datetime, timedelta
 import sys
 from PyQt5.QtCore import Qt, QRunnable, QObject, pyqtSignal, QThreadPool, QDate
-from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                             QComboBox, QScrollArea, QLabel, QPushButton, QCheckBox, QDoubleSpinBox,
                             QDialog, QListWidget, QListWidgetItem, QTabWidget, QFormLayout, QPlainTextEdit,
-                            QGridLayout, QLineEdit, QGroupBox, QSpinBox, QDateEdit)
+                            QGridLayout, QLineEdit, QGroupBox, QSpinBox, QDateEdit, QTableWidget)
+from functools import partial
 import core
 import warnings 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -1385,10 +1385,10 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(15)
 
-        date_edit = QDateEdit()
-        date_edit.setCalendarPopup(True)
-        date_edit.setDate(QDate.currentDate())
-        date_edit.setStyleSheet("""
+        self.date_edit = QDateEdit()
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setDate(QDate.currentDate())
+        self.date_edit.setStyleSheet("""
             QDateEdit {
                 color: white;
                 qproperty-alignment: 'AlignCenter';
@@ -1426,7 +1426,7 @@ class MainWindow(QMainWindow):
                 selection-background-color: #7289da;
             }
         """)
-        layout.addWidget(date_edit)
+        layout.addWidget(self.date_edit)
         
         self.league_scroll = QScrollArea()
         self.league_scroll.setWidgetResizable(True)
@@ -1455,115 +1455,217 @@ class MainWindow(QMainWindow):
         self.setup_queue_section(layout)
 
     def load_leagues(self):
-        UPDATED_COLOR = "#7fff7f" 
-        EXPIRED_COLOR = "#ff7f7f"
-            
-        leagues_query = """
-            SELECT league_name, last_updated_date
-            FROM league_data
-        """
-
-        leagues = self.vpfm_db.select(leagues_query)
+        leagues_query = "SELECT * FROM league_data"
+        leagues_df = self.vpfm_db.select(leagues_query)
         
-        # Clear existing layout content if any
         while self.league_container.layout().count():
             child = self.league_container.layout().takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
 
-        for idx, row in leagues.iterrows():
-            league_name = row["league_name"]
-            today_date = datetime.now().date()
-            days_since = (today_date - row["last_updated_date"]).days
+        table = QTableWidget()
+        table.setColumnCount(2)
+        table.setHorizontalHeaderLabels(["League", "Last Updated"])
+        table.horizontalHeader().setStretchLastSection(True)
+        table.verticalHeader().setVisible(False)
+        table.setShowGrid(False)
+        table.setRowCount(len(leagues_df))
+        table.setStyleSheet(
+            "QTableWidget { background-color: #1a1a1a; color: white; }"
+            "QHeaderView::section { background-color: #1a1a1a; color: white; }"
+        )
 
-            if days_since > 4:
-                indicator_color = EXPIRED_COLOR
-            else:
-                indicator_color = UPDATED_COLOR
+        for row_idx, row in leagues_df.iterrows():
+            league_id = row["league_id"]
 
-            item_widget = QWidget()
-            item_layout = QHBoxLayout(item_widget)
-            item_layout.setContentsMargins(0, 0, 0, 0)
-            item_layout.setSpacing(10)
+            league_btn = QPushButton(row["league_name"])
+            league_btn.setStyleSheet(
+                "QPushButton { background-color: transparent; color: white; font-size: 14px; text-align: left; border: none; }"
+                "QPushButton:hover { color: #138585; }"
+            )
+            league_btn.clicked.connect(
+                lambda _, lid=league_id, ln=row["league_name"]: self.open_league_window(lid, ln)
+            )
+            table.setCellWidget(row_idx, 0, league_btn)
 
-            indicator = QLabel()
-            indicator.setFixedSize(15, 15)
-            indicator.setStyleSheet(
-                "background-color: %s; border-radius: 7px;" % indicator_color)
-            
-            league_btn = QPushButton(league_name)
-            league_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: transparent;
-                    color: white;
-                    font-size: 14px;
-                    text-align: left;
-                    border: none;
-                }
-                QPushButton:hover {
-                    color: #138585;
-                }
-            """)
-            league_btn.clicked.connect(lambda checked, ln=league_name: self.open_league_window(ln))
-            
-            date_label = QLabel(f'{days_since} days ago')
-            date_label.setStyleSheet("color: white; font-size: 12px;")
+            date_edit = QDateEdit()
+            date_edit.setCalendarPopup(True)
+            ld = row["last_updated_date"]
+            date_edit.setDate(QDate(ld.year, ld.month, ld.day))
+            date_edit.setStyleSheet(
+                "QDateEdit { color: white; background-color:#1a1a1a; qproperty-alignment: 'AlignCenter'; border:1px solid #444; padding:5px; }"
+                "QDateEdit::drop-down { subcontrol-origin: padding; subcontrol-position: top right; width:20px; border-left:1px solid #444; }"
+            )
+            date_edit.dateChanged.connect(
+                lambda qd, lid=league_id: self.update_last_updated_date(lid, qd)
+            )
+            table.setCellWidget(row_idx, 1, date_edit)
 
-            item_layout.addWidget(indicator)
-            item_layout.addWidget(league_btn)
-            item_layout.addStretch()
-            item_layout.addWidget(date_label)
+        self.league_container.layout().addWidget(table)
 
-            self.league_container.layout().addWidget(item_widget)
+        btn_container = QWidget()
+        btn_layout = QHBoxLayout(btn_container)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(10)
 
+        update_btn = QPushButton("Update")
+        update_btn.setStyleSheet(
+            "QPushButton { background-color:#138585; color:white; font-size:14px; padding:10px; border-radius:5px; }"
+            "QPushButton:hover { background-color:#1a1a1a; }"
+        )
+
+        add_btn = QPushButton("+")
+        add_btn.setFixedSize(40, 40)
+        add_btn.setStyleSheet(
+            "QPushButton { background-color:#138585; color:white; font-size:20px; border-radius:20px; }"
+            "QPushButton:hover { background-color:#1a1a1a; }"
+        )
+
+        btn_layout.addWidget(update_btn)
+        btn_layout.addWidget(add_btn)
+        self.league_container.layout().addWidget(btn_container)
         self.league_container.layout().addStretch()
 
-    def open_league_window(self, ln):
+        add_btn.clicked.connect(self.open_new_league_window)
+
+        def run_extract_and_process():
+            upto_date = datetime.strptime(self.date_edit.date().toString('yyyy-MM-dd'), '%Y-%m-%d').date()
+            list_item = self.add_task_to_queue(f"Extract & Process up to {upto_date}")
+
+            def task():
+                core.Extract_Data(upto_date)
+                core.Process_Data()
+
+            worker = UpdateWorker(task)
+            worker.signals.finished.connect(lambda li=list_item: self.remove_task_from_queue(li))
+            worker.signals.error.connect(lambda error_info: print(f"Error updating data: {error_info}"))
+            self.threadpool.start(worker)
+
+        update_btn.clicked.connect(run_extract_and_process)
+
+    def update_last_updated_date(self, league_id, qdate):
+        date_str = qdate.toString("yyyy-MM-dd")
+        self.vpfm_db.execute(
+            "UPDATE league_data SET last_updated_date = %s WHERE league_id = %s",
+            (date_str, league_id)
+        )
+
+    def update_url_text(self, league_id, field_name, widget):
+        self.vpfm_db.execute(
+            f"UPDATE league_data SET {field_name} = %s WHERE league_id = %s",
+            (widget.text(), league_id)
+        )
+
+    def update_active(self, league_id, is_active):
+        self.vpfm_db.execute(
+            "UPDATE league_data SET is_active = %s WHERE league_id = %s",
+            (is_active, league_id)
+        )
+
+    def open_league_window(self, league_id, ln):
+        ld_row = self.vpfm_db.select(
+            "SELECT is_active, league_sg_url, fbref_fixtures_url FROM league_data WHERE league_id = %s",
+            (league_id,)
+        ).iloc[0]
+
         league_dialog = QDialog(self)
         league_dialog.setWindowTitle(ln)
         league_dialog.setWindowFlags(league_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         league_dialog.setStyleSheet("background-color: #1a1a1a; color: white;")
         layout = QVBoxLayout(league_dialog)
 
-        cb_getPastGamesData = QCheckBox("Get Past Games Data")
-        cb_removeOldData = QCheckBox("Remove Old Data")
-        cb_leagueAvg = QCheckBox("League Average")
-        cb_getLPGDate = QCheckBox("Get LPG Date")
-        cb_updateSchedule = QCheckBox("Update Schedule")
+        active_chk = QCheckBox("Active")
+        active_chk.setChecked(bool(ld_row["is_active"]))
+        active_chk.stateChanged.connect(
+            lambda state: self.update_active(league_id, state == Qt.Checked)
+        )
+        layout.addWidget(active_chk)
 
-        for cb in (cb_getPastGamesData, cb_removeOldData, cb_leagueAvg, cb_getLPGDate, cb_updateSchedule):
-            cb.setChecked(True)
-            layout.addWidget(cb)
+        sg_edit = QLineEdit(ld_row["league_sg_url"] or "")
+        sg_edit.setPlaceholderText("Statsbomb / SG url")
+        sg_edit.setStyleSheet("background-color:#1a1a1a; color:white;")
+        sg_edit.editingFinished.connect(
+            partial(self.update_url_text, league_id, "league_sg_url", sg_edit)
+        )
+        layout.addWidget(sg_edit)
 
-        update_btn = QPushButton("Update")
-        layout.addWidget(update_btn)
+        fb_edit = QLineEdit(ld_row["fbref_fixtures_url"] or "")
+        fb_edit.setPlaceholderText("FBRef fixtures url")
+        fb_edit.setStyleSheet("background-color:#1a1a1a; color:white;")
+        fb_edit.editingFinished.connect(
+            partial(self.update_url_text, league_id, "fbref_fixtures_url", fb_edit)
+        )
+        layout.addWidget(fb_edit)
 
-        def perform_update():
-            tasks = []
-            if cb_getPastGamesData.isChecked():
-                tasks.append(("Get Past Games Data", vpfm.GetPastGamesData))
-            if cb_removeOldData.isChecked():
-                tasks.append(("Remove Old Data", vpfm.RemoveOldData))
-            if cb_leagueAvg.isChecked():
-                tasks.append(("League Average", vpfm.LeagueAvg))
-            if cb_getLPGDate.isChecked():
-                tasks.append(("Get LPG Date", vpfm.GetLPGDate))
-            if cb_updateSchedule.isChecked():
-                tasks.append(("Update Schedule", vpfm.UpdateSchedule))
-            
-            for description, func in tasks:
-                list_item = self.add_task_to_queue(f"{ln}: {description}")
-                worker = UpdateWorker(func, ln)
+        update_teams_btn = QPushButton("Update teams")
+        layout.addWidget(update_teams_btn)
 
-                worker.signals.finished.connect(lambda li=list_item: self.remove_task_from_queue(li))
-                worker.signals.error.connect(lambda error_info, desc=description:
-                                            print(f"Error in {desc}: {error_info}"))
-                worker.signals.result.connect(lambda result, desc=description:
-                                                print(f"{desc} completed with result: {result}"))
-                self.threadpool.start(worker)
+        def run_fill_teams():
+            list_item = self.add_task_to_queue(f"{ln}: Update teams")
+            worker = UpdateWorker(core.Fill_Teams_Data, league_id)
+            worker.signals.finished.connect(lambda li=list_item: self.remove_task_from_queue(li))
+            worker.signals.error.connect(lambda error_info: print(f"Error updating teams: {error_info}"))
+            self.threadpool.start(worker)
             league_dialog.accept()
 
-        update_btn.clicked.connect(perform_update)
+        update_teams_btn.clicked.connect(run_fill_teams)
+
+        league_dialog.exec_()
+
+    def open_new_league_window(self):
+        league_dialog = QDialog(self)
+        league_dialog.setWindowTitle("Add new league")
+        league_dialog.setWindowFlags(league_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        league_dialog.setStyleSheet("background-color: #1a1a1a; color: white;")
+        layout = QVBoxLayout(league_dialog)
+
+        name_edit = QLineEdit()
+        name_edit.setPlaceholderText("League name")
+        name_edit.setStyleSheet("background-color:#1a1a1a; color:white;")
+        layout.addWidget(name_edit)
+
+        active_chk = QCheckBox("Active")
+        active_chk.setChecked(True)
+        layout.addWidget(active_chk)
+
+        sg_edit = QLineEdit()
+        sg_edit.setPlaceholderText("Statsbomb / SG url")
+        sg_edit.setStyleSheet("background-color:#1a1a1a; color:white;")
+        layout.addWidget(sg_edit)
+
+        fb_edit = QLineEdit()
+        fb_edit.setPlaceholderText("FBRef fixtures url")
+        fb_edit.setStyleSheet("background-color:#1a1a1a; color:white;")
+        layout.addWidget(fb_edit)
+
+        create_btn = QPushButton("Create")
+        layout.addWidget(create_btn)
+
+        def create_league():
+            ln = name_edit.text().strip()
+            if not ln:
+                return
+            self.vpfm_db.execute(
+                "INSERT INTO league_data (league_name, is_active, league_sg_url, fbref_fixtures_url, last_updated_date) "
+                "VALUES (%s, %s, %s, %s, NOW())",
+                (ln, active_chk.isChecked(), sg_edit.text().strip(), fb_edit.text().strip())
+            )
+            league_id = self.vpfm_db.select(
+                "SELECT league_id FROM league_data WHERE league_name = %s ORDER BY league_id DESC LIMIT 1",
+                (ln,)
+            ).iloc[0]["league_id"]
+
+            list_item = self.add_task_to_queue(f"{ln}: Create league / Update teams")
+            worker = UpdateWorker(core.Fill_Teams_Data, league_id)
+            worker.signals.finished.connect(lambda li=list_item: self.remove_task_from_queue(li))
+            worker.signals.error.connect(lambda error_info: print(f"Error creating league: {error_info}"))
+            self.threadpool.start(worker)
+
+            self.load_leagues()
+            league_dialog.accept()
+
+        create_btn.clicked.connect(create_league)
+
         league_dialog.exec_()
 
 # ----------------------- QUEUE SECTION  -----------------------

@@ -108,6 +108,15 @@ class DatabaseManager:
             return cur.rowcount
 
 class Fill_Teams_Data:
+    """
+    - Fetches the fixture URL from the league_data table.
+    - Scrapes team names, venues, and fixture URLs using Selenium.
+    - Resolves each venue to precise geographic coordinates via Nominatim.
+    - Retrieves elevation data for each location via Open-Elevation API.
+    - Extracts direct 'Scores & Fixtures' URLs for each team.
+    - Inserts or updates team_data table with enriched team metadata.
+    - Removes obsolete team entries for the league. 
+    """
     def __init__(self, league_id):
         self.league_id = league_id
         league_df = DB.select(f"SELECT league_id, fbref_fixtures_url FROM league_data WHERE league_id = {self.league_id}")
@@ -135,6 +144,18 @@ class Fill_Teams_Data:
             insert_data,
             many=True
         )
+
+        current_team_names = tuple(teams_dict.keys())
+
+        if current_team_names:
+            placeholders = ','.join(['%s'] * len(current_team_names))
+            DB.execute(
+                f"""
+                DELETE FROM team_data
+                WHERE league_id = %s AND team_name NOT IN ({placeholders})
+                """,
+                (self.league_id, *current_team_names)
+            )
 
     def get_teams(self, url):
         s=Service('chromedriver.exe')
@@ -518,20 +539,12 @@ class UpdateSchedule:
 
 class Extract_Data:
     def __init__(self, upto_date: date = None): # datetime.strptime('2025-04-23', '%Y-%m-%d').date()
-        """
-        Get recent games data for match_info, match_detail, match_breakdown, and shots_data.
-        Update the RAS from recent games using the old coefs before updating the coefs.
-        """
         self.upto_date = upto_date or datetime.now().date()
         self.get_recent_games_match_info()
         self.update_matches_info()
         self.update_pdras()
 
     def get_recent_games_match_info(self):
-        """
-        Create a for loop for each active league.
-        Get each match basic info (Inlcuding the referee data for each player for match breakdown.)
-        """
         def get_games_basic_info(url, lud):
             s=Service('chromedriver.exe')
             options = webdriver.ChromeOptions()
@@ -590,7 +603,7 @@ class Extract_Data:
         active_leagues_df = DB.select("SELECT * FROM league_data WHERE is_active = 1")
 
         insert_sql = """
-        INSERT INTO match_info (
+        INSERT IGNORE INTO match_info (
             home_team_id, away_team_id, date, league_id, referee_name, url
         ) VALUES (%s, %s, %s, %s, %s, %s)
         """
@@ -688,7 +701,7 @@ class Extract_Data:
 
         missing_matches_df = match_info[~match_info['match_id'].isin(match_detail_ids)]
 
-        for _, row in match_info.iterrows():
+        for _, row in tqdm(match_info.iterrows()):
             # Match detail
             s = Service('chromedriver.exe')
             options = webdriver.ChromeOptions()
@@ -1190,33 +1203,39 @@ class Extract_Data:
             
     def update_pdras(self):
         """
-        Before fetching new data, update the pre defined RAS from old matches.
+        Before processing new data, update the pre defined RAS for old matches.
         """
-        non_pdras_matches_df = DB.select("SELECT match_id, teamA_players, teamB_players, minutes_played FROM match_detail WHERE teamA_pdras IS NULL OR teamB_pdras IS NULL;")
-        non_pdras_matches_df['teamA_player_ids'] = non_pdras_matches_df['teamA_players'].apply(extract_player_ids)
-        non_pdras_matches_df['teamB_player_ids'] = non_pdras_matches_df['teamB_players'].apply(extract_player_ids)
-        cols_to_drop = ['teamA_players', 'teamB_players']
-        non_pdras_matches_df = non_pdras_matches_df.drop(columns=cols_to_drop)
+        non_pdras_matches_df = DB.select("SELECT detail_id, match_id, teamA_players, teamB_players, minutes_played FROM match_detail WHERE teamA_pdras IS NULL OR teamB_pdras IS NULL;")
+
+        non_pdras_matches_df['teamA_players'] = non_pdras_matches_df['teamA_players'].apply(
+            lambda v: v if isinstance(v, list) else ast.literal_eval(v)
+        )
+        non_pdras_matches_df['teamB_players'] = non_pdras_matches_df['teamB_players'].apply(
+            lambda v: v if isinstance(v, list) else ast.literal_eval(v)
+        )
 
         players_needed = set()
-        for idx, row in non_pdras_matches_df.iterrows():
-            players_needed.update(row['teamA_player_ids'])
-            players_needed.update(row['teamB_player_ids'])
+        for _, row in non_pdras_matches_df.iterrows():
+            players_needed.update(row['teamA_players'])
+            players_needed.update(row['teamB_players'])
 
         if players_needed:
-            players_str_placeholder = ','.join(['%s'] * len(players_needed))
-            players_sql = f"SELECT player_id, off_sh_coef, def_sh_coef FROM players_data WHERE player_id IN ({players_str_placeholder});"
+            placeholders = ','.join(['%s'] * len(players_needed))
+            players_sql = (
+                f"SELECT player_id, off_sh_coef, def_sh_coef "
+                f"FROM players_data "
+                f"WHERE player_id IN ({placeholders});"
+            )
             players_coef_df = DB.select(players_sql, list(players_needed))
             off_sh_coef_dict = players_coef_df.set_index("player_id")["off_sh_coef"].to_dict()
             def_sh_coef_dict = players_coef_df.set_index("player_id")["def_sh_coef"].to_dict()
         else:
-            off_sh_coef_dict = {}
-            def_sh_coef_dict = {}
+            off_sh_coef_dict, def_sh_coef_dict = {}, {}
 
-        for idx, row in non_pdras_matches_df.iterrows():
+        for _, row in non_pdras_matches_df.iterrows():
             minutes = row['minutes_played']
-            teamA_ids = row['teamA_player_ids']
-            teamB_ids = row['teamB_player_ids']
+            teamA_ids = row['teamA_players']
+            teamB_ids = row['teamB_players']
 
             teamA_offense = sum(off_sh_coef_dict.get(p, 0) for p in teamA_ids)
             teamB_defense = sum(def_sh_coef_dict.get(p, 0) for p in teamB_ids)
@@ -1226,7 +1245,10 @@ class Extract_Data:
             teamA_defense = sum(def_sh_coef_dict.get(p, 0) for p in teamA_ids)
             teamB_pdras = (teamB_offense - teamA_defense) * minutes
 
-            DB.execute("UPDATE match_detail SET teamA_pdras = %s, teamB_pdras = %s WHERE match_id = %s", (teamA_pdras, teamB_pdras, row['match_id']))
+            DB.execute(
+                "UPDATE match_detail SET teamA_pdras = %s, teamB_pdras = %s WHERE detail_id = %s",
+                (teamA_pdras, teamB_pdras, row['detail_id'])
+            )
 
 # ------------------------------ Process data ------------------------------
 class Process_Data:
@@ -2215,10 +2237,3 @@ class Alg:
             self.db.execute(insert_sql, params)    
 
 # ------------------------------ Trading ------------------------------
-
-# Init
-upto_date_ven = datetime.strptime('2025-04-01', '%Y-%m-%d').date()
-#UpdateSchedule()
-#Fill_Teams_Data(1)
-#Extract_Data(upto_date_ven)
-Process_Data()

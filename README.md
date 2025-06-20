@@ -5,6 +5,8 @@
 ## Overview  
 A sports terminal tool for sports trading or betting. 
 *Explain later with images how to use it*
+### Soccer Checklist
+- **New Season**: Update league.
 
 ## Soccer Algorithm Theory
 Simulates each minute of a soccer match based on **Shots Per Minute (SPM)**. At each time step, each squad has a projected shots per minute (SPM) value. SPM changes dynamically based on:
@@ -198,6 +200,7 @@ CREATE TABLE match_info (
 ##### match_detail
 ```
 CREATE TABLE match_detail (
+    detail_id INT AUTO_INCREMENT PRIMARY KEY,
     match_id INT NOT NULL,
     teamA_players JSON NOT NULL,
     teamB_players JSON NOT NULL,
@@ -215,7 +218,7 @@ CREATE TABLE match_detail (
     match_state ENUM('-1.5', '-1', '0', '1', '1.5') NOT NULL,
     match_segment ENUM('1', '2', '3', '4', '5', '6') NOT NULL,
     player_dif ENUM('-1.5', '-1', '0', '1', '1.5') NOT NULL,
-    PRIMARY KEY (
+    UNIQUE KEY uq_match_detail (
         match_id,
         teamA_headers,
         teamA_footers,
