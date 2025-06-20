@@ -66,7 +66,7 @@ class MainWindow(QMainWindow):
 
         # Initialize data
         self.all_matches = []
-        self.load_fixtures()
+        #self.load_fixtures() CHANGE THIS
 
     def closeEvent(self, event):
         self.worker.stop()
@@ -144,7 +144,7 @@ class MainWindow(QMainWindow):
 
     def refresh_fixtures(self):
         self.all_matches = []
-        self.load_fixtures()
+        #self.load_fixtures() CHANGE THIS
 
     def load_fixtures(self):
         fixtures_query = """
@@ -1508,8 +1508,14 @@ class MainWindow(QMainWindow):
         btn_layout.setContentsMargins(0, 0, 0, 0)
         btn_layout.setSpacing(10)
 
-        update_btn = QPushButton("Update")
+        update_btn = QPushButton("Extract & Process")
         update_btn.setStyleSheet(
+            "QPushButton { background-color:#138585; color:white; font-size:14px; padding:10px; border-radius:5px; }"
+            "QPushButton:hover { background-color:#1a1a1a; }"
+        )
+
+        schedule_btn = QPushButton("Update Schedule")
+        schedule_btn.setStyleSheet(
             "QPushButton { background-color:#138585; color:white; font-size:14px; padding:10px; border-radius:5px; }"
             "QPushButton:hover { background-color:#1a1a1a; }"
         )
@@ -1522,6 +1528,7 @@ class MainWindow(QMainWindow):
         )
 
         btn_layout.addWidget(update_btn)
+        btn_layout.addWidget(schedule_btn)
         btn_layout.addWidget(add_btn)
         self.league_container.layout().addWidget(btn_container)
         self.league_container.layout().addStretch()
@@ -1538,10 +1545,23 @@ class MainWindow(QMainWindow):
 
             worker = UpdateWorker(task)
             worker.signals.finished.connect(lambda li=list_item: self.remove_task_from_queue(li))
-            worker.signals.error.connect(lambda error_info: print(f"Error updating data: {error_info}"))
+            worker.signals.error.connect(lambda error_info: print(f"Error extracting/processing data: {error_info}"))
+            self.threadpool.start(worker)
+
+        def run_update_schedule():
+            upto_date = datetime.strptime(self.date_edit.date().toString('yyyy-MM-dd'), '%Y-%m-%d').date()
+            list_item = self.add_task_to_queue(f"Update Schedule")
+
+            def task():
+                core.UpdateSchedule(upto_date)
+
+            worker = UpdateWorker(task)
+            worker.signals.finished.connect(lambda li=list_item: self.remove_task_from_queue(li))
+            worker.signals.error.connect(lambda error_info: print(f"Error updating schedule: {error_info}"))
             self.threadpool.start(worker)
 
         update_btn.clicked.connect(run_extract_and_process)
+        schedule_btn.clicked.connect(run_update_schedule)
 
     def update_last_updated_date(self, league_id, qdate):
         date_str = qdate.toString("yyyy-MM-dd")

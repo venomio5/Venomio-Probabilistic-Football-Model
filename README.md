@@ -6,7 +6,9 @@
 A sports terminal tool for sports trading or betting. 
 *Explain later with images how to use it*
 ### Soccer Checklist
-- **New Season**: Update league.
+- **New Season**: Update league teams.
+- **Every Week**: Update league Data.
+- **Every Day/Hour**: Update schedule.
 
 ## Soccer Algorithm Theory
 Simulates each minute of a soccer match based on **Shots Per Minute (SPM)**. At each time step, each squad has a projected shots per minute (SPM) value. SPM changes dynamically based on:

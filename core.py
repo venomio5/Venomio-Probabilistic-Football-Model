@@ -272,15 +272,16 @@ def get_league_name_by_id(league_id):
 
 # ------------------------------ Fetch & Remove Data ------------------------------
 class UpdateSchedule:
-    def __init__(self):
+    def __init__(self, upto_date):
+        self.upto_date = upto_date
         active_leagues_df = DB.select("SELECT * FROM league_data WHERE is_active = 1")
         
         for league_id in tqdm(active_leagues_df["league_id"].tolist()):
             url = active_leagues_df[active_leagues_df['league_id'] == league_id]['fbref_fixtures_url'].values[0]
             lud = active_leagues_df[active_leagues_df['league_id'] == league_id]['last_updated_date'].values[0]
-            ten_days_date = lud + timedelta(days=10)
+            five_days_date = lud + timedelta(days=5)
 
-            games_dates, games_local_time, games_venue_time, home_teams, away_teams = self.get_games_basic_info(url, lud, ten_days_date)
+            games_dates, games_local_time, games_venue_time, home_teams, away_teams = self.get_games_basic_info(url, lud, five_days_date)
 
             for i in tqdm(range(len(games_dates))):
                 game_date = games_dates[i]
@@ -296,8 +297,27 @@ class UpdateSchedule:
 
                 away_travel_dist = self.get_travel_distance(home_id, away_id)
 
-                home_rest_days = self.get_team_rest_days(home_id, game_date)
-                away_rest_days = self.get_team_rest_days(away_id, game_date)
+                if self._schedule_exists(home_id, away_id, game_date, league_id):
+                    row = DB.select(
+                        """
+                        SELECT home_rest_days, away_rest_days
+                        FROM schedule_data
+                        WHERE home_team_id = %s
+                          AND away_team_id = %s
+                          AND date          = %s
+                          AND league_id     = %s
+                        """,
+                        (home_id, away_id, game_date, league_id)
+                    )
+                    if row.empty:
+                        home_rest_days = None
+                        away_rest_days = None
+                    else:
+                        home_rest_days = row["home_rest_days"].iat[0]
+                        away_rest_days = row["away_rest_days"].iat[0]
+                else:
+                    home_rest_days = self.get_team_rest_days(home_id, game_date)
+                    away_rest_days = self.get_team_rest_days(away_id, game_date)
 
                 temp, rain = self.get_weather(home_id, game_date, game_venue_time)
 
@@ -320,14 +340,14 @@ class UpdateSchedule:
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 ON DUPLICATE KEY UPDATE
-                    date   = VALUES(date),
+                    date         = VALUES(date),
                     local_time   = VALUES(local_time),
                     venue_time   = VALUES(venue_time),
                     temperature  = VALUES(temperature),
                     is_raining   = VALUES(is_raining);
                 """
-                
-                params = (
+
+                raw_params = (
                     home_id,
                     away_id,
                     game_date,
@@ -342,16 +362,66 @@ class UpdateSchedule:
                     temp,
                     rain
                 )
-                
+
+                params = tuple(self._to_python(p) for p in raw_params)
                 DB.execute(insert_sql, params)
-        
-            delete_query = """
-            DELETE FROM schedule_data
-            WHERE match_date < %s
-              AND league_id  = %s
+
+            transfer_sql = """
+            UPDATE  match_info AS mi
+            JOIN    schedule_data AS sd
+                   ON mi.home_team_id = sd.home_team_id
+                  AND mi.away_team_id = sd.away_team_id
+                  AND DATE(mi.date)  = sd.date
+                  AND mi.league_id   = sd.league_id
+            SET mi.home_elevation_dif = COALESCE(mi.home_elevation_dif, sd.home_elevation_dif),
+                mi.away_elevation_dif = COALESCE(mi.away_elevation_dif, sd.away_elevation_dif),
+                mi.away_travel        = COALESCE(mi.away_travel,        sd.away_travel),
+                mi.home_rest_days     = COALESCE(mi.home_rest_days,     sd.home_rest_days),
+                mi.away_rest_days     = COALESCE(mi.away_rest_days,     sd.away_rest_days),
+                mi.temperature_c      = COALESCE(mi.temperature_c,      sd.temperature),
+                mi.is_raining         = COALESCE(mi.is_raining,         sd.is_raining)
+            WHERE sd.date < %s
+              AND sd.league_id = %s
             """
-            del_params = (datetime.today().date(), league_id)
-            DB.execute(delete_query, del_params)
+            DB.execute(transfer_sql, (self.upto_date, league_id))
+
+            delete_sql = """
+            DELETE  sd
+            FROM    schedule_data AS sd
+            JOIN    match_info AS mi
+                   ON mi.home_team_id = sd.home_team_id
+                  AND mi.away_team_id = sd.away_team_id
+                  AND DATE(mi.date)  = sd.date
+                  AND mi.league_id   = sd.league_id
+            WHERE sd.date < %s
+              AND sd.league_id = %s
+            """
+            DB.execute(delete_sql, (self.upto_date, league_id))
+
+    def _schedule_exists(self, home_id, away_id, game_date, league_id):
+        sql = """
+        SELECT 1
+        FROM schedule_data
+        WHERE home_team_id = %s
+          AND away_team_id = %s
+          AND date          = %s
+          AND league_id     = %s
+        LIMIT 1
+        """
+        return not DB.select(sql, (home_id, away_id, game_date, league_id)).empty
+    
+    def _to_python(self, value):
+        if value is None:
+            return None
+        if isinstance(value, (np.integer,)):
+            return int(value)
+        if isinstance(value, (np.floating,)):
+            return float(value)
+        if isinstance(value, np.bool_):
+            return bool(value)
+        if isinstance(value, np.datetime64):
+            return pd.to_datetime(value).to_pydatetime()
+        return value
     
     def get_games_basic_info(self, url, lud, ten_days_date):
         s=Service('chromedriver.exe')
@@ -538,8 +608,8 @@ class UpdateSchedule:
         return avg_temp, rain
 
 class Extract_Data:
-    def __init__(self, upto_date: date = None): # datetime.strptime('2025-04-23', '%Y-%m-%d').date()
-        self.upto_date = upto_date or datetime.now().date()
+    def __init__(self, upto_date):
+        self.upto_date = upto_date
         self.get_recent_games_match_info()
         self.update_matches_info()
         self.update_pdras()
@@ -636,7 +706,7 @@ class Extract_Data:
 
     def update_matches_info(self):
         """
-        Get the matches_id that are missing to update them.
+        Get the matches_id that are missing to update them for the breakdown and detail tables.
         """
         def extract_players(data, team_name):
             team_initials = ''.join(word[0].upper() for word in team_name.split() if word)
@@ -701,7 +771,7 @@ class Extract_Data:
 
         missing_matches_df = match_info[~match_info['match_id'].isin(match_detail_ids)]
 
-        for _, row in tqdm(match_info.iterrows()):
+        for _, row in tqdm(missing_matches_df.iterrows()):
             # Match detail
             s = Service('chromedriver.exe')
             options = webdriver.ChromeOptions()

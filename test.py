@@ -20,41 +20,27 @@ from sklearn.linear_model import Ridge
 import scipy.sparse as sp
 import json
 from tqdm import tqdm
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QDateEdit
 from PyQt5.QtCore import QDate
+from PyQt5.QtWidgets import QApplication, QWidget, QHBoxLayout, QToolButton, QMenu
 
 app = QApplication([])
 
 window = QWidget()
-layout = QVBoxLayout()
+layout = QHBoxLayout(window)
 
-date_edit = QDateEdit()
-date_edit.setCalendarPopup(True)
-date_edit.setDate(QDate.currentDate())  # Optional: sets current date
-date_edit.setStyleSheet("""
-    QCalendarWidget QToolButton {
-        background-color: #2c2f33;
-        color: white;
-        font-weight: bold;
-        border: none;
-    }
-    QCalendarWidget QSpinBox {
-        color: white;
-    }
-    QCalendarWidget QWidget {
-        background-color: #23272a;
-        color: white;
-    }
-    QCalendarWidget QAbstractItemView:enabled {
-        background-color: #2c2f33;
-        color: white;
-        selection-background-color: #7289da;
-    }
-""")
+button = QToolButton()
+button.setText("Execute")
+button.setPopupMode(QToolButton.MenuButtonPopup)  # Action + menu icon
 
+# Optional: primary click action
+button.clicked.connect(lambda: print("Primary Action"))
 
-layout.addWidget(date_edit)
-window.setLayout(layout)
+# Add dropdown menu
+menu = QMenu()
+menu.addAction("Alternative 1", lambda: print("Alt 1"))
+menu.addAction("Alternative 2", lambda: print("Alt 2"))
+button.setMenu(menu)
+
+layout.addWidget(button)
 window.show()
-
 app.exec_()
