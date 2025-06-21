@@ -279,7 +279,7 @@ class UpdateSchedule:
         for league_id in tqdm(active_leagues_df["league_id"].tolist()):
             url = active_leagues_df[active_leagues_df['league_id'] == league_id]['fbref_fixtures_url'].values[0]
             lud = active_leagues_df[active_leagues_df['league_id'] == league_id]['last_updated_date'].values[0]
-            five_days_date = lud + timedelta(days=5)
+            five_days_date = upto_date + timedelta(days=5)
 
             games_dates, games_local_time, games_venue_time, home_teams, away_teams = self.get_games_basic_info(url, lud, five_days_date)
 
@@ -677,6 +677,8 @@ class Extract_Data:
             home_team_id, away_team_id, date, league_id, referee_name, url
         ) VALUES (%s, %s, %s, %s, %s, %s)
         """
+
+        update_sql = "UPDATE league_data SET last_updated_date = %s WHERE league_id = %s"
         
         for league_id in tqdm(active_leagues_df["league_id"].tolist()):
             url = active_leagues_df[active_leagues_df['league_id'] == league_id]['fbref_fixtures_url'].values[0]
@@ -703,6 +705,8 @@ class Extract_Data:
                     game_url,
                 )
                 DB.execute(insert_sql, params)
+
+            DB.execute(update_sql, (self.upto_date, league_id))
 
     def update_matches_info(self):
         """
