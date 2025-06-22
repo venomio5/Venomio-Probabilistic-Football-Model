@@ -272,18 +272,17 @@ def get_league_name_by_id(league_id):
 
 # ------------------------------ Fetch & Remove Data ------------------------------
 class UpdateSchedule:
-    def __init__(self, upto_date):
-        self.upto_date = upto_date
+    def __init__(self, from_date):
+        self.from_date = from_date
         active_leagues_df = DB.select("SELECT * FROM league_data WHERE is_active = 1")
         
-        for league_id in tqdm(active_leagues_df["league_id"].tolist()):
+        for league_id in tqdm(active_leagues_df["league_id"].tolist(), desc="Processing leagues"):
             url = active_leagues_df[active_leagues_df['league_id'] == league_id]['fbref_fixtures_url'].values[0]
-            lud = active_leagues_df[active_leagues_df['league_id'] == league_id]['last_updated_date'].values[0]
-            five_days_date = upto_date + timedelta(days=5)
+            upto_date = self.from_date + timedelta(days=5)
 
-            games_dates, games_local_time, games_venue_time, home_teams, away_teams = self.get_games_basic_info(url, lud, five_days_date)
+            games_dates, games_local_time, games_venue_time, home_teams, away_teams = self.get_games_basic_info(url, upto_date)
 
-            for i in tqdm(range(len(games_dates))):
+            for i in tqdm(range(len(games_dates)), desc="Games"):
                 game_date = games_dates[i]
                 game_local_time = games_local_time[i]
                 game_venue_time = games_venue_time[i]
@@ -383,7 +382,7 @@ class UpdateSchedule:
             WHERE sd.date < %s
               AND sd.league_id = %s
             """
-            DB.execute(transfer_sql, (self.upto_date, league_id))
+            DB.execute(transfer_sql, (self.from_date, league_id))
 
             delete_sql = """
             DELETE  sd
@@ -396,7 +395,7 @@ class UpdateSchedule:
             WHERE sd.date < %s
               AND sd.league_id = %s
             """
-            DB.execute(delete_sql, (self.upto_date, league_id))
+            DB.execute(delete_sql, (self.from_date, league_id))
 
     def _schedule_exists(self, home_id, away_id, game_date, league_id):
         sql = """
@@ -423,7 +422,7 @@ class UpdateSchedule:
             return pd.to_datetime(value).to_pydatetime()
         return value
     
-    def get_games_basic_info(self, url, lud, ten_days_date):
+    def get_games_basic_info(self, url, upto_date):
         s=Service('chromedriver.exe')
         options = webdriver.ChromeOptions()
         options.add_argument("--headless")
@@ -448,7 +447,7 @@ class UpdateSchedule:
             else:
                 continue
 
-            if lud <= game_date < ten_days_date:
+            if self.from_date <= game_date < upto_date:
                 games_dates.append(game_date)
 
                 venue_time_element = row.find_element(By.CSS_SELECTOR, '.venuetime')
@@ -742,7 +741,10 @@ class Extract_Data:
                 } for i, player in enumerate(player_list)
             }
 
-        def get_lineups(initial_players, sub_events, current_minute, team):
+        def get_lineups(initial_players, sub_events, current_minute, team, red_events=None):
+            if red_events is None:
+                red_events = []
+            
             roster_mapping = {}
             for player in initial_players:
                 key = player.split("_")[0]
@@ -753,19 +755,21 @@ class Extract_Data:
             filtered_subs = [s for s in sub_events if s[3] == team]
             filtered_subs = sorted(filtered_subs, key=lambda x: x[0])
 
-            for sub_minute, player_out, player_in, t in filtered_subs:
+            for sub_minute, player_out, player_in, _ in filtered_subs:
                 if sub_minute > current_minute:
                     break
 
                 for idx, player in enumerate(lineup):
                     if player.split("_")[0] == player_out:
-                        if player_in in roster_mapping:
-                            lineup[idx] = roster_mapping[player_in]
-                        else:
-                            lineup[idx] = player_in
+                        replacement = roster_mapping.get(player_in, player_in)
+                        lineup[idx] = replacement
+                        roster_mapping[player_in] = replacement
                         break
 
-            lineup = [roster_mapping.get(player.split("_")[0], player) for player in lineup]
+            sent_off = [p for m, p, t in red_events if t == team and m <= current_minute]
+            lineup = [p for p in lineup if p.split("_")[0] not in sent_off]
+
+            lineup = [roster_mapping.get(p.split("_")[0], p) for p in lineup]
             return lineup
 
         match_info = DB.select("SELECT match_id, url, home_team_id, away_team_id FROM match_info")
@@ -839,7 +843,10 @@ class Extract_Data:
                 if event.find_elements(By.CSS_SELECTOR, '.goal'):
                     goal_events.append((event_minute, team))
                 if event.find_elements(By.CSS_SELECTOR, '.red_card'):
-                    red_events.append((event_minute, team))
+                    player_links = event.find_elements(By.CSS_SELECTOR, 'a')
+                    if player_links:
+                        player_name = player_links[0].text.strip()
+                        red_events.append((event_minute, player_name, team))
 
             total_minutes = 90 + extra_first_half + extra_second_half
 
@@ -869,8 +876,8 @@ class Extract_Data:
             for seg_start, seg_end in zip(boundaries, boundaries[1:]):
                 seg_duration = seg_end - seg_start
 
-                teamA_lineup = get_lineups(home_players, subs_events, seg_start, "home")
-                teamB_lineup = get_lineups(away_players, subs_events, seg_start, "away")
+                teamA_lineup = get_lineups(home_players, subs_events, seg_start, "home", red_events)
+                teamB_lineup = get_lineups(away_players, subs_events, seg_start, "away", red_events)
 
                 seg_shots = selected_columns[(selected_columns['Minute'] >= seg_start) & (selected_columns['Minute'] < seg_end)]
                 teamA_headers = 0
@@ -899,6 +906,7 @@ class Extract_Data:
 
                 cum_goal_home = sum(1 for minute, t in goal_events if minute <= seg_end and t == "home")
                 cum_goal_away = sum(1 for minute, t in goal_events if minute <= seg_end and t == "away")
+
                 goal_diff = cum_goal_home - cum_goal_away
                 if goal_diff == 0:
                     match_state = "0"
@@ -911,9 +919,9 @@ class Extract_Data:
                 else:
                     match_state = "-1.5"
 
-                cum_red_home = sum(1 for minute, t in red_events if minute <= seg_end and t == "home")
-                cum_red_away = sum(1 for minute, t in red_events if minute <= seg_end and t == "away")
-                red_diff = cum_red_home - cum_red_away
+                cum_red_home = sum(1 for minute, _, t in red_events if minute <= seg_end and t == "home")
+                cum_red_away = sum(1 for minute, _, t in red_events if minute <= seg_end and t == "away")
+                red_diff = cum_red_away - cum_red_home
                 if red_diff == 0:
                     player_dif = "0"
                 elif red_diff == 1:
@@ -975,13 +983,16 @@ class Extract_Data:
             
             for key in list(home_player_stats.keys()):
                 stat = home_player_stats[key]
+
+                stat.setdefault("sub_in_min", 0)
+                stat.setdefault("in_status", "level")
+
                 if stat.get("starter", True):
-                    if "sub_in_min" not in stat:
-                        stat["sub_in_min"] = 0
-                        stat["in_status"] = "level"
                     if "sub_out_min" not in stat:
                         stat["sub_out_min"] = total_minutes
-                        stat["out_status"] = "leading" if final_home_goals > final_away_goals else "level" if final_home_goals == final_away_goals else "trailing"
+                        stat["out_status"] = "leading" if final_home_goals > final_away_goals else \
+                                             "level"   if final_home_goals == final_away_goals else "trailing"
+
                     if stat["sub_out_min"] > 90:
                         stat["minutes_played"] = stat["sub_out_min"] - stat["sub_in_min"]
                         stat["sub_out_min"] = 90
@@ -990,7 +1001,7 @@ class Extract_Data:
                 else:
                     if "sub_out_min" not in stat:
                         stat["sub_out_min"] = 0
-                    if stat.get("sub_out_min") == 0:
+                    if stat["sub_out_min"] == 0:
                         del home_player_stats[key]
                     else:
                         if stat["sub_out_min"] > 90:
@@ -1001,13 +1012,16 @@ class Extract_Data:
 
             for key in list(away_player_stats.keys()):
                 stat = away_player_stats[key]
+
+                stat.setdefault("sub_in_min", 0)
+                stat.setdefault("in_status", "level")
+
                 if stat.get("starter", True):
-                    if "sub_in_min" not in stat:
-                        stat["sub_in_min"] = 0
-                        stat["in_status"] = "level"
                     if "sub_out_min" not in stat:
                         stat["sub_out_min"] = total_minutes
-                        stat["out_status"] = "leading" if final_away_goals > final_home_goals else "level" if final_away_goals == final_home_goals else "trailing"
+                        stat["out_status"] = "leading" if final_away_goals > final_home_goals else \
+                                             "level"   if final_away_goals == final_home_goals else "trailing"
+
                     if stat["sub_out_min"] > 90:
                         stat["minutes_played"] = stat["sub_out_min"] - stat["sub_in_min"]
                         stat["sub_out_min"] = 90
@@ -1016,7 +1030,7 @@ class Extract_Data:
                 else:
                     if "sub_out_min" not in stat:
                         stat["sub_out_min"] = 0
-                    if stat.get("sub_out_min") == 0:
+                    if stat["sub_out_min"] == 0:
                         del away_player_stats[key]
                     else:
                         if stat["sub_out_min"] > 90:
@@ -1159,8 +1173,8 @@ class Extract_Data:
 
                 match_segment = str(min((shot_minute // 15) + 1, 6))
 
-                cum_red_home = sum(1 for minute, t in red_events if minute <= shot_minute and t == "home")
-                cum_red_away = sum(1 for minute, t in red_events if minute <= shot_minute and t == "away")
+                cum_red_home = sum(1 for minute, _, t in red_events if minute <= seg_end and t == "home")
+                cum_red_away = sum(1 for minute, _, t in red_events if minute <= seg_end and t == "away")
 
                 red_diff = cum_red_home - cum_red_away
                 if red_diff == 0:

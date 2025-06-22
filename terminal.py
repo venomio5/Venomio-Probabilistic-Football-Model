@@ -64,10 +64,6 @@ class MainWindow(QMainWindow):
         self.setup_right_section(right_widget)
         main_layout.addWidget(right_widget, stretch=3)
 
-        # Initialize data
-        self.all_matches = []
-        #self.load_fixtures() CHANGE THIS
-
     def closeEvent(self, event):
         self.worker.stop()
         event.accept()
@@ -77,11 +73,6 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(15)
-
-        self.refresh_btn = QPushButton("⟳")
-        self.refresh_btn.setStyleSheet('color: white;')
-        self.refresh_btn.clicked.connect(self.refresh_fixtures)
-        layout.addWidget(self.refresh_btn)
 
         filters_layout = QHBoxLayout()
         self.date_filter = QComboBox()
@@ -142,20 +133,26 @@ class MainWindow(QMainWindow):
         self.date_filter.currentIndexChanged.connect(self.filter_matches)
         self.league_filter.currentIndexChanged.connect(self.filter_matches)
 
-    def refresh_fixtures(self):
-        self.all_matches = []
-        #self.load_fixtures() CHANGE THIS
+        # Initialize data
+        self.load_fixtures()
 
     def load_fixtures(self):
-        fixtures_query = """
-            SELECT schedule_id, home_team_id, away_team_id, 
-                    date, local_time, league_id
-            FROM schedule_data
-        """
+        self.all_matches = []
+        fixtures_query = "SELECT * FROM schedule_data"
         self.all_matches = self.vpfm_db.select(fixtures_query)
         self.all_matches['datetime'] = self.all_matches.apply(
             lambda row: datetime.combine(row['date'], datetime.min.time()) + row['local_time'],
             axis=1
+        )
+        self.all_matches["league_name"] = self.all_matches["league_id"].apply(
+            lambda lid: core.get_league_name_by_id(lid)
+        )
+        self.all_matches["home_team"] = self.all_matches["home_team_id"].apply(
+            lambda tid: core.get_team_name_by_id(tid)
+        )
+
+        self.all_matches["away_team"] = self.all_matches["away_team_id"].apply(
+            lambda tid: core.get_team_name_by_id(tid)
         )
 
         league_ids = {row["league_id"] for _, row in self.all_matches.iterrows()}
@@ -301,6 +298,7 @@ class MainWindow(QMainWindow):
 
 # ----------------------- MATCH SECTION  -----------------------
     def on_match_clicked(self, match):
+        print(match)
         match_window = QMainWindow()
         match_window.setWindowTitle(f"{match['home_team']} vs {match['away_team']}")
         match_window.setStyleSheet("background-color: #1a1a1a; color: white;")
@@ -415,7 +413,7 @@ class MainWindow(QMainWindow):
         build_layout.addLayout(button_layout)
 
         def auto_lineups():
-            lineups = vpfm.AutoLineups(match["league_name"], f"{match['home_team']} vs {match['away_team']}")
+            lineups = core.AutoLineups(match["league_name"], f"{match['home_team']} vs {match['away_team']}")
             home_text = "\n".join(lineups.home_starters) + "\n\n" + "\n".join(lineups.home_subs)
             away_text = "\n".join(lineups.away_starters) + "\n\n" + "\n".join(lineups.away_subs)
             home_players_input.setPlainText(home_text)
@@ -443,7 +441,7 @@ class MainWindow(QMainWindow):
             list_item = self.add_task_to_queue(task_description)
         
             worker = UpdateWorker(
-                vpfm.Alg,
+                core.Alg,
                 home_team=match['home_team'],
                 away_team=match['away_team'],
                 home_lineups=home_lineups,
@@ -451,7 +449,7 @@ class MainWindow(QMainWindow):
                 league=match['league_name'],
                 match_date=match_date_obj,
                 match_time=match_time_delta, 
-                match_id=int(match['match_id']),
+                schedule_id=int(match['schedule_id']),
                 home_initial_goals=home_initial_goals,
                 away_initial_goals=away_initial_goals,
                 match_initial_time=match_initial_time,
@@ -662,11 +660,11 @@ class MainWindow(QMainWindow):
         simulation_data = None
         def load_simulation_data():
             nonlocal simulation_data
-            match_id = int(match['match_id']) 
+            schedule_id = int(match['schedule_id']) 
             sql_query = """SELECT sim_id, minute, home_goals, away_goals 
                         FROM simulation_data 
-                        WHERE match_id = %s"""
-            simulation_data = self.vpfm_db.select(sql_query, (match_id,))
+                        WHERE schedule_id = %s"""
+            simulation_data = self.vpfm_db.select(sql_query, (schedule_id,))
         load_simulation_data()
 
         def update_odds():
@@ -1544,7 +1542,7 @@ class MainWindow(QMainWindow):
                 core.Process_Data()
 
             worker = UpdateWorker(task)
-            worker.signals.finished.connect(lambda li=list_item: self.remove_task_from_queue(li))
+            worker.signals.finished.connect(lambda li=list_item: (self.remove_task_from_queue(li), self.load_leagues()))
             worker.signals.error.connect(lambda error_info: print(f"Error extracting/processing data: {error_info}"))
             self.threadpool.start(worker)
 
@@ -1556,7 +1554,7 @@ class MainWindow(QMainWindow):
                 core.UpdateSchedule(upto_date)
 
             worker = UpdateWorker(task)
-            worker.signals.finished.connect(lambda li=list_item: self.remove_task_from_queue(li))
+            worker.signals.finished.connect(lambda li=list_item: (self.remove_task_from_queue(li), self.load_fixtures()))
             worker.signals.error.connect(lambda error_info: print(f"Error updating schedule: {error_info}"))
             self.threadpool.start(worker)
 
@@ -1690,11 +1688,9 @@ class MainWindow(QMainWindow):
 
 # ----------------------- QUEUE SECTION  -----------------------
     def setup_queue_section(self, parent_layout): 
-        header = QLabel("Update Queue")
-        header.setStyleSheet("color: white; font-weight: bold;")
-        parent_layout.addWidget(header)
         self.update_queue_list = QListWidget()
         self.update_queue_list.setStyleSheet("color: white; background-color: #333;")
+        self.update_queue_list.setMaximumHeight(50)
         parent_layout.addWidget(self.update_queue_list)
 
     def add_task_to_queue(self, task_description):

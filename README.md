@@ -7,7 +7,7 @@ A sports terminal tool for sports trading or betting.
 *Explain later with images how to use it*
 ### Soccer Checklist
 - **New Season**: Update league teams.
-- **Every Week**: Update league Data.
+- **Every Week**: Update league data.
 - **Every Day/Hour**: Update schedule.
 
 ## Soccer Algorithm Theory
