@@ -3,8 +3,8 @@ import sys
 from PyQt5.QtCore import Qt, QRunnable, QObject, pyqtSignal, QThreadPool, QDate
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                             QComboBox, QScrollArea, QLabel, QPushButton, QCheckBox, QDoubleSpinBox,
-                            QDialog, QListWidget, QListWidgetItem, QTabWidget, QFormLayout, QPlainTextEdit,
-                            QGridLayout, QLineEdit, QGroupBox, QSpinBox, QDateEdit, QTableWidget)
+                            QDialog, QListWidget, QListWidgetItem, QTabWidget, QFormLayout, QPlainTextEdit, QHeaderView,
+                            QGridLayout, QLineEdit, QGroupBox, QSpinBox, QDateEdit, QTableWidget, QTableWidgetItem)
 from functools import partial
 import core
 import warnings 
@@ -298,7 +298,6 @@ class MainWindow(QMainWindow):
 
 # ----------------------- MATCH SECTION  -----------------------
     def on_match_clicked(self, match):
-        print(match)
         match_window = QMainWindow()
         match_window.setWindowTitle(f"{match['home_team']} vs {match['away_team']}")
         match_window.setStyleSheet("background-color: #1a1a1a; color: white;")
@@ -318,10 +317,6 @@ class MainWindow(QMainWindow):
         build_game_tab = QWidget()
         build_game_tab.setStyleSheet("background-color: #1a1a1a; color: white;")
         build_layout = QVBoxLayout(build_game_tab)
-
-        auto_lineups_btn = QPushButton("AutoLineups")
-        auto_lineups_btn.setStyleSheet("background-color: #333; color: white;")
-        build_layout.addWidget(auto_lineups_btn)    
         
         form_layout = QFormLayout()
         
@@ -383,44 +378,115 @@ class MainWindow(QMainWindow):
         self.away_subs_spin.setValue(5)
         self.away_subs_spin.setStyleSheet("background-color: #2a2a2a; color: white;")
         form_layout.addRow(away_subs_label, self.away_subs_spin)
-
-        home_red_cards_label = QLabel("Home # Red Cards:")
-        home_red_cards_label.setStyleSheet("color: white;")
-        self.home_red_cards_spin = QSpinBox()
-        self.home_red_cards_spin.setMinimum(0)
-        self.home_red_cards_spin.setMaximum(4)
-        self.home_red_cards_spin.setValue(0)
-        self.home_red_cards_spin.setStyleSheet("background-color: #2a2a2a; color: white;")
-        form_layout.addRow(home_red_cards_label, self.home_red_cards_spin)
-        
-        away_red_cards_label = QLabel("Away # Red Cards:")
-        away_red_cards_label.setStyleSheet("color: white;")
-        self.away_red_cards_spin = QSpinBox()
-        self.away_red_cards_spin.setMinimum(0)
-        self.away_red_cards_spin.setMaximum(4)
-        self.away_red_cards_spin.setValue(0)
-        self.away_red_cards_spin.setStyleSheet("background-color: #2a2a2a; color: white;")
-        form_layout.addRow(away_red_cards_label, self.away_red_cards_spin)
         
         build_layout.addLayout(form_layout)
+
+        home_saved_players = core.get_saved_lineup(match['schedule_id'], "home")
+        away_saved_players = core.get_saved_lineup(match['schedule_id'], "away")
+
+        if home_saved_players:
+            home_players_input.setPlainText("\n".join(home_saved_players))
+
+        if away_saved_players:
+            away_players_input.setPlainText("\n".join(away_saved_players))
         
         button_layout = QHBoxLayout()
         button_layout.addStretch()
-        submit_button = QPushButton("Run Game Simulations")
-        submit_button.setStyleSheet("background-color: #138585; color: white; padding: 10px;")
-        button_layout.addWidget(submit_button)
+
+        convert_button = QPushButton("Create Line-ups")
+        convert_button.setStyleSheet("background-color: #404040; color: white; padding: 10px;")
+        button_layout.addWidget(convert_button)
+
+        self.submit_button = QPushButton("Run Game Simulations")
+        self.submit_button.setStyleSheet("background-color: #138585; color: white; padding: 10px;")
+        self.submit_button.setEnabled(False)
+        button_layout.addWidget(self.submit_button)
+
         button_layout.addStretch()
         build_layout.addLayout(button_layout)
 
-        def auto_lineups():
-            lineups = core.AutoLineups(match["league_name"], f"{match['home_team']} vs {match['away_team']}")
-            home_text = "\n".join(lineups.home_starters) + "\n\n" + "\n".join(lineups.home_subs)
-            away_text = "\n".join(lineups.away_starters) + "\n\n" + "\n".join(lineups.away_subs)
-            home_players_input.setPlainText(home_text)
-            away_players_input.setPlainText(away_text)
+        def create_players_table(players):
+            table = QTableWidget(len(players), 7)
+            table.setHorizontalHeaderLabels(["Player", "YC", "RC", "Goals", "Assists", "On Field", "Bench"])
+            table.horizontalHeader().setStretchLastSection(False)
+            table.verticalHeader().setVisible(False)
+            table.setStyleSheet(
+                "QTableWidget { background-color: #2a2a2a; color: white; }"
+                "QHeaderView::section { background-color: #138585; color: white; }"
+            )
 
-        auto_lineups_btn.clicked.connect(auto_lineups)
-        
+            table.setColumnWidth(0, 160)
+            for i in range(1, 7):
+                table.setColumnWidth(i, 60)
+
+            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+
+            for row, name in enumerate(players):
+                name_item = QTableWidgetItem(name)
+                name_item.setFlags(Qt.ItemIsEnabled)
+                table.setItem(row, 0, name_item)
+
+                yc_cb = QCheckBox()
+                rc_cb = QCheckBox()
+                table.setCellWidget(row, 1, yc_cb)
+                table.setCellWidget(row, 2, rc_cb)
+
+                goals_sb = QSpinBox()
+                goals_sb.setRange(0, 20)
+                assists_sb = QSpinBox()
+                assists_sb.setRange(0, 20)
+                goals_sb.setFixedWidth(55)
+                assists_sb.setFixedWidth(55)
+                table.setCellWidget(row, 3, goals_sb)
+                table.setCellWidget(row, 4, assists_sb)
+
+                on_field_cb = QCheckBox()
+                bench_cb = QCheckBox()
+                on_field_cb.setFixedWidth(55)
+                bench_cb.setFixedWidth(55)
+
+                if row < 11:
+                    on_field_cb.setChecked(True)
+                else:
+                    bench_cb.setChecked(True)
+
+                table.setCellWidget(row, 5, on_field_cb)
+                table.setCellWidget(row, 6, bench_cb)
+
+            return table
+
+        def on_create_lineups():
+            if home_saved_players:
+                home_final_players = home_saved_players
+            else:
+                home_starters, home_benchers = core.match_players(match['home_team_id'], home_players_input)
+                home_final_players = home_starters + home_benchers
+
+            if away_saved_players:
+                away_final_players = away_saved_players
+            else:
+                away_starters, away_benchers = core.match_players(match['away_team_id'], away_players_input)
+                away_final_players = away_starters + away_benchers
+
+            form_layout.labelForField(home_players_input).hide()
+            form_layout.labelForField(away_players_input).hide()
+            home_players_input.hide()
+            away_players_input.hide()
+            convert_button.hide()
+
+            tables_layout = QHBoxLayout()
+            tables_layout.setSpacing(20)
+            tables_layout.addWidget(create_players_table(home_final_players))
+            tables_layout.addWidget(create_players_table(away_final_players))
+
+            core.send_lineup_to_db(home_final_players, match['schedule_id'], "home")
+            core.send_lineup_to_db(away_final_players, match['schedule_id'], "away")
+
+            build_layout.insertLayout(1, tables_layout)
+            self.submit_button.setEnabled(True)
+
+        convert_button.clicked.connect(on_create_lineups)
+
         def run_build_game():           
             match_date_obj = match['datetime'].date()
             midnight = datetime.combine(match_date_obj, datetime.min.time())
@@ -463,7 +529,7 @@ class MainWindow(QMainWindow):
             worker.signals.result.connect(lambda res: print("Simulation finished with result:", res))
             self.threadpool.start(worker)
         
-        submit_button.clicked.connect(run_build_game)
+        self.submit_button.clicked.connect(run_build_game)
 
         # ------------------- Odds Tab -------------------
         odds_tab = QWidget()
@@ -665,7 +731,7 @@ class MainWindow(QMainWindow):
                         FROM simulation_data 
                         WHERE schedule_id = %s"""
             simulation_data = self.vpfm_db.select(sql_query, (schedule_id,))
-        load_simulation_data()
+        #load_simulation_data()
 
         def update_odds():
             if simulation_data is None or simulation_data.empty:
@@ -805,7 +871,7 @@ class MainWindow(QMainWindow):
         home_totals_dropdown.currentIndexChanged.connect(update_odds)
         away_totals_dropdown.currentIndexChanged.connect(update_odds)
 
-        update_odds()
+        #update_odds()
 
         # ------------------- Simulator -------------------
         simulator_tab = QWidget()
@@ -958,7 +1024,7 @@ class MainWindow(QMainWindow):
                     "Odds": odds,
                     "Amount": amount
                 })
-            trading_data = vpfm.MatchTrade(matched_bets)
+            trading_data = core.MatchTrade(matched_bets)
             total_ev = 0.0
             for outcome, profit_label in match_profit_labels.items():
                 pl = trading_data.selections_pl.get(outcome, 0)
@@ -1131,7 +1197,7 @@ class MainWindow(QMainWindow):
                     "Odds": odds,
                     "Amount": amount
                 })
-            trading_data = vpfm.TWTrade(matched_bets)
+            trading_data = core.TWTrade(matched_bets)
             total_ev = 0.0
             if market_type == "Totals":
                 try:
@@ -1329,7 +1395,7 @@ class MainWindow(QMainWindow):
             except ValueError:
                 total_bet = 0
         
-            trading_data = vpfm.ScoreTrade(matched_bets)
+            trading_data = core.ScoreTrade(matched_bets)
         
             if total_bet > 0:
                 dutching_stakes = trading_data.dutching(total_bet, {bet["Selection"]: bet["Odds"] for bet in matched_bets})

@@ -234,8 +234,7 @@ CREATE TABLE match_detail (
         match_segment,
         player_dif
     ),
-    CONSTRAINT fk_match_detail_id
-        FOREIGN KEY (match_id) REFERENCES match_info (match_id)
+    FOREIGN KEY (match_id) REFERENCES match_info (match_id)
         ON DELETE CASCADE
 );
 ```
@@ -266,8 +265,7 @@ CREATE TABLE match_breakdown (
     red_cards INT DEFAULT 0,
     minutes_played INT DEFAULT 0,
     PRIMARY KEY (match_id, player_id),
-    CONSTRAINT fk_match_breakdown_id
-        FOREIGN KEY (match_id) REFERENCES match_info (match_id)
+    FOREIGN KEY (match_id) REFERENCES match_info (match_id)
         ON DELETE CASCADE
 );
 ```
@@ -341,8 +339,7 @@ CREATE TABLE shots_data (
     RSQ FLOAT DEFAULT NULL,
     shooter_A FLOAT DEFAULT NULL,
     GK_A FLOAT DEFAULT NULL,
-    CONSTRAINT fk_shots_data_id
-        FOREIGN KEY (match_id) REFERENCES match_info (match_id)
+    FOREIGN KEY (match_id) REFERENCES match_info (match_id)
         ON DELETE CASCADE
 );
 ```
@@ -355,8 +352,7 @@ CREATE TABLE team_data (
     team_coordinates VARCHAR(50) NOT NULL,
     team_fixtures_url VARCHAR(200) NOT NULL,
     league_id INT NOT NULL,
-    CONSTRAINT fk_league_id
-        FOREIGN KEY (league_id) REFERENCES league_data(league_id)
+    FOREIGN KEY (league_id) REFERENCES league_data(league_id)
         ON DELETE CASCADE
 );
 ```
@@ -388,6 +384,23 @@ CREATE TABLE schedule_data (
     away_rest_days INT,
     temperature INT,
     is_raining BOOLEAN,
+    home_players JSON,
+    away_players JSON,
     UNIQUE (home_team_id, away_team_id)
+);
+```
+##### simulation_data
+```
+CREATE TABLE simulation_data (
+    sim_id INT AUTO_INCREMENT PRIMARY KEY,
+    match_id INT NOT NULL,
+    minute INT NOT NULL,
+    shooter VARCHAR(50) NOT NULL,
+    squad VARCHAR(20) NOT NULL,
+    outcome VARCHAR(20) NOT NULL,
+    body_part VARCHAR(20) NOT NULL,
+    assister VARCHAR(50),
+    FOREIGN KEY (match_id) REFERENCES match_info(match_id)
+        ON DELETE CASCADE
 );
 ```

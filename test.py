@@ -90,7 +90,7 @@ s = Service('chromedriver.exe')
 options = webdriver.ChromeOptions()
 options.add_argument("--headless")
 driver = webdriver.Chrome(service=s, options=options)
-driver.get("https://fbref.com/en/matches/06a6419c/Atletico-Mineiro-Sao-Paulo-April-6-2025-Serie-A")
+driver.get("https://fbref.com/en/matches/e86bb1e9/Vasco-da-Gama-Sport-Recife-April-12-2025-Serie-A")
 home_team = "Atlético Mineiro"
 away_team = "São Paulo"
 match_id = 273
@@ -145,14 +145,13 @@ for event in events_wrap.find_elements(By.CSS_SELECTOR, '.event'):
                     player_out = line[len("for "):].strip()
         if player_out is not None and player_in is not None:
             subs_events.append((event_minute, player_out, player_in, team))
-    if event.find_elements(By.CSS_SELECTOR, '.goal'):
+    if event.find_elements(By.CSS_SELECTOR, '.goal, .own_goal'):
         goal_events.append((event_minute, team))
     if event.find_elements(By.CSS_SELECTOR, '.red_card'):
         player_links = event.find_elements(By.CSS_SELECTOR, 'a')
         if player_links:
             player_name = player_links[0].text.strip()
             red_events.append((event_minute, player_name, team))
-            print(event_minute, player_name, team)
 
 total_minutes = 90 + extra_first_half + extra_second_half
 
@@ -174,6 +173,7 @@ selected_columns.columns = cleaned_columns
 selected_columns = selected_columns[selected_columns['Minute'].notna() & (selected_columns['Minute'] != 'Minute')]
 selected_columns['Minute'] = selected_columns['Minute'].astype(str).str.replace(r'\+.*', '', regex=True).str.strip().astype(float).astype(int)
 selected_columns['xG'] = selected_columns['xG'].astype(float)
+print(goal_events)
 
 event_minutes = [se[0] for se in subs_events] + [ge[0] for ge in goal_events] + [re[0] for re in red_events]
 standard_boundaries = [0, 15, 30, 45, 60, 75]
@@ -227,10 +227,8 @@ for seg_start, seg_end in zip(boundaries, boundaries[1:]):
 
     cum_red_home = sum(1 for minute, _, t in red_events if minute <= seg_end and t == "home")
     cum_red_away = sum(1 for minute, _, t in red_events if minute <= seg_end and t == "away")
-    print(f"home red cards = {cum_red_home}")
-    print(f"away red cards = {cum_red_away}")
+
     red_diff = cum_red_away - cum_red_home
-    print(f"{red_diff} = {cum_red_home} - {cum_red_away}")
     if red_diff == 0:
         player_dif = "0"
     elif red_diff == 1:
@@ -246,4 +244,3 @@ for seg_start, seg_end in zip(boundaries, boundaries[1:]):
 
     sql = "INSERT IGNORE INTO match_detail (match_id, teamA_players, teamB_players, teamA_headers, teamA_footers, teamA_hxg, teamA_fxg, teamB_headers, teamB_footers, teamB_hxg, teamB_fxg, minutes_played, match_state, match_segment, player_dif) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
     params = (match_id, json.dumps(teamA_lineup, ensure_ascii=False), json.dumps(teamB_lineup, ensure_ascii=False), teamA_headers, teamA_footers, teamA_hxg, teamA_fxg, teamB_headers, teamB_footers, teamB_hxg, teamB_fxg, seg_duration, match_state, match_segment, player_dif)
-    print(sql, params)

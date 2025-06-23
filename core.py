@@ -270,6 +270,68 @@ def get_league_name_by_id(league_id):
         return result.iloc[0]["league_name"]
     return None
 
+def match_players(team_id, raw_widget):
+    raw_text = raw_widget.toPlainText()
+    clean_list = [line.strip() for line in raw_text.split('\n') if line.strip() and not any(char.isdigit() for char in line)]
+
+    unmatched_starters = clean_list[:11]
+    unmatched_benchers = clean_list[11:]
+
+    player_sql_query = """
+        SELECT DISTINCT player_id
+        FROM players_data
+        WHERE current_team = %s;
+    """
+    players_df = DB.select(player_sql_query, (team_id, ))
+
+    db_players = players_df['player_id'].tolist()
+
+    matched_starters = []
+    matched_benchers = []
+
+    threshold = 80
+    while unmatched_starters:
+        remaining_players = []
+        for player in unmatched_starters:
+            closest_match = process.extractOne(player, db_players, score_cutoff=threshold)
+            if closest_match:
+                matched_starters.append(closest_match[0])
+                db_players.remove(closest_match[0])
+            else:
+                remaining_players.append(player)
+        if not remaining_players:
+            break
+        unmatched_starters = remaining_players
+        threshold -= 20
+    threshold = 80
+    while unmatched_benchers:
+        remaining_players = []
+        for player in unmatched_benchers:
+            closest_match = process.extractOne(player, db_players, score_cutoff=threshold)
+            if closest_match:
+                matched_benchers.append(closest_match[0])
+                db_players.remove(closest_match[0])
+            else:
+                remaining_players.append(player)
+        if not remaining_players:
+            break
+        unmatched_benchers = remaining_players
+        threshold -= 20
+
+    return matched_starters, matched_benchers
+
+def send_lineup_to_db(players_list, schedule_id, team):
+    column_name = f"{team}_players"
+    sql_query = f"UPDATE schedule_data SET {column_name} = %s WHERE schedule_id = %s"
+    DB.execute(sql_query, (json.dumps(players_list, ensure_ascii=False), schedule_id))
+
+def get_saved_lineup(schedule_id, team):
+    column_name = f"{team}_players"
+    sql_query = f"SELECT {column_name} FROM schedule_data WHERE schedule_id = %s"
+    result = DB.select(sql_query, (schedule_id,))
+    players_list = json.loads(result.iloc[0][column_name]) if not result.empty else []
+    return players_list
+
 # ------------------------------ Fetch & Remove Data ------------------------------
 class UpdateSchedule:
     def __init__(self, from_date):
@@ -840,7 +902,7 @@ class Extract_Data:
                                 player_out = line[len("for "):].strip()
                     if player_out is not None and player_in is not None:
                         subs_events.append((event_minute, player_out, player_in, team))
-                if event.find_elements(By.CSS_SELECTOR, '.goal'):
+                if event.find_elements(By.CSS_SELECTOR, '.goal, .own_goal'):
                     goal_events.append((event_minute, team))
                 if event.find_elements(By.CSS_SELECTOR, '.red_card'):
                     player_links = event.find_elements(By.CSS_SELECTOR, 'a')
@@ -1337,6 +1399,74 @@ class Extract_Data:
                 "UPDATE match_detail SET teamA_pdras = %s, teamB_pdras = %s WHERE detail_id = %s",
                 (teamA_pdras, teamB_pdras, row['detail_id'])
             )
+
+# remove one year old data
+class RemoveOldData:
+    def __init__(self, league):
+        self.league = league
+        self.cd = datetime.now()
+        self.a_year_ago_date = (self.cd - timedelta(days=365)).date()
+        self.a_week_ago_date = (self.cd - timedelta(days=10)).date()
+
+        self.db = DatabaseManager.DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
+
+        get_teams_query = f"""
+            SELECT team_name
+            WHERE league_name = {league}
+            FROM teams_data;
+        """
+
+        self.teams_df = self.db.select(get_teams_query)
+        self.league_teams = []
+        for index, row in self.teams_df.iterrows():
+            self.league_teams.append(row['team_name'])
+
+        delete_query  = """
+        DELETE FROM players_data 
+        WHERE date < %s
+        AND league_name = %s;
+        """
+
+        self.db.execute(delete_query, (self.a_year_ago_date, self.league))
+
+        if self.league_teams:
+            placeholders = ', '.join(['%s'] * len(self.league_teams))
+            
+            delete_all_query = f"""
+            DELETE FROM players_data 
+            WHERE league_name = %s
+            AND team_name NOT IN ({placeholders})
+            """
+            params = (self.league,) + tuple(self.league_teams)
+            
+            self.db.execute(delete_all_query, params)
+        else:
+            print("No teams found. Skipping deletion.")
+
+        select_deleted_data_query = """
+        SELECT match_id FROM schedule_data
+        WHERE match_date < %s
+        """
+        
+        match_ids_df = self.db.select(select_deleted_data_query, (self.a_week_ago_date,))
+        match_ids_list = match_ids_df["match_id"].tolist()
+
+        if match_ids_list:
+            ids_placeholders = ', '.join(['%s'] * len(match_ids_list))
+
+            delete_schedule_query = f"""
+            DELETE FROM schedule_data 
+            WHERE match_id IN ({ids_placeholders})
+            """
+            
+            self.db.execute(delete_schedule_query, tuple(match_ids_list))
+
+            delete_sim_query = f"""
+            DELETE FROM simulation_data 
+            WHERE match_id IN ({ids_placeholders})
+            """
+            
+            self.db.execute(delete_sim_query, tuple(match_ids_list))
 
 # ------------------------------ Process data ------------------------------
 class Process_Data:
@@ -1848,56 +1978,6 @@ class Alg:
 
         self.insert_sim_data(all_rows, self.match_id)
 
-    def divide_matched_players(self, team, league, lineups):
-        clean_list = [line for line in lineups.split('\n') if line and not any(char.isdigit() for char in line)]
-
-        unmatched_starters = clean_list[:11]
-        unmatched_subs = clean_list[11:]
-
-        db = DatabaseManager.DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
-        sql_query = """
-            SELECT DISTINCT players_name
-            FROM players_data
-            WHERE league_name = %s
-            AND team_name = %s;
-        """
-        players_df = db.select(sql_query, (league, team))
-        db_players = [row['players_name'] for idx, row in players_df.iterrows()]
-
-        matched_starters = []
-        matched_subs = []
-
-        threshold = 80
-        while unmatched_starters:
-            remaining_players = []
-            for player in unmatched_starters:
-                closest_match = process.extractOne(player, db_players, score_cutoff=threshold)
-                if closest_match:
-                    matched_starters.append(closest_match[0])
-                    db_players.remove(closest_match[0])
-                else:
-                    remaining_players.append(player)
-            if not remaining_players:
-                break
-            unmatched_starters = remaining_players
-            threshold -= 20
-        threshold = 80
-        while unmatched_subs:
-            remaining_players = []
-            for player in unmatched_subs:
-                closest_match = process.extractOne(player, db_players, score_cutoff=threshold)
-                if closest_match:
-                    matched_subs.append(closest_match[0])
-                    db_players.remove(closest_match[0])
-                else:
-                    remaining_players.append(player)
-            if not remaining_players:
-                break
-            unmatched_subs = remaining_players
-            threshold -= 20
-
-        return matched_starters, matched_subs
-
     def get_players_data(self, team, team_starters, team_subs, league):
         all_players = team_starters + team_subs
         players_dict = {}
@@ -2324,4 +2404,185 @@ class Alg:
 
             self.db.execute(insert_sql, params)    
 
+# ------------------------------ Automatization ------------------------------
+class AutoLineups:
+    """
+            auto_lineups_btn = QPushButton("AutoLineups")
+            auto_lineups_btn.setStyleSheet("background-color: #333; color: white;")
+            build_layout.addWidget(auto_lineups_btn)    
+            
+    This is how to use it:
+            def auto_lineups():
+                lineups = core.AutoLineups(match["league_name"], f"{match['home_team']} vs {match['away_team']}")
+                home_text = "\n".join(lineups.home_starters) + "\n\n" + "\n".join(lineups.home_subs)
+                away_text = "\n".join(lineups.away_starters) + "\n\n" + "\n".join(lineups.away_subs)
+                home_players_input.setPlainText(home_text)
+                away_players_input.setPlainText(away_text)
+
+            auto_lineups_btn.clicked.connect(auto_lineups)
+    """
+    def __init__(self, league, title):
+        self.league = league
+        self.target_title = title
+
+        sql_query = f"""
+            SELECT 
+                league_sg
+            FROM leagues_data
+            WHERE league_name = '{self.league}';
+        """
+        result = DB.select(sql_query)
+        league_url = result['league_sg'].iloc[0]
+
+        s=Service('chromedriver.exe')
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless")
+        driver = webdriver.Chrome(service=s, options=options)
+        driver.get(league_url)
+
+        fixtures_container = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'content-block team-news-container')]")))
+        fixtures_table = fixtures_container.find_element(By.XPATH, ".//div[contains(@class, 'fxs-table table-for-lineups')]")
+        rows = fixtures_table.find_elements(By.XPATH, ".//div[contains(@class, 'table-row-loneups')]")
+
+        for row in rows:
+            fxs_game = row.find_element(By.XPATH, ".//div[contains(@class, 'fxs-game')]")
+            normalized_text = " ".join(fxs_game.text.strip().split())
+            score = fuzz.ratio(normalized_text, self.target_title)
+
+            if score >= 80:
+                fxs_btn = row.find_element(By.XPATH, ".//div[contains(@class, 'fxs-btn')]//a")
+                driver.execute_script("arguments[0].click();", fxs_btn)
+
+                home_lineup = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'lineups-home reverse')]")))
+                away_lineup = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'lineups-away')]")))
+            
+                home_players_elements = home_lineup.find_elements(By.XPATH, ".//span[contains(@class, 'player-name')]")
+                away_players_elements = away_lineup.find_elements(By.XPATH, ".//span[contains(@class, 'player-name')]")
+                
+                self.home_starters = [elem.text.strip() for elem in home_players_elements]
+                self.away_starters = [elem.text.strip() for elem in away_players_elements]
+                
+                subs_container = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'lineups-teams')]")))
+                teams_items = subs_container.find_elements(By.XPATH, ".//div[contains(@class, 'teams-item')]")
+                
+                self.home_subs = []
+                self.away_subs = []
+                if teams_items:
+                    home_subs_elements = teams_items[0].find_elements(By.XPATH, ".//ul[contains(@class, 'lineups-sub')]/li[contains(@class, 'sub-player')]")
+                    self.home_subs = [re.sub(r'^\d+\s*', '', elem.text.strip()) for elem in home_subs_elements]
+                if len(teams_items) > 1:
+                    away_subs_elements = teams_items[1].find_elements(By.XPATH, ".//ul[contains(@class, 'lineups-sub')]/li[contains(@class, 'sub-player')]")
+                    self.away_subs = [re.sub(r'^\d+\s*', '', elem.text.strip()) for elem in away_subs_elements]
+
 # ------------------------------ Trading ------------------------------
+class MatchTrade:
+    def __init__(self, matched_bets):
+        self.matched_bets = matched_bets
+        self.selections_pl = self.profit_loss(self.matched_bets)
+
+    def profit_loss(self, matched_bets):
+        selections = {"Home": 0, "Away": 0, "Draw": 0}
+        for bet in matched_bets:
+            if bet["Type"] == "Back":
+                bet_profit = bet["Amount"]*(bet["Odds"]-1)
+                bet_liability = bet["Amount"]
+            else:
+                bet_profit = bet["Amount"]
+                bet_liability = bet["Amount"]*(bet["Odds"]-1)
+            bet["Profit"] = bet_profit
+            bet["Liability"] = bet_liability
+
+        for selection in selections.keys():
+            pl = 0
+            for bet in matched_bets:
+                if selection == bet["Selection"]:
+                    if bet["Type"] == "Back":
+                        pl += bet["Profit"]
+                    else:
+                        pl -= bet["Liability"]
+                else:
+                    if bet["Type"] == "Back":
+                        pl -= bet["Liability"]
+                    else:
+                        pl += bet["Profit"]
+
+            selections[selection] = pl
+        return selections
+
+class TWTrade:  
+    def __init__(self, matched_bets):
+        self.matched_bets = matched_bets
+        self.selections_pl = self.profit_loss(self.matched_bets)
+
+    def profit_loss(self, matched_bets):
+        if matched_bets and matched_bets[0]["Selection"] in ["Home AH", "Away AH"]:
+            outcomes = ["Home AH", "Away AH"]
+        else:
+            outcomes = ["Over", "Under"]
+        selections = {outcome: 0 for outcome in outcomes}
+        for bet in matched_bets:
+            if bet["Type"] == "Back":
+                bet_profit = bet["Amount"] * (bet["Odds"] - 1)
+                bet_liability = bet["Amount"]
+            else:
+                bet_profit = bet["Amount"]
+                bet_liability = bet["Amount"] * (bet["Odds"] - 1)
+            bet["Profit"] = bet_profit
+            bet["Liability"] = bet_liability
+        for outcome in outcomes:
+            pl = 0
+            for bet in matched_bets:
+                if bet["Selection"] == outcome:
+                    if bet["Type"] == "Back":
+                        pl += bet["Profit"]
+                    else:
+                        pl -= bet["Liability"]
+                else:
+                    if bet["Type"] == "Back":
+                        pl -= bet["Liability"]
+                    else:
+                        pl += bet["Profit"]
+            selections[outcome] = pl
+        return selections   
+
+class ScoreTrade:
+    def __init__(self, matched_bets):
+        self.matched_bets = matched_bets
+        self.selections_pl = self.profit_loss(self.matched_bets)
+
+    def profit_loss(self, matched_bets):
+        selections = {key: 0 for key in ["0-0", "0-1", "0-2", "0-3", "1-0", "1-1", "1-2", "1-3", "2-0", "2-1", "2-2", "2-3", "3-0", "3-1", "3-2", "3-3", "Home Win 4+", "Away Win 4+", "Draw +4"]}
+        for bet in matched_bets:
+            if bet["Type"] == "Back":
+                bet_profit = bet["Amount"]*(bet["Odds"]-1)
+                bet_liability = bet["Amount"]
+            else:
+                bet_profit = bet["Amount"]
+                bet_liability = bet["Amount"]*(bet["Odds"]-1)
+            bet["Profit"] = bet_profit
+            bet["Liability"] = bet_liability
+
+        for selection in selections.keys():
+            pl = 0
+            for bet in matched_bets:
+                if selection == bet["Selection"]:
+                    if bet["Type"] == "Back":
+                        pl += bet["Profit"]
+                    else:
+                        pl -= bet["Liability"]
+                else:
+                    if bet["Type"] == "Back":
+                        pl -= bet["Liability"]
+                    else:
+                        pl += bet["Profit"]
+
+            selections[selection] = pl
+        return selections
+    
+
+    def dutching(self, total_stake, selections_odds):
+        stakes = {}
+        total_inverse_odds = sum(1/odds for odds in selections_odds.values())
+        for selection, odds in selections_odds.items():
+            stakes[selection] = (total_stake / total_inverse_odds) / odds
+        return stakes
