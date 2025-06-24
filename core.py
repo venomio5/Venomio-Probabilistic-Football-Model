@@ -1872,8 +1872,9 @@ class Alg:
         self.home_sub_minutes, self.away_sub_minutes = self.get_sub_minutes(self.home_team_id, self.away_team_id, self.match_initial_time, self.home_n_subs_avail, self.away_n_subs_avail)
         self.all_sub_minutes = list(set(list(self.home_sub_minutes.keys()) + list(self.away_sub_minutes.keys())))
 
-        self.home_features = self.compute_features(self.home_team, self.away_team, self.league, True, self.match_date, self.match_time)
-        self.away_features = self.compute_features(self.away_team, self.home_team, self.league, False, self.match_date, self.match_time)
+        # CHANGE THIS --------------------------------------------------------
+        #self.home_features = self.compute_features(self.home_team, self.away_team, self.league, True, self.match_date, self.match_time) 
+        #self.away_features = self.compute_features(self.away_team, self.home_team, self.league, False, self.match_date, self.match_time)
 
         if self.match_initial_time >= 75:
             range_value = 10000
@@ -1888,9 +1889,8 @@ class Alg:
         elif self.match_initial_time < 15:
             range_value = 1
 
-        all_rows = []
+        shot_rows = []
 
-        """
         for i in tqdm(range(range_value)):
             home_goals = self.home_initial_goals
             away_goals = self.away_initial_goals
@@ -1898,22 +1898,12 @@ class Alg:
             away_active_players = self.away_starters
             home_passive_players = self.home_subs
             away_passive_players = self.away_subs
-            sql_momentum = 0
 
-            home_last_goal_time = None
-            away_last_goal_time = None
-
-            home_natural_projected_goals = self.get_teams_natural_projected_goals(home_active_players, away_active_players, self.home_players_data, self.away_players_data, self.league_avg)
-            away_natural_projected_goals = self.get_teams_natural_projected_goals(away_active_players, home_active_players, self.away_players_data, self.home_players_data, self.league_avg)
-
-            self.home_rc_offensive_penalty = 1 if self.home_n_rc == 0 else 0.5 ** self.home_n_rc
-            self.home_rc_defensive_penalty = 1 if self.home_n_rc == 0 else 1.6 ** self.home_n_rc
-
-            self.away_rc_offensive_penalty = 1 if self.away_n_rc == 0 else 0.5 ** self.away_n_rc
-            self.away_rc_defensive_penalty = 1 if self.away_n_rc == 0 else 1.6 ** self.away_n_rc
+            home_ras = self.get_teams_ras(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
+            away_ras = self.get_teams_ras(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
 
             for minute in range(self.match_initial_time, 91):
-                all_rows.append((i, minute, home_goals, away_goals, sql_momentum))
+                print(f"Minute {minute}")
                 home_status, away_status = self.get_status(home_goals, away_goals)
                 time_segment = self.get_time_segment(minute)
 
@@ -1922,33 +1912,32 @@ class Alg:
                         home_active_players, home_passive_players = self.swap_players(home_active_players, home_passive_players, self.home_players_data, self.home_sub_minutes[minute], home_status)
                     if minute in list(self.away_sub_minutes.keys()):
                         away_active_players, away_passive_players = self.swap_players(away_active_players, away_passive_players, self.away_players_data, self.away_sub_minutes[minute], away_status)
-                    home_natural_projected_goals = self.get_teams_natural_projected_goals(home_active_players, away_active_players, self.home_players_data, self.away_players_data, self.league_avg)
-                    away_natural_projected_goals = self.get_teams_natural_projected_goals(away_active_players, home_active_players, self.away_players_data, self.home_players_data, self.league_avg)
+                    home_ras = self.get_teams_ras(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
+                    away_ras = self.get_teams_ras(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
 
-                home_recent = home_last_goal_time is not None and (minute - home_last_goal_time) <= 10
-                away_recent = away_last_goal_time is not None and (minute - away_last_goal_time) <= 10
+                print(f"Home RAS to 90 {home_ras*90} / Away RAS to 90 {away_ras*90}")
 
-                if home_last_goal_time is None and away_last_goal_time is None:
-                    last_team = None
-                elif away_last_goal_time is None or (home_last_goal_time and home_last_goal_time > away_last_goal_time):
-                    last_team = "home"
-                else:
-                    last_team = "away"
+                # CHANGE THIS --------------------------------------------------------
+                #home_proj_xg = home_natural_projected_goals * self.home_features['hna'] * self.home_features[time_segment] * self.home_features[home_status] * self.home_features['Travel'] * self.home_features['Elevation'] * self.home_features['Rest'] * self.home_features['Time'] * home_momentum * self.home_rc_offensive_penalty * self.away_rc_defensive_penalty
+                #away_proj_xg = away_natural_projected_goals * self.away_features['hna'] * self.away_features[time_segment] * self.away_features[away_status] * self.away_features['Travel'] * self.away_features['Elevation'] * self.away_features['Rest'] * self.away_features['Time'] * away_momentum * self.home_rc_defensive_penalty * self.away_rc_offensive_penalty
 
-                home_momentum = 1.02 if (home_recent and last_team == "home") else 1.0
-                away_momentum = 1.02 if (away_recent and last_team == "away") else 1.0
+                home_proj_xg = 0.5
+                away_proj_xg = 0.5
 
-                sql_momentum = 1 if home_momentum > 1.0 else 2 if away_momentum > 1.0 else 0
-
-                home_proj_xg = home_natural_projected_goals * self.home_features['hna'] * self.home_features[time_segment] * self.home_features[home_status] * self.home_features['Travel'] * self.home_features['Elevation'] * self.home_features['Rest'] * self.home_features['Time'] * home_momentum * self.home_rc_offensive_penalty * self.away_rc_defensive_penalty
-                away_proj_xg = away_natural_projected_goals * self.away_features['hna'] * self.away_features[time_segment] * self.away_features[away_status] * self.away_features['Travel'] * self.away_features['Elevation'] * self.away_features['Rest'] * self.away_features['Time'] * away_momentum * self.home_rc_defensive_penalty * self.away_rc_offensive_penalty
+                shooter = "Carlos"
+                squad = 1
+                outcome = 0
+                body_part = "Carlos"
+                assister = "Carlos"
 
                 home_goals_scored = np.random.poisson(home_proj_xg)
                 away_goals_scored = np.random.poisson(away_proj_xg)
 
                 home_goals += home_goals_scored
                 away_goals += away_goals_scored
-        """
+
+                shot_rows.append((i, minute, shooter, squad, outcome, body_part, assister))
+
         #self.insert_sim_data(all_rows, self.match_id)
 
     def divide_matched_players(self, players_data):
@@ -2053,12 +2042,12 @@ class Alg:
     def swap_players(self, active_players, passive_players, players_data, subs, game_status):
         total_active_minutes = 0
         for player in active_players:
-            total_active_minutes += players_data[player]['total_minutes']
+            total_active_minutes += players_data[player]['minutes_played']
 
         active_players_dict = {}
 
         for player in active_players:
-            active_players_dict[player] = (players_data[player]['total_minutes'] / total_active_minutes) * (players_data[player]['out_status_dict'][game_status])
+            active_players_dict[player] = (1 - (players_data[player]['minutes_played'] / total_active_minutes)) * (players_data[player]['out_status_prob'][game_status])
 
         total_active_p = sum(active_players_dict.values())
         if total_active_p == 0:
@@ -2077,18 +2066,18 @@ class Alg:
             for i, key in enumerate(normalized_active_p.keys()):
                 normalized_active_p[key] = probabilities[i]
 
-        active_weights = list(normalized_active_p.values())      
+        active_weights = list(normalized_active_p.values())     
 
         picked_out_players = np.random.choice(active_players, p=active_weights, replace=False, size=subs)
 
         total_passive_minutes = 0
         for player in passive_players:
-            total_passive_minutes += players_data[player]['total_minutes']
+            total_passive_minutes += players_data[player]['minutes_played']
 
         passive_players_dict = {}
 
         for player in passive_players:
-            passive_players_dict[player] = (players_data[player]['total_minutes'] / total_passive_minutes) * (players_data[player]['in_status_dict'][game_status])
+            passive_players_dict[player] = (players_data[player]['minutes_played'] / total_passive_minutes) * (players_data[player]['in_status_prob'][game_status])
 
         total_passive_p = sum(passive_players_dict.values())
         if total_passive_p == 0:
@@ -2117,24 +2106,18 @@ class Alg:
 
         return active_players, passive_players
 
-    def get_teams_natural_projected_goals(self, offensive_players, defensive_players, offensive_data, defensive_data, league_avg):
-        total_off_xg = 0
-        total_off_minutes_played = 0
+    def get_teams_ras(self, offensive_players, defensive_players, offensive_data, defensive_data):
+        team_off_ras = 0
         for player in offensive_players:
-            total_off_xg += offensive_data[player]['off_xg']
-            total_off_minutes_played += offensive_data[player]['total_minutes']
-        total_off_pm = total_off_xg/total_off_minutes_played
+            team_off_ras += offensive_data[player]['off_sh_coef']
 
-        total_def_xg = 0
-        total_def_minutes_played = 0
+        opp_def_ras = 0
         for player in defensive_players:
-            total_def_xg += defensive_data[player]['def_xg']
-            total_def_minutes_played += defensive_data[player]['total_minutes']
-        total_def_pm = total_def_xg/total_def_minutes_played
+            opp_def_ras += defensive_data[player]['def_sh_coef']
 
-        team_natural_proj_goals = (total_off_pm/league_avg)*(total_def_pm/league_avg)*league_avg
+        team_total_ras = team_off_ras - opp_def_ras
 
-        return team_natural_proj_goals
+        return team_total_ras
 
     def compute_features(self, team, opponent, league, is_home, match_date, match_time):
         if is_home:
