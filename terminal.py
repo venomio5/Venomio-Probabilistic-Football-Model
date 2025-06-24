@@ -476,8 +476,11 @@ class MainWindow(QMainWindow):
 
             tables_layout = QHBoxLayout()
             tables_layout.setSpacing(20)
-            tables_layout.addWidget(create_players_table(home_final_players))
-            tables_layout.addWidget(create_players_table(away_final_players))
+
+            self.home_players_table = create_players_table(home_final_players)
+            self.away_players_table = create_players_table(away_final_players)
+            tables_layout.addWidget(self.home_players_table)
+            tables_layout.addWidget(self.away_players_table)
 
             core.send_lineup_to_db(home_final_players, match['schedule_id'], "home")
             core.send_lineup_to_db(away_final_players, match['schedule_id'], "away")
@@ -487,42 +490,64 @@ class MainWindow(QMainWindow):
 
         convert_button.clicked.connect(on_create_lineups)
 
-        def run_build_game():           
-            match_date_obj = match['datetime'].date()
-            midnight = datetime.combine(match_date_obj, datetime.min.time())
-            match_time_delta = match['datetime'] - midnight
+        def extract_players_data(table: QTableWidget) -> list[dict]:
+            players_data = []
+            for row in range(table.rowCount()):
+                player_id = table.item(row, 0).text()
 
-            home_lineups = home_players_input.toPlainText().strip()
-            away_lineups = away_players_input.toPlainText().strip()
+                yc = table.cellWidget(row, 1).isChecked()
+                rc = table.cellWidget(row, 2).isChecked()
+                goals = table.cellWidget(row, 3).value()
+                assists = table.cellWidget(row, 4).value()
+                on_field = table.cellWidget(row, 5).isChecked()
+                bench = table.cellWidget(row, 6).isChecked()
 
+                players_data.append({
+                    "player_id": player_id,
+                    "yellow_card": yc,
+                    "red_card": rc,
+                    "goals": goals,
+                    "assists": assists,
+                    "on_field": on_field,
+                    "bench": bench
+                })
+
+            return players_data
+
+        def run_build_game():        
             home_initial_goals = self.home_goals_spin.value()
             away_initial_goals = self.away_goals_spin.value()
             match_initial_time = self.initial_minute_spin.value()
             home_initial_n_subs = self.home_subs_spin.value()
             away_initial_n_subs = self.away_subs_spin.value()
-            home_initial_n_rc = self.home_red_cards_spin.value()
-            away_initial_n_rc = self.away_red_cards_spin.value()
+
+            home_players_data = extract_players_data(self.home_players_table)
+            away_players_data = extract_players_data(self.away_players_table)
 
             task_description = f"Simulating: {match['home_team']} vs {match['away_team']}"
             list_item = self.add_task_to_queue(task_description)
         
             worker = UpdateWorker(
                 core.Alg,
-                home_team=match['home_team'],
-                away_team=match['away_team'],
-                home_lineups=home_lineups,
-                away_lineups=away_lineups,
-                league=match['league_name'],
-                match_date=match_date_obj,
-                match_time=match_time_delta, 
                 schedule_id=int(match['schedule_id']),
+                home_team_id=match['home_team_id'],
+                away_team_id=match['away_team_id'],
+                home_players_data=home_players_data,
+                away_players_data=away_players_data,
+                league_id=match['league_id'],
+                match_time=(datetime.min + match['venue_time']).time(), 
+                home_elevation_dif=match['home_elevation_dif'],
+                away_elevation_dif=match['away_elevation_dif'],
+                away_travel=match['away_travel'],
+                home_rest_days=match['home_rest_days'],
+                away_rest_days=match['away_rest_days'],
+                temperature=match['temperature'],
+                is_raining=match['is_raining'],
                 home_initial_goals=home_initial_goals,
                 away_initial_goals=away_initial_goals,
                 match_initial_time=match_initial_time,
                 home_n_subs=home_initial_n_subs,
-                away_n_subs=away_initial_n_subs,
-                home_n_rc=home_initial_n_rc,
-                away_n_rc=away_initial_n_rc
+                away_n_subs=away_initial_n_subs
             )
             worker.signals.finished.connect(lambda: self.remove_task_from_queue(list_item))
             worker.signals.error.connect(lambda err: print("Simulation error:", err))

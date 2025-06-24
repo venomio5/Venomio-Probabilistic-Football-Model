@@ -1040,66 +1040,35 @@ class Extract_Data:
                     if not found_in:
                         away_player_stats[player_in] = {"starter": False, "sub_in_min": sub_minute, "in_status": state}
             
-            final_home_goals = sum(1 for minute, t in goal_events if t == "home" and minute <= total_minutes)
-            final_away_goals = sum(1 for minute, t in goal_events if t == "away" and minute <= total_minutes)
-            
-            for key in list(home_player_stats.keys()):
-                stat = home_player_stats[key]
+            for key, stat in list(home_player_stats.items()):
 
-                stat.setdefault("sub_in_min", 0)
-                stat.setdefault("in_status", "level")
+                stat.setdefault("starter", True)
 
-                if stat.get("starter", True):
-                    if "sub_out_min" not in stat:
-                        stat["sub_out_min"] = total_minutes
-                        stat["out_status"] = "leading" if final_home_goals > final_away_goals else \
-                                             "level"   if final_home_goals == final_away_goals else "trailing"
+                stat.setdefault("sub_in_min",  None)
+                stat.setdefault("sub_out_min", None)
+                stat.setdefault("in_status",   None)
+                stat.setdefault("out_status",  None)
 
-                    if stat["sub_out_min"] > 90:
-                        stat["minutes_played"] = stat["sub_out_min"] - stat["sub_in_min"]
-                        stat["sub_out_min"] = 90
-                    else:
-                        stat["minutes_played"] = stat["sub_out_min"] - stat["sub_in_min"]
-                else:
-                    if "sub_out_min" not in stat:
-                        stat["sub_out_min"] = 0
-                    if stat["sub_out_min"] == 0:
-                        del home_player_stats[key]
-                    else:
-                        if stat["sub_out_min"] > 90:
-                            stat["minutes_played"] = stat["sub_out_min"] - stat["sub_in_min"]
-                            stat["sub_out_min"] = 90
-                        else:
-                            stat["minutes_played"] = stat["sub_out_min"] - stat["sub_in_min"]
+                in_min  = 0 if stat["starter"] else stat["sub_in_min"]
+                out_min = stat["sub_out_min"] if stat["sub_out_min"] is not None else total_minutes
+                out_min = min(out_min, 90)
 
-            for key in list(away_player_stats.keys()):
-                stat = away_player_stats[key]
+                stat["minutes_played"] = out_min - (in_min if in_min is not None else 0)
 
-                stat.setdefault("sub_in_min", 0)
-                stat.setdefault("in_status", "level")
+            for key, stat in list(away_player_stats.items()):
 
-                if stat.get("starter", True):
-                    if "sub_out_min" not in stat:
-                        stat["sub_out_min"] = total_minutes
-                        stat["out_status"] = "leading" if final_away_goals > final_home_goals else \
-                                             "level"   if final_away_goals == final_home_goals else "trailing"
+                stat.setdefault("starter", True)
 
-                    if stat["sub_out_min"] > 90:
-                        stat["minutes_played"] = stat["sub_out_min"] - stat["sub_in_min"]
-                        stat["sub_out_min"] = 90
-                    else:
-                        stat["minutes_played"] = stat["sub_out_min"] - stat["sub_in_min"]
-                else:
-                    if "sub_out_min" not in stat:
-                        stat["sub_out_min"] = 0
-                    if stat["sub_out_min"] == 0:
-                        del away_player_stats[key]
-                    else:
-                        if stat["sub_out_min"] > 90:
-                            stat["minutes_played"] = stat["sub_out_min"] - stat["sub_in_min"]
-                            stat["sub_out_min"] = 90
-                        else:
-                            stat["minutes_played"] = stat["sub_out_min"] - stat["sub_in_min"]
+                stat.setdefault("sub_in_min",  None)
+                stat.setdefault("sub_out_min", None)
+                stat.setdefault("in_status",   None)
+                stat.setdefault("out_status",  None)
+
+                in_min  = 0 if stat["starter"] else stat["sub_in_min"]
+                out_min = stat["sub_out_min"] if stat["sub_out_min"] is not None else total_minutes
+                out_min = min(out_min, 90)
+
+                stat["minutes_played"] = out_min - (in_min if in_min is not None else 0)
 
             all_shots = shots_df.loc[:, [
                 ('Unnamed: 0_level_0', 'Minute'),
@@ -1873,25 +1842,29 @@ class Process_Data:
 
 # ------------------------------ Monte Carlo ------------------------------
 class Alg:
-    def __init__(self, home_team, away_team, home_lineups, away_lineups, league, match_date, match_time, match_id, home_initial_goals, away_initial_goals, match_initial_time, home_n_subs, away_n_subs, home_n_rc, away_n_rc):
-        self.home_team = home_team
-        self.away_team = away_team
-        self.league = league
-        self.match_date = match_date
+    def __init__(self, schedule_id, home_team_id, away_team_id, home_players_data, away_players_data, league_id, match_time, home_elevation_dif, away_elevation_dif, away_travel, home_rest_days, away_rest_days, temperature, is_raining, home_initial_goals, away_initial_goals, match_initial_time, home_n_subs, away_n_subs):
+        self.schedule_id = schedule_id
+        self.home_team_id = home_team_id
+        self.away_team_id = away_team_id
+        self.home_players_data = home_players_data
+        self.away_players_data = away_players_data
+        self.league_id = league_id
         self.match_time = match_time
-        self.match_id = match_id
-        self.home_lineups = home_lineups
-        self.away_lineups = away_lineups
+        self.home_elevation_dif = home_elevation_dif
+        self.away_elevation_dif = away_elevation_dif
+        self.away_travel = away_travel
+        self.home_rest_days = home_rest_days
+        self.away_rest_days = away_rest_days
+        self.temperature = temperature
+        self.is_raining = is_raining
         self.home_initial_goals = home_initial_goals
         self.away_initial_goals = away_initial_goals
         self.match_initial_time = match_initial_time
         self.home_n_subs = home_n_subs
         self.away_n_subs = away_n_subs
-        self.home_n_rc = home_n_rc
-        self.away_n_rc = away_n_rc
 
-        self.home_starters, self.home_subs = self.divide_matched_players(self.home_team, self.league, self.home_lineups)
-        self.away_starters, self.away_subs = self.divide_matched_players(self.away_team, self.league, self.away_lineups)
+        self.home_starters, self.home_subs = self.divide_matched_players(self.home_players_data)
+        self.away_starters, self.away_subs = self.divide_matched_players(self.away_players_data)
 
         self.home_players_data = self.get_players_data(self.home_team, self.home_starters, self.home_subs, self.league)
         self.away_players_data = self.get_players_data(self.away_team, self.away_starters, self.away_subs, self.league)
@@ -1914,10 +1887,11 @@ class Alg:
         elif self.match_initial_time >= 15:
             range_value = 50000
         elif self.match_initial_time < 15:
-            range_value = 60000
+            range_value = 1
 
         all_rows = []
 
+        """
         for i in tqdm(range(range_value)):
             home_goals = self.home_initial_goals
             away_goals = self.away_initial_goals
@@ -1975,8 +1949,13 @@ class Alg:
 
                 home_goals += home_goals_scored
                 away_goals += away_goals_scored
+        """
+        #self.insert_sim_data(all_rows, self.match_id)
 
-        self.insert_sim_data(all_rows, self.match_id)
+    def divide_matched_players(self, players_data):
+        starters = [p['player_id'] for p in players_data if p['on_field']]
+        subs = [p['player_id'] for p in players_data if p['bench']]
+        return starters, subs
 
     def get_players_data(self, team, team_starters, team_subs, league):
         all_players = team_starters + team_subs

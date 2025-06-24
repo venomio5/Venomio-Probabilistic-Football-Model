@@ -86,14 +86,14 @@ def get_lineups(initial_players, sub_events, current_minute, team, red_events=No
     lineup = [roster_mapping.get(p.split("_")[0], p) for p in lineup]
     return lineup
 
+# Match detail
 s = Service('chromedriver.exe')
 options = webdriver.ChromeOptions()
 options.add_argument("--headless")
 driver = webdriver.Chrome(service=s, options=options)
-driver.get("https://fbref.com/en/matches/e86bb1e9/Vasco-da-Gama-Sport-Recife-April-12-2025-Serie-A")
-home_team = "Atlético Mineiro"
-away_team = "São Paulo"
-match_id = 273
+driver.get('https://fbref.com/en/matches/25ce23b0/Sao-Paulo-Fortaleza-May-2-2025-Serie-A')
+home_team = "São Paulo"
+away_team = "Fortaleza"
 
 home_table = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, '//*[@id="a"]/table')))
 home_data = pd.read_html(driver.execute_script("return arguments[0].outerHTML;", home_table))
@@ -104,10 +104,7 @@ away_data = pd.read_html(driver.execute_script("return arguments[0].outerHTML;",
 home_players = extract_players(home_data, home_team)
 away_players = extract_players(away_data, away_team)
 
-try:
-    events_wrap = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, '//*[@id="events_wrap"]')))
-except Exception as e:
-    print(e)
+events_wrap = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, '//*[@id="events_wrap"]')))
 
 subs_events = []
 goal_events = []
@@ -155,92 +152,78 @@ for event in events_wrap.find_elements(By.CSS_SELECTOR, '.event'):
 
 total_minutes = 90 + extra_first_half + extra_second_half
 
-shots_table = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, '//*[@id="shots_all"]')))
-shots_data = pd.read_html(driver.execute_script("return arguments[0].outerHTML;", shots_table))
-shots_df = shots_data[0]
-shots_df.columns = pd.MultiIndex.from_tuples(shots_df.columns)
-selected_columns = shots_df.loc[:, [('Unnamed: 0_level_0', 'Minute'),
-                                    ('Unnamed: 2_level_0', 'Squad'),
-                                    ('Unnamed: 3_level_0', 'xG'),
-                                    ('Unnamed: 7_level_0', 'Body Part')]]
-cleaned_columns = []
-for col in selected_columns.columns:
-    if 'Unnamed' in col[0]:
-        cleaned_columns.append(col[1])
+# Match breakdown
+print(f'\n{subs_events}')
+home_player_stats = initialize_player_stats(home_players)
+away_player_stats = initialize_player_stats(away_players)
+
+for sub_event in subs_events:
+    sub_minute, player_out, player_in, sub_team = sub_event
+    if sub_team == "home":
+        home_goals = sum(1 for minute, t in goal_events if t == "home" and minute <= sub_minute)
+        away_goals = sum(1 for minute, t in goal_events if t == "away" and minute <= sub_minute)
+        state = "leading" if home_goals > away_goals else "level" if home_goals == away_goals else "trailing"
+        for key in home_player_stats:
+            if key.split("_")[0] == player_out:
+                home_player_stats[key]["sub_out_min"] = sub_minute
+                home_player_stats[key]["out_status"] = state
+        found_in = False
+        for key in home_player_stats:
+            if key.split("_")[0] == player_in:
+                home_player_stats[key]["sub_in_min"] = sub_minute
+                home_player_stats[key]["in_status"] = state
+                found_in = True
+        if not found_in:
+            home_player_stats[player_in] = {"starter": False, "sub_in_min": sub_minute, "in_status": state}
     else:
-        cleaned_columns.append('_'.join(col).strip())
-selected_columns.columns = cleaned_columns
-selected_columns = selected_columns[selected_columns['Minute'].notna() & (selected_columns['Minute'] != 'Minute')]
-selected_columns['Minute'] = selected_columns['Minute'].astype(str).str.replace(r'\+.*', '', regex=True).str.strip().astype(float).astype(int)
-selected_columns['xG'] = selected_columns['xG'].astype(float)
-print(goal_events)
+        away_goals = sum(1 for minute, t in goal_events if t == "away" and minute <= sub_minute)
+        home_goals = sum(1 for minute, t in goal_events if t == "home" and minute <= sub_minute)
+        state = "leading" if away_goals > home_goals else "level" if away_goals == home_goals else "trailing"
+        for key in away_player_stats:
+            if key.split("_")[0] == player_out:
+                away_player_stats[key]["sub_out_min"] = sub_minute
+                away_player_stats[key]["out_status"] = state
+        found_in = False
+        for key in away_player_stats:
+            if key.split("_")[0] == player_in:
+                away_player_stats[key]["sub_in_min"] = sub_minute
+                away_player_stats[key]["in_status"] = state
+                found_in = True
+        if not found_in:
+            away_player_stats[player_in] = {"starter": False, "sub_in_min": sub_minute, "in_status": state}
 
-event_minutes = [se[0] for se in subs_events] + [ge[0] for ge in goal_events] + [re[0] for re in red_events]
-standard_boundaries = [0, 15, 30, 45, 60, 75]
-boundaries = sorted(set(standard_boundaries) | set(event_minutes) | {total_minutes})
+final_home_goals = sum(1 for minute, t in goal_events if t == "home" and minute <= total_minutes)
+final_away_goals = sum(1 for minute, t in goal_events if t == "away" and minute <= total_minutes)
 
-for seg_start, seg_end in zip(boundaries, boundaries[1:]):
-    seg_duration = seg_end - seg_start
+for key, stat in list(home_player_stats.items()):
 
-    teamA_lineup = get_lineups(home_players, subs_events, seg_start, "home", red_events)
-    teamB_lineup = get_lineups(away_players, subs_events, seg_start, "away", red_events)
+    stat.setdefault("starter", True)
 
-    seg_shots = selected_columns[(selected_columns['Minute'] >= seg_start) & (selected_columns['Minute'] < seg_end)]
-    teamA_headers = 0
-    teamA_footers = 0
-    teamA_hxg = 0.0
-    teamA_fxg = 0.0
-    teamB_headers = 0
-    teamB_footers = 0
-    teamB_hxg = 0.0
-    teamB_fxg = 0.0
-    for _, row in seg_shots.iterrows():
-        if home_team in row['Squad']:
-            if "Head" in row['Body Part']:
-                teamA_headers += 1
-                teamA_hxg += row['xG']
-            elif "Foot" in row['Body Part']:
-                teamA_footers += 1
-                teamA_fxg += row['xG']
-        elif away_team in row['Squad']:
-            if "Head" in row['Body Part']:
-                teamB_headers += 1
-                teamB_hxg += row['xG']
-            elif "Foot" in row['Body Part']:
-                teamB_footers += 1
-                teamB_fxg += row['xG']
+    stat.setdefault("sub_in_min",  None)
+    stat.setdefault("sub_out_min", None)
+    stat.setdefault("in_status",   None)
+    stat.setdefault("out_status",  None)
 
-    cum_goal_home = sum(1 for minute, t in goal_events if minute <= seg_end and t == "home")
-    cum_goal_away = sum(1 for minute, t in goal_events if minute <= seg_end and t == "away")
+    in_min  = 0 if stat["starter"] else stat["sub_in_min"]
+    out_min = stat["sub_out_min"] if stat["sub_out_min"] is not None else total_minutes
+    out_min = min(out_min, 90)
 
-    goal_diff = cum_goal_home - cum_goal_away
-    if goal_diff == 0:
-        match_state = "0"
-    elif goal_diff == 1:
-        match_state = "1"
-    elif goal_diff > 1:
-        match_state = "1.5"
-    elif goal_diff == -1:
-        match_state = "-1"
-    else:
-        match_state = "-1.5"
+    stat["minutes_played"] = out_min - (in_min if in_min is not None else 0)
 
-    cum_red_home = sum(1 for minute, _, t in red_events if minute <= seg_end and t == "home")
-    cum_red_away = sum(1 for minute, _, t in red_events if minute <= seg_end and t == "away")
+for key, stat in list(away_player_stats.items()):
 
-    red_diff = cum_red_away - cum_red_home
-    if red_diff == 0:
-        player_dif = "0"
-    elif red_diff == 1:
-        player_dif = "1"
-    elif red_diff > 1:
-        player_dif = "1.5"
-    elif red_diff == -1:
-        player_dif = "-1"
-    else:
-        player_dif = "-1.5"
+    stat.setdefault("starter", True)
 
-    match_segment = min((seg_start // 15) + 1, 6)
+    stat.setdefault("sub_in_min",  None)
+    stat.setdefault("sub_out_min", None)
+    stat.setdefault("in_status",   None)
+    stat.setdefault("out_status",  None)
 
-    sql = "INSERT IGNORE INTO match_detail (match_id, teamA_players, teamB_players, teamA_headers, teamA_footers, teamA_hxg, teamA_fxg, teamB_headers, teamB_footers, teamB_hxg, teamB_fxg, minutes_played, match_state, match_segment, player_dif) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
-    params = (match_id, json.dumps(teamA_lineup, ensure_ascii=False), json.dumps(teamB_lineup, ensure_ascii=False), teamA_headers, teamA_footers, teamA_hxg, teamA_fxg, teamB_headers, teamB_footers, teamB_hxg, teamB_fxg, seg_duration, match_state, match_segment, player_dif)
+    in_min  = 0 if stat["starter"] else stat["sub_in_min"]
+    out_min = stat["sub_out_min"] if stat["sub_out_min"] is not None else total_minutes
+    out_min = min(out_min, 90)
+
+    stat["minutes_played"] = out_min - (in_min if in_min is not None else 0)
+
+for key in list(home_player_stats.keys()):
+    print(home_player_stats[key])
