@@ -546,8 +546,8 @@ class MainWindow(QMainWindow):
                 home_initial_goals=home_initial_goals,
                 away_initial_goals=away_initial_goals,
                 match_initial_time=match_initial_time,
-                home_n_subs=home_initial_n_subs,
-                away_n_subs=away_initial_n_subs
+                home_n_subs_avail=home_initial_n_subs,
+                away_n_subs_avail=away_initial_n_subs
             )
             worker.signals.finished.connect(lambda: self.remove_task_from_queue(list_item))
             worker.signals.error.connect(lambda err: print("Simulation error:", err))

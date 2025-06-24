@@ -273,7 +273,7 @@ CREATE TABLE match_breakdown (
 ```
 CREATE TABLE players_data (
     player_id VARCHAR(50) PRIMARY KEY,
-    current_team VARCHAR(50),
+    current_team INT NOT NULL,
     off_sh_coef FLOAT DEFAULT NULL,
     def_sh_coef FLOAT DEFAULT NULL,
     off_headers_coef FLOAT DEFAULT NULL,

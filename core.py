@@ -1842,7 +1842,7 @@ class Process_Data:
 
 # ------------------------------ Monte Carlo ------------------------------
 class Alg:
-    def __init__(self, schedule_id, home_team_id, away_team_id, home_players_data, away_players_data, league_id, match_time, home_elevation_dif, away_elevation_dif, away_travel, home_rest_days, away_rest_days, temperature, is_raining, home_initial_goals, away_initial_goals, match_initial_time, home_n_subs, away_n_subs):
+    def __init__(self, schedule_id, home_team_id, away_team_id, home_players_data, away_players_data, league_id, match_time, home_elevation_dif, away_elevation_dif, away_travel, home_rest_days, away_rest_days, temperature, is_raining, home_initial_goals, away_initial_goals, match_initial_time, home_n_subs_avail, away_n_subs_avail):
         self.schedule_id = schedule_id
         self.home_team_id = home_team_id
         self.away_team_id = away_team_id
@@ -1860,17 +1860,16 @@ class Alg:
         self.home_initial_goals = home_initial_goals
         self.away_initial_goals = away_initial_goals
         self.match_initial_time = match_initial_time
-        self.home_n_subs = home_n_subs
-        self.away_n_subs = away_n_subs
+        self.home_n_subs_avail = home_n_subs_avail
+        self.away_n_subs_avail = away_n_subs_avail
 
         self.home_starters, self.home_subs = self.divide_matched_players(self.home_players_data)
         self.away_starters, self.away_subs = self.divide_matched_players(self.away_players_data)
 
-        self.home_players_data = self.get_players_data(self.home_team, self.home_starters, self.home_subs, self.league)
-        self.away_players_data = self.get_players_data(self.away_team, self.away_starters, self.away_subs, self.league)
+        self.home_players_data = self.get_players_data(self.home_team_id, self.home_starters, self.home_subs)
+        self.away_players_data = self.get_players_data(self.away_team_id, self.away_starters, self.away_subs)
 
-        self.league_avg = self.get_league_avg(self.league)
-        self.home_sub_minutes, self.away_sub_minutes = self.get_sub_minutes(self.home_team, self.away_team, self.league, self.match_initial_time, self.home_n_subs, self.away_n_subs)
+        self.home_sub_minutes, self.away_sub_minutes = self.get_sub_minutes(self.home_team_id, self.away_team_id, self.match_initial_time, self.home_n_subs_avail, self.away_n_subs_avail)
         self.all_sub_minutes = list(set(list(self.home_sub_minutes.keys()) + list(self.away_sub_minutes.keys())))
 
         self.home_features = self.compute_features(self.home_team, self.away_team, self.league, True, self.match_date, self.match_time)
@@ -1957,107 +1956,77 @@ class Alg:
         subs = [p['player_id'] for p in players_data if p['bench']]
         return starters, subs
 
-    def get_players_data(self, team, team_starters, team_subs, league):
+    def get_players_data(self, team_id, team_starters, team_subs):
         all_players = team_starters + team_subs
-        players_dict = {}
 
-        self.db = DatabaseManager.DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
         escaped_players = [player.replace("'", "''") for player in all_players]
 
-        team_starters_str = ", ".join([f"'{player}'" for player in escaped_players])
+        team_player_str = ", ".join([f"'{player}'" for player in escaped_players])
 
         sql_query = f"""
             SELECT 
-                players_name, off_xg, def_xg, minutes_played, sub_in, sub_out, in_status, out_status
+                *
             FROM players_data
-            WHERE league_name = '{league}'
-            AND team_name = '{team}'
-            AND players_name IN ({team_starters_str});
+            WHERE current_team = '{team_id}'
+            AND player_id IN ({team_player_str});
         """
-        result = self.db.select(sql_query)
+        players_df = DB.select(sql_query)
+        numeric_cols = ['sub_in', 'sub_out']
+        for col in numeric_cols:
+            players_df[col] = pd.to_numeric(players_df[col], errors='coerce').fillna(0)
+        players_dict = {}
 
-        for player in all_players:
-            in_status_dict = {'Leading': 0, 'Level': 0, 'Trailing': 0}
-            out_status_dict = {'Leading': 0, 'Level': 0, 'Trailing': 0}
-            player_off_xg = float(sum(result[result['players_name'] == player]['off_xg']))
-            player_def_xg = float(sum(result[result['players_name'] == player]['def_xg']))
-            player_minutes = int(sum(result[result['players_name'] == player]['minutes_played']))
+        for player_id in players_df['player_id'].unique():
+            player_rows = players_df[players_df['player_id'] == player_id]
+            player_info = player_rows.iloc[0].to_dict()
 
-            in_status_data = (
-                result[(result['players_name'] == player) & (result['sub_in'] != 0)]
-                .groupby('in_status')
-                .size()
-            )
+            def _status_prob(raw_status):
+                if isinstance(raw_status, str):
+                    try:
+                        counts = ast.literal_eval(raw_status)
+                    except (ValueError, SyntaxError):
+                        counts = {}
+                elif isinstance(raw_status, dict):
+                    counts = raw_status
+                else:
+                    counts = {}
 
-            if not in_status_data.empty:
-                in_status_dict.update(in_status_data.to_dict())
+                counts = {k.title(): v for k, v in counts.items()}
+                base = {'Leading': 0, 'Level': 0, 'Trailing': 0}
+                base.update(counts)
 
-                total_in = sum(in_status_dict.values())
-                for key in in_status_dict:
-                    in_status_dict[key] = (in_status_dict[key] / total_in)
+                total = sum(base.values())
+                return {k: v / total if total else 0 for k, v in base.items()}
 
-            out_status_data = (
-                result[(result['players_name'] == player) & (result['sub_out'] <= 90)]
-                .groupby('out_status')
-                .size()
-            )
+            player_info['in_status_prob'] = _status_prob(player_info.get('in_status'))
+            player_info['out_status_prob'] = _status_prob(player_info.get('out_status'))
 
-            if not out_status_data.empty:
-                out_status_dict.update(out_status_data.to_dict())
+            players_dict[player_id] = player_info
 
-                total_out = sum(out_status_dict.values())
-                for key in out_status_dict:
-                    out_status_dict[key] = (out_status_dict[key] / total_out)
+        return players_dict
 
-            players_dict[player] = {'off_xg': player_off_xg, 'def_xg': player_def_xg, 'total_minutes': player_minutes, 'in_status_dict': in_status_dict, 'out_status_dict': out_status_dict}
-
-        return players_dict 
-
-    def get_league_avg(self, league):
-        self.db = DatabaseManager.DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
-
-        league_avg_query = f"""
-            SELECT 
-                league_avg_xg_pm
-            FROM leagues_data
-            WHERE league_name = '{league}';
-        """
-
-        league_result = self.db.select(league_avg_query)
-
-        return float(league_result['league_avg_xg_pm'][0])  
-
-    def get_sub_minutes(self, team, opponent, league, match_initial_time, home_n_subs_avail, away_n_subs_avail):
-        self.db = DatabaseManager.DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
-
+    def get_sub_minutes(self, home_id, away_id, match_initial_time, home_n_subs_avail, away_n_subs_avail):
         teams_data_query = f"""
             SELECT 
-                team_name, date, sub_in, sub_out, in_status, out_status
-            FROM players_data
-            WHERE league_name = '{league}'
-            AND team_name IN ('{team}', '{opponent}');
+                mb.match_id,
+                mb.sub_in,
+                pd.current_team AS team_id
+            FROM match_breakdown mb
+            JOIN match_info mi ON mb.match_id = mi.match_id
+            JOIN players_data pd ON mb.player_id = pd.player_id
+            WHERE (mi.home_team_id IN ({home_id}, {away_id}) OR mi.away_team_id IN ({home_id}, {away_id}));
         """
 
-        query_df = self.db.select(teams_data_query)
+        query_df = DB.select(teams_data_query)
+        valid_subs_df = query_df[(query_df['sub_in'].notnull()) & (query_df['sub_in'] != 0)]
 
-        team_avg_subs = round(
-            query_df[(query_df['team_name'] == team) & (query_df['sub_in'] != 0)]
-            .groupby('date')
-            .size()
-            .mean()
-        )
+        home_avg_subs = round(valid_subs_df[valid_subs_df['team_id'] == home_id].groupby('match_id').size().mean())
+        away_avg_subs = round(valid_subs_df[valid_subs_df['team_id'] == away_id].groupby('match_id').size().mean())
 
-        opponent_avg_subs = round(
-            query_df[(query_df['team_name'] == opponent) & (query_df['sub_in'] != 0)]
-            .groupby('date')
-            .size()
-            .mean()
-        )
+        effective_home_subs = max(0, min(home_avg_subs - (5 - home_n_subs_avail), home_n_subs_avail))
+        effective_away_subs = max(0, min(away_avg_subs - (5 - away_n_subs_avail), away_n_subs_avail))
 
-        effective_team_subs = max(0, min(team_avg_subs - (5 - home_n_subs_avail), home_n_subs_avail))
-        effective_opponent_subs = max(0, min(opponent_avg_subs - (5 - away_n_subs_avail), away_n_subs_avail))
-
-        def get_distribution(team_name, avail_subs):
+        def get_distribution(team_id, avail_subs):
             if avail_subs == 0:
                 return {100: 0}
             if avail_subs == 1:
@@ -2067,16 +2036,7 @@ class Alg:
             else:
                 n_windows = 3
 
-            top_minutes = (
-                query_df[(query_df['team_name'] == team_name) &
-                        (query_df['sub_in'] != 0) &
-                        (query_df['sub_in'] > match_initial_time)]
-                ['sub_in']
-                .value_counts()
-                .head(n_windows)
-                .index
-                .tolist()
-            )
+            top_minutes = (valid_subs_df[(valid_subs_df['team_id'] == team_id) & (valid_subs_df['sub_in'] > match_initial_time)]['sub_in'].value_counts().head(n_windows).index.tolist())
 
             base = avail_subs // n_windows
             remainder = avail_subs % n_windows
@@ -2085,10 +2045,10 @@ class Alg:
                 distribution[top_minutes[i]] = base + 1 if i < remainder else base
             return distribution
 
-        team_distribution = get_distribution(team, effective_team_subs)
-        opponent_distribution = get_distribution(opponent, effective_opponent_subs)
+        home_distribution = get_distribution(home_id, effective_home_subs)
+        away_distribution = get_distribution(away_id, effective_away_subs)
 
-        return team_distribution, opponent_distribution
+        return home_distribution, away_distribution
 
     def swap_players(self, active_players, passive_players, players_data, subs, game_status):
         total_active_minutes = 0
