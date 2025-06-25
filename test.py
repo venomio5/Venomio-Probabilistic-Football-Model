@@ -24,206 +24,176 @@ from PyQt5.QtCore import QDate
 from PyQt5.QtWidgets import QApplication, QWidget, QHBoxLayout, QToolButton, QMenu
 import core
 import ast
+import xgboost as xgb
+import matplotlib.pyplot as plt
 
-def extract_players(data, team_name):
-    team_initials = ''.join(word[0].upper() for word in team_name.split() if word)
-    df = data[0]
-    filtered = df[~df.iloc[:, 1].str.contains("Bench", na=False)]
-    players = [
-        f"{row[1]}_{row[0]}_{team_initials}"
-        for _, row in filtered.iloc[:, :2].iterrows()
-    ]
-    return players
-
-def initialize_player_stats(player_list):
-    return {
-        player: {
-            "player_id": player,
-            "starter": i < 11,
-            "headers": 0,
-            "footers": 0,
-            "key_passes": 0,
-            "non_assisted_footers": 0,
-            "hxg": 0.0,
-            "fxg": 0.0,
-            "kp_hxg": 0.0,
-            "kp_fxg": 0.0,
-            "hpsxg": 0.0,
-            "fpsxg": 0.0,
-            "gk_psxg": 0.0,
-            "gk_ga": 0
-        } for i, player in enumerate(player_list)
-    }
-
-def get_lineups(initial_players, sub_events, current_minute, team, red_events=None):
-    if red_events is None:
-        red_events = []
+def train_context_ras_model():
+    def flip(series: pd.Series) -> pd.Series:
+        flipped = -series
+        flipped[series == 0] = 0.0             # remove the -0.0 sign bit
+        return flipped
     
-    roster_mapping = {}
-    for player in initial_players:
-        key = player.split("_")[0]
-        roster_mapping[key] = player
+    sql_query = f"""
+        SELECT 
+            mi.match_id,
+            mi.home_elevation_dif,
+            mi.away_elevation_dif,
+            mi.away_travel,
+            mi.home_rest_days,
+            mi.away_rest_days,
+            mi.temperature_c,
+            mi.is_raining,
+            mi.date,
+            md.teamA_pdras,
+            md.teamB_pdras,
+            md.match_state,
+            md.match_segment,
+            md.minutes_played,
+            md.player_dif,
+            (md.teamA_headers + md.teamA_footers) AS home_shots,
+            (md.teamB_headers + md.teamB_footers) AS away_shots
+        FROM match_info mi
+        JOIN match_detail md ON mi.match_id = md.match_id
+    """
+    context_df = core.DB.select(sql_query)
+    context_df['date'] = pd.to_datetime(context_df['date'])
+    context_df['match_state'] = pd.to_numeric(context_df['match_state'], errors='raise').astype(float)
+    context_df['player_dif']  = pd.to_numeric(context_df['player_dif'],  errors='raise').astype(float)
 
-    lineup = initial_players[:11]
+    def _bucket(ts):
+        h = ts.hour
+        if 9 <= h < 14:
+            return 'aft'
+        if 14 <= h < 19:
+            return 'evening'
+        return 'night'
 
-    filtered_subs = [s for s in sub_events if s[3] == team]
-    filtered_subs = sorted(filtered_subs, key=lambda x: x[0])
+    home_df = pd.DataFrame({
+        'shots'              : context_df['home_shots'],
+        'total_ras'          : context_df['teamA_pdras'],
+        'minutes_played'     : context_df['minutes_played'],
+        'team_is_home'       : 1,
+        'team_elevation_dif' : context_df['home_elevation_dif'],
+        'opp_elevation_dif'  : context_df['away_elevation_dif'],
+        'team_travel'        : 0,
+        'opp_travel'         : context_df['away_travel'],
+        'team_rest_days'     : context_df['home_rest_days'],
+        'opp_rest_days'      : context_df['away_rest_days'],
+        'match_state'        : context_df['match_state'],
+        'match_segment'      : context_df['match_segment'],
+        'player_dif'         : context_df['player_dif'],
+        'temperature_c'      : context_df['temperature_c'],
+        'is_raining'         : context_df['is_raining'],
+        'match_time'         : context_df['date'].apply(_bucket)
+    })
 
-    for sub_minute, player_out, player_in, _ in filtered_subs:
-        if sub_minute > current_minute:
-            break
+    away_df = pd.DataFrame({
+        'shots'              : context_df['away_shots'],
+        'total_ras'          : context_df['teamB_pdras'],
+        'minutes_played'     : context_df['minutes_played'],
+        'team_is_home'       : 0,
+        'team_elevation_dif' : context_df['away_elevation_dif'],
+        'opp_elevation_dif'  : context_df['home_elevation_dif'],
+        'team_travel'        : context_df['away_travel'],
+        'opp_travel'         : 0,
+        'team_rest_days'     : context_df['away_rest_days'],
+        'opp_rest_days'      : context_df['home_rest_days'],
+        'match_state'        : flip(context_df['match_state']),
+        'match_segment'      : context_df['match_segment'],
+        'player_dif'         : flip(context_df['player_dif']),
+        'temperature_c'      : context_df['temperature_c'],
+        'is_raining'         : context_df['is_raining'],
+        'match_time'         : context_df['date'].apply(_bucket)
+    })
 
-        for idx, player in enumerate(lineup):
-            if player.split("_")[0] == player_out:
-                replacement = roster_mapping.get(player_in, player_in)
-                lineup[idx] = replacement
-                roster_mapping[player_in] = replacement
-                break
+    df = pd.concat([home_df, away_df], ignore_index=True)
 
-    sent_off = [p for m, p, t in red_events if t == team and m <= current_minute]
-    lineup = [p for p in lineup if p.split("_")[0] not in sent_off]
+    df['shots_per_min']     = df['shots']      / df['minutes_played']
+    df['ras_per_min']       = df['total_ras']  / df['minutes_played']
 
-    lineup = [roster_mapping.get(p.split("_")[0], p) for p in lineup]
-    return lineup
+    cat_cols  = ['match_state', 'match_segment', 'player_dif', 'match_time']
+    bool_cols = ['team_is_home', 'is_raining']
+    num_cols  = ['team_elevation_dif', 'opp_elevation_dif', 'team_travel', 'opp_travel', 'team_rest_days', 'opp_rest_days', 'temperature_c']
+    
+    required_cols = cat_cols + bool_cols + num_cols + ['shots', 'total_ras']
+    missing_cols  = [c for c in ['shots', 'total_ras'] if c not in df.columns]
+    if missing_cols:
+        raise ValueError(f'Missing expected columns: {missing_cols}')
 
-# Match detail
-s = Service('chromedriver.exe')
-options = webdriver.ChromeOptions()
-options.add_argument("--headless")
-driver = webdriver.Chrome(service=s, options=options)
-driver.get('https://fbref.com/en/matches/25ce23b0/Sao-Paulo-Fortaleza-May-2-2025-Serie-A')
-home_team = "São Paulo"
-away_team = "Fortaleza"
+    df = df.dropna(subset=[c for c in required_cols if c in df.columns])
 
-home_table = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, '//*[@id="a"]/table')))
-home_data = pd.read_html(driver.execute_script("return arguments[0].outerHTML;", home_table))
+    for c in cat_cols:
+        df[c] = df[c].astype(str).str.lower()
 
-away_table = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, '//*[@id="b"]/table')))
-away_data = pd.read_html(driver.execute_script("return arguments[0].outerHTML;", away_table))
+    df[bool_cols] = df[bool_cols].astype(int)
 
-home_players = extract_players(home_data, home_team)
-away_players = extract_players(away_data, away_team)
+    X_cat = pd.get_dummies(df[cat_cols], prefix=cat_cols)
+    X     = pd.concat([df[num_cols], df[bool_cols], X_cat], axis=1)
 
-events_wrap = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, '//*[@id="events_wrap"]')))
+    y           = df['shots_per_min']
+    base_margin = np.log(df['ras_per_min'].clip(lower=1e-6))
 
-subs_events = []
-goal_events = []
-red_events = []
-extra_first_half = 0
-extra_second_half = 0
+    dtrain = xgb.DMatrix(X, label=y, base_margin=base_margin)
 
-for event in events_wrap.find_elements(By.CSS_SELECTOR, '.event'):
-    lines = event.text.strip().split('\n')
-    event_minute = None
-    for line in lines:
-        m = re.match(r'^\s*(\d+)(?:\+(\d+))?’.?$', line)
-        if m:
-            base_minute = int(m.group(1))
-            plus = m.group(2)
-            if base_minute == 45 and plus:
-                extra_first_half = max(extra_first_half, int(plus))
-            if base_minute == 90 and plus:
-                extra_second_half = max(extra_second_half, int(plus))
-            event_minute = base_minute if not plus else base_minute + int(plus)
-            break
-    if event_minute is None:
-        continue
-    classes = event.get_attribute("class").split()
-    team = "home" if "a" in classes else "away" if "b" in classes else None
-    if team is None:
-        continue
-    if event.find_elements(By.CSS_SELECTOR, '.substitute_in'):
-        player_out, player_in = None, None
-        for line in lines:
-            if not re.match(r'^\s*\d+(?:\+\d+)?’$', line) and not re.match(r'^\s*\d+\s*:\s*\d+\s*$', line):
-                if not line.startswith("for "):
-                    player_in = line.strip()
-                else:
-                    player_out = line[len("for "):].strip()
-        if player_out is not None and player_in is not None:
-            subs_events.append((event_minute, player_out, player_in, team))
-    if event.find_elements(By.CSS_SELECTOR, '.goal, .own_goal'):
-        goal_events.append((event_minute, team))
-    if event.find_elements(By.CSS_SELECTOR, '.red_card'):
-        player_links = event.find_elements(By.CSS_SELECTOR, 'a')
-        if player_links:
-            player_name = player_links[0].text.strip()
-            red_events.append((event_minute, player_name, team))
+    params = dict(objective='count:poisson',
+                    tree_method='hist',
+                    max_depth=6,
+                    eta=0.05,
+                    subsample=0.8,
+                    colsample_bytree=0.8,
+                    min_child_weight=5)
 
-total_minutes = 90 + extra_first_half + extra_second_half
+    booster = xgb.train(params, dtrain, num_boost_round=300)
+    return booster, X.columns
 
-# Match breakdown
-print(f'\n{subs_events}')
-home_player_stats = initialize_player_stats(home_players)
-away_player_stats = initialize_player_stats(away_players)
+def predict_next_match(booster, feature_columns, new_match):
+    categorical_cols = ['match_state', 'match_segment', 'player_dif', 'match_time']
+    bool_cols = ['team_is_home', 'is_raining']
+    num_cols = ['team_elevation_dif', 'opp_elevation_dif', 'team_travel', 'opp_travel', 'team_rest_days', 'opp_rest_days', 'temperature_c']
+    
+    base_margin = np.log(new_match.pop('total_ras').clip(lower=1e-6))
 
-for sub_event in subs_events:
-    sub_minute, player_out, player_in, sub_team = sub_event
-    if sub_team == "home":
-        home_goals = sum(1 for minute, t in goal_events if t == "home" and minute <= sub_minute)
-        away_goals = sum(1 for minute, t in goal_events if t == "away" and minute <= sub_minute)
-        state = "leading" if home_goals > away_goals else "level" if home_goals == away_goals else "trailing"
-        for key in home_player_stats:
-            if key.split("_")[0] == player_out:
-                home_player_stats[key]["sub_out_min"] = sub_minute
-                home_player_stats[key]["out_status"] = state
-        found_in = False
-        for key in home_player_stats:
-            if key.split("_")[0] == player_in:
-                home_player_stats[key]["sub_in_min"] = sub_minute
-                home_player_stats[key]["in_status"] = state
-                found_in = True
-        if not found_in:
-            home_player_stats[player_in] = {"starter": False, "sub_in_min": sub_minute, "in_status": state}
-    else:
-        away_goals = sum(1 for minute, t in goal_events if t == "away" and minute <= sub_minute)
-        home_goals = sum(1 for minute, t in goal_events if t == "home" and minute <= sub_minute)
-        state = "leading" if away_goals > home_goals else "level" if away_goals == home_goals else "trailing"
-        for key in away_player_stats:
-            if key.split("_")[0] == player_out:
-                away_player_stats[key]["sub_out_min"] = sub_minute
-                away_player_stats[key]["out_status"] = state
-        found_in = False
-        for key in away_player_stats:
-            if key.split("_")[0] == player_in:
-                away_player_stats[key]["sub_in_min"] = sub_minute
-                away_player_stats[key]["in_status"] = state
-                found_in = True
-        if not found_in:
-            away_player_stats[player_in] = {"starter": False, "sub_in_min": sub_minute, "in_status": state}
+    for col in categorical_cols:
+        new_match[col] = new_match[col].astype(str).str.lower()
+    new_match[bool_cols] = new_match[bool_cols].astype(int)
 
-final_home_goals = sum(1 for minute, t in goal_events if t == "home" and minute <= total_minutes)
-final_away_goals = sum(1 for minute, t in goal_events if t == "away" and minute <= total_minutes)
+    new_cat = pd.get_dummies(new_match[categorical_cols], prefix=categorical_cols)
+    new_cat = new_cat.reindex(columns=[col for col in feature_columns if any(col.startswith(prefix + "_") for prefix in categorical_cols)], fill_value=0)
 
-for key, stat in list(home_player_stats.items()):
+    new_X = pd.concat([
+        new_match[num_cols + bool_cols].reset_index(drop=True),
+        new_cat.reset_index(drop=True)
+    ], axis=1)
 
-    stat.setdefault("starter", True)
+    new_X = new_X.reindex(columns=feature_columns, fill_value=0)
 
-    stat.setdefault("sub_in_min",  None)
-    stat.setdefault("sub_out_min", None)
-    stat.setdefault("in_status",   None)
-    stat.setdefault("out_status",  None)
+    dmatrix = xgb.DMatrix(new_X, base_margin=base_margin)
+    prediction = booster.predict(dmatrix)
+    return prediction[0]
 
-    in_min  = 0 if stat["starter"] else stat["sub_in_min"]
-    out_min = stat["sub_out_min"] if stat["sub_out_min"] is not None else total_minutes
-    out_min = min(out_min, 90)
+booster, columns = train_context_ras_model()
+# xgb.plot_importance(booster, importance_type='gain')
+# plt.title("Feature Importance (Gain)")
+# plt.tight_layout()
+# plt.show()
 
-    stat["minutes_played"] = out_min - (in_min if in_min is not None else 0)
+next_match = pd.DataFrame([{
+    'shots': 0,  # Placeholder, not used in prediction
+    'total_ras': 0.07,
+    'team_is_home': 1,
+    'team_elevation_dif': 208,
+    'opp_elevation_dif': 569,
+    'team_travel': 0,
+    'opp_travel': 2370,
+    'team_rest_days': 6,
+    'opp_rest_days': 6,
+    'match_state': 0.0,
+    'match_segment': 1,
+    'player_dif': 0.0,
+    'temperature_c': 16.0,
+    'is_raining': 0,
+    'match_time': 'evening'
+}])
 
-for key, stat in list(away_player_stats.items()):
-
-    stat.setdefault("starter", True)
-
-    stat.setdefault("sub_in_min",  None)
-    stat.setdefault("sub_out_min", None)
-    stat.setdefault("in_status",   None)
-    stat.setdefault("out_status",  None)
-
-    in_min  = 0 if stat["starter"] else stat["sub_in_min"]
-    out_min = stat["sub_out_min"] if stat["sub_out_min"] is not None else total_minutes
-    out_min = min(out_min, 90)
-
-    stat["minutes_played"] = out_min - (in_min if in_min is not None else 0)
-
-for key in list(home_player_stats.keys()):
-    print(home_player_stats[key])
+pred = predict_next_match(booster, columns, next_match)
+print(f"Predicted shots: {pred:.3f}")
