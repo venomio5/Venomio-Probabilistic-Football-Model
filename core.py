@@ -2043,6 +2043,8 @@ class Alg:
         self.ras_booster, self.ras_cr_columns = self.train_context_ras_model()
         self.ctx_mult_home, self.ctx_mult_away = self.precompute_ctx_multipliers()
         self.rsq_booster, self.rsq_columns = self.train_refined_sq_model()
+        self._rsq_pred_cache = {}
+        self._rsq_col_idx    = {c: i for i, c in enumerate(self.rsq_columns)}
 
         self.home_starters, self.home_subs = self.divide_matched_players(self.home_players_data)
         self.away_starters, self.away_subs = self.divide_matched_players(self.away_players_data)
@@ -2126,9 +2128,6 @@ class Alg:
                     away_xg_cache = self.build_xg_cache(away_active_players, self.away_players_data,
                                                          away_plhsq, away_plfsq,
                                                          away_status, 0)
-                    
-                if minute == 78:
-                    print(home_xg_cache)
 
                 home_shots = min(np.random.poisson(home_context_ras), 1) # CHANGE THIS TO NO MIN JUST THE RANDOM POISSON
                 away_shots = min(np.random.poisson(away_context_ras), 1) # CHANGE THIS TO NO MIN JUST THE RANDOM POISSON
@@ -2385,32 +2384,29 @@ class Alg:
         cat_cols = ['match_state', 'player_dif']
         num_cols = ['total_plsqa', 'shooter_sq', 'assister_sq']
 
-        for c in cat_cols:
-            df[c] = df[c].astype(str).str.title()
+        n = len(df)
+        X = np.zeros((n, len(self.rsq_columns)), dtype=np.float32)
 
-        num_df = df[num_cols].astype(float).reset_index(drop=True)
-        cat_df = pd.get_dummies(df[cat_cols], prefix=cat_cols, dummy_na=True)
-        cat_df = cat_df.reindex(
-            columns=[c for c in self.rsq_columns if any(c.startswith(p + '_') for p in cat_cols)],
-            fill_value=0
-        )
+        for col in num_cols:
+            X[:, self._rsq_col_idx[col]] = df[col].astype(float).to_numpy()
 
-        X = (
-            pd.concat([num_df, cat_df], axis=1)
-            .reindex(columns=self.rsq_columns, fill_value=0)
-            .astype(float)
-        )
+        for col in cat_cols:
+            pref = f'{col}_'
+            vals = df[col].astype(str)
+            for i, v in enumerate(vals):
+                idx = self._rsq_col_idx.get(f'{pref}{v}')
+                if idx is not None:
+                    X[i, idx] = 1.0
 
-        dmat = xgb.DMatrix(X)
-        return self.rsq_booster.predict(dmat)
+        return self.rsq_booster.inplace_predict(X)
 
     def build_xg_cache(self,
-                        active_ids      : list[int],
-                        players_df      ,
-                        plsqa_head      : float,
-                        plsqa_foot      : float,
-                        match_state_num : int,
-                        player_dif_num  : int) -> dict:
+                       active_ids      : list[int],
+                       players_df      ,
+                       plsqa_head      : float,
+                       plsqa_foot      : float,
+                       match_state_num : int,
+                       player_dif_num  : int) -> dict:
 
         def _safe_sq(src, pid):
             if isinstance(src, pd.DataFrame):
@@ -2428,22 +2424,33 @@ class Alg:
         state = 'Trailing' if match_state_num < 0 else 'Leading' if match_state_num > 0 else 'Level'
         pdif  = 'Neg'      if player_dif_num  < 0 else 'Pos'     if player_dif_num  > 0 else 'Neu'
 
-        rows, keys = [], []
         assist_pool = [None] + active_ids
+        cache_keys, new_rows = [], []
+        out = {}
+
         for shooter in active_ids:
             shooter_sq = _safe_sq(players_df, shooter)
             for assister in assist_pool:
                 assister_sq = 0.0 if assister is None else _safe_sq(players_df, assister)
                 for body, plsqa in (('Head', plsqa_head), ('Foot', plsqa_foot)):
-                    rows.append(dict(total_plsqa=plsqa,
-                                     shooter_sq=shooter_sq,
-                                     assister_sq=assister_sq,
-                                     match_state=state,
-                                     player_dif=pdif))
-                    keys.append((shooter, assister, body))
+                    key = (round(plsqa, 4), shooter_sq, assister_sq, state, pdif)
+                    cache_keys.append((shooter, assister, body, key))
+                    if key not in self._rsq_pred_cache:
+                        new_rows.append(dict(total_plsqa=plsqa,
+                                             shooter_sq=shooter_sq,
+                                             assister_sq=assister_sq,
+                                             match_state=state,
+                                             player_dif=pdif))
 
-        preds = self._predict_refined_sq_bulk(pd.DataFrame(rows))
-        return dict(zip(keys, preds))
+        if new_rows:
+            preds = self._predict_refined_sq_bulk(pd.DataFrame(new_rows))
+            for k, p in zip([ck[-1] for ck in cache_keys if ck[-1] not in self._rsq_pred_cache], preds):
+                self._rsq_pred_cache[k] = float(p)
+
+        for shooter, assister, body, k in cache_keys:
+            out[(shooter, assister, body)] = self._rsq_pred_cache[k]
+
+        return out
 
     def divide_matched_players(self, players_data):
         starters = [p['player_id'] for p in players_data if p['on_field']]
