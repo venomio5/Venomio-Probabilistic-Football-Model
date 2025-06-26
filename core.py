@@ -2040,8 +2040,9 @@ class Alg:
         self.match_initial_time = match_initial_time
         self.home_n_subs_avail = home_n_subs_avail
         self.away_n_subs_avail = away_n_subs_avail
-        self.booster, self.cr_columns = self.train_context_ras_model()
+        self.ras_booster, self.ras_cr_columns = self.train_context_ras_model()
         self.ctx_mult_home, self.ctx_mult_away = self.precompute_ctx_multipliers()
+        self.rsq_booster, self.rsq_columns = self.train_refined_sq_model()
 
         self.home_starters, self.home_subs = self.divide_matched_players(self.home_players_data)
         self.away_starters, self.away_subs = self.divide_matched_players(self.away_players_data)
@@ -2051,10 +2052,6 @@ class Alg:
 
         self.home_sub_minutes, self.away_sub_minutes = self.get_sub_minutes(self.home_team_id, self.away_team_id, self.match_initial_time, self.home_n_subs_avail, self.away_n_subs_avail)
         self.all_sub_minutes = list(set(list(self.home_sub_minutes.keys()) + list(self.away_sub_minutes.keys())))
-
-        # CHANGE THIS --------------------------------------------------------
-        #self.home_features = self.compute_features(self.home_team, self.away_team, self.league, True, self.match_date, self.match_time) 
-        #self.away_features = self.compute_features(self.away_team, self.home_team, self.league, False, self.match_date, self.match_time)
 
         if self.match_initial_time >= 75:
             range_value = 10000
@@ -2088,9 +2085,15 @@ class Alg:
 
             home_mult = self.ctx_mult_home[(home_status, time_segment, 0)]
             away_mult = self.ctx_mult_away[(away_status, time_segment, 0)]
-
             home_context_ras = max(0, home_ras) * home_mult
             away_context_ras = max(0, away_ras) * away_mult
+
+            home_xg_cache = self.build_xg_cache(home_active_players, self.home_players_data,
+                                                 home_plhsq, home_plfsq,
+                                                 home_status,  0)
+            away_xg_cache = self.build_xg_cache(away_active_players, self.away_players_data,
+                                                 away_plhsq, away_plfsq,
+                                                 away_status, 0)
 
             context_ras_change = False
             for minute in range(self.match_initial_time, 91):
@@ -2114,9 +2117,18 @@ class Alg:
                     context_ras_change = False
                     home_mult = self.ctx_mult_home[(home_status, time_segment, 0)]
                     away_mult = self.ctx_mult_away[(away_status, time_segment, 0)]
-
                     home_context_ras = max(0, home_ras) * home_mult
                     away_context_ras = max(0, away_ras) * away_mult
+
+                    home_xg_cache = self.build_xg_cache(home_active_players, self.home_players_data,
+                                                         home_plhsq, home_plfsq,
+                                                         home_status,  0)
+                    away_xg_cache = self.build_xg_cache(away_active_players, self.away_players_data,
+                                                         away_plhsq, away_plfsq,
+                                                         away_status, 0)
+                    
+                if minute == 78:
+                    print(home_xg_cache)
 
                 home_shots = min(np.random.poisson(home_context_ras), 1) # CHANGE THIS TO NO MIN JUST THE RANDOM POISSON
                 away_shots = min(np.random.poisson(away_context_ras), 1) # CHANGE THIS TO NO MIN JUST THE RANDOM POISSON
@@ -2126,8 +2138,9 @@ class Alg:
                         body_part = self.get_shot_type(home_rahs, home_rafs)
                         shooter = self.get_shooter(home_players_prob, body_part)
                         assister = self.get_assister(home_players_prob, body_part, shooter)
-                        outcome = home_plhsq if body_part == "Head" else home_plfsq
-                        home_goals_scored = np.random.poisson(outcome)
+                        xg_prob   = home_xg_cache.get((shooter, assister, body_part), 0.0)
+                        outcome = xg_prob
+                        home_goals_scored = np.random.poisson(xg_prob)
                         home_goals += home_goals_scored
                         if home_goals_scored > 0:
                             context_ras_change = True
@@ -2138,8 +2151,9 @@ class Alg:
                         body_part = self.get_shot_type(away_rahs, away_rafs)
                         shooter = self.get_shooter(away_players_prob, body_part)
                         assister = self.get_assister(away_players_prob, body_part, shooter)
-                        outcome = away_plhsq if body_part == "Head" else away_plfsq
-                        away_goals_scored = np.random.poisson(outcome)
+                        xg_prob   = away_xg_cache.get((shooter, assister, body_part), 0.0)
+                        outcome = xg_prob
+                        away_goals_scored = np.random.poisson(xg_prob)
                         away_goals += away_goals_scored
                         if away_goals_scored > 0:
                             context_ras_change = True
@@ -2325,12 +2339,111 @@ class Alg:
                             'match_segment': sg,
                             'player_dif'  : pdif})
                 # raw=True ⇒ get the margin only
-                raw_margin = self.predict_context_ras(self.booster,
-                                                      self.cr_columns,
+                raw_margin = self.predict_context_ras(self.ras_booster,
+                                                      self.ras_cr_columns,
                                                       pd.DataFrame([row]),
                                                       raw=True)
-                cache[(st, sg, pdif)] = np.exp(raw_margin)   # multiplier
+                cache[(st, sg, pdif)] = np.exp(raw_margin)
         return home_cache, away_cache
+
+    def train_refined_sq_model(self) -> tuple[xgb.Booster, list[str]]:
+        sql = """
+            SELECT
+                total_plsqa,
+                shooter_sq,
+                assister_sq,
+                CASE WHEN match_state < 0 THEN 'Trailing'
+                     WHEN match_state = 0 THEN 'Level'
+                     ELSE 'Leading' END AS match_state,
+                CASE WHEN player_dif < 0 THEN 'Neg'
+                     WHEN player_dif = 0 THEN 'Neu'
+                     ELSE 'Pos' END      AS player_dif,
+                xg
+            FROM shots_data
+            WHERE total_plsqa IS NOT NULL
+        """
+        df = DB.select(sql)
+
+        cat_cols = ['match_state', 'player_dif']
+        num_cols = ['total_plsqa', 'shooter_sq', 'assister_sq']
+        df[num_cols] = df[num_cols].apply(pd.to_numeric, errors='coerce')
+        for c in cat_cols:
+            df[c] = df[c].astype(str)
+
+        X_cat = pd.get_dummies(df[cat_cols], prefix=cat_cols, dummy_na=True)
+        X     = pd.concat([df[num_cols], X_cat], axis=1).astype(float)
+        y     = df['xg'].astype(float)
+
+        dtrain = xgb.DMatrix(X, label=y)
+        params = dict(objective='reg:logistic', eval_metric='rmse',
+                      tree_method='hist', max_depth=6, eta=0.05,
+                      subsample=0.8, colsample_bytree=0.8, min_child_weight=2)
+        booster = xgb.train(params, dtrain, num_boost_round=400)
+        return booster, X.columns.tolist()
+
+    def _predict_refined_sq_bulk(self, df: pd.DataFrame) -> np.ndarray:
+        cat_cols = ['match_state', 'player_dif']
+        num_cols = ['total_plsqa', 'shooter_sq', 'assister_sq']
+
+        for c in cat_cols:
+            df[c] = df[c].astype(str).str.title()
+
+        num_df = df[num_cols].astype(float).reset_index(drop=True)
+        cat_df = pd.get_dummies(df[cat_cols], prefix=cat_cols, dummy_na=True)
+        cat_df = cat_df.reindex(
+            columns=[c for c in self.rsq_columns if any(c.startswith(p + '_') for p in cat_cols)],
+            fill_value=0
+        )
+
+        X = (
+            pd.concat([num_df, cat_df], axis=1)
+            .reindex(columns=self.rsq_columns, fill_value=0)
+            .astype(float)
+        )
+
+        dmat = xgb.DMatrix(X)
+        return self.rsq_booster.predict(dmat)
+
+    def build_xg_cache(self,
+                        active_ids      : list[int],
+                        players_df      ,
+                        plsqa_head      : float,
+                        plsqa_foot      : float,
+                        match_state_num : int,
+                        player_dif_num  : int) -> dict:
+
+        def _safe_sq(src, pid):
+            if isinstance(src, pd.DataFrame):
+                if 'sq' in src.columns and pid in src.index:
+                    return float(src.at[pid, 'sq'])
+                return 0.0
+            rec = src.get(pid, {})
+            if isinstance(rec, dict):
+                return float(rec.get('sq', 0.0))
+            try:
+                return float(rec)
+            except Exception:
+                return 0.0
+
+        state = 'Trailing' if match_state_num < 0 else 'Leading' if match_state_num > 0 else 'Level'
+        pdif  = 'Neg'      if player_dif_num  < 0 else 'Pos'     if player_dif_num  > 0 else 'Neu'
+
+        rows, keys = [], []
+        assist_pool = [None] + active_ids
+        for shooter in active_ids:
+            shooter_sq = _safe_sq(players_df, shooter)
+            for assister in assist_pool:
+                assister_sq = 0.0 if assister is None else _safe_sq(players_df, assister)
+                for body, plsqa in (('Head', plsqa_head), ('Foot', plsqa_foot)):
+                    rows.append(dict(total_plsqa=plsqa,
+                                     shooter_sq=shooter_sq,
+                                     assister_sq=assister_sq,
+                                     match_state=state,
+                                     player_dif=pdif))
+                    keys.append((shooter, assister, body))
+
+        preds = self._predict_refined_sq_bulk(pd.DataFrame(rows))
+        return dict(zip(keys, preds))
 
     def divide_matched_players(self, players_data):
         starters = [p['player_id'] for p in players_data if p['on_field']]
@@ -2565,169 +2678,7 @@ class Alg:
         team_plfsq = team_off_plfsq - opp_def_plfsq
 
         return team_total_ras, team_rahs, team_rafs, team_plhsq, team_plfsq
-
-    def compute_features(self, team, opponent, league, is_home, match_date, match_time):
-        if is_home:
-            hna_mp = 1.1
-            distance_mp = self.compute_travel_distance_mp(team, opponent, league)
-            elevation_mp = self.compute_elevation_mp(opponent, team, league)
-        else:
-            hna_mp = 0.9
-            distance_mp = 1
-            elevation_mp = 1
-
-        rest_mp = self.compute_rest_mp(opponent, league, match_date)
-        time_mp = self.compute_time_mp(match_time)
-
-        features = {
-            'hna': hna_mp,
-            '00-15': 0.85,
-            '15-30': 0.95,
-            '30-45': 1.05,
-            '45-60': 1.03,
-            '60-75': 1.02,
-            '75-90': 1.1,
-            'Level': 0.97,
-            'Trailing': 1.02,
-            'Leading': 1.01,
-            'Travel': distance_mp,
-            'Elevation': elevation_mp,
-            'Rest': rest_mp,
-            'Time': time_mp
-        }
-
-        return features
-    
-    def compute_travel_distance_mp(self, team, opponent, league):
-        self.db = DatabaseManager.DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
-
-        location_query = f"""
-            SELECT 
-                team_name, coordinates
-            FROM teams_data
-            WHERE league_name = '{league}'
-            AND team_name IN ('{team}', '{opponent}');
-        """
-        location_df = self.db.select(location_query)
-
-        team_coordinates = location_df[location_df['team_name'] == team]['coordinates'].values[0]
-        lat1, lon1 = map(str.strip, team_coordinates.split(','))
-        opponent_coordinates = location_df[location_df['team_name'] == opponent]['coordinates'].values[0]
-        lat2, lon2 = map(str.strip, opponent_coordinates.split(','))
-    
-        lat1_rad = math.radians(float(lat1))
-        lon1_rad = math.radians(float(lon1))
-        lat2_rad = math.radians(float(lat2))
-        lon2_rad = math.radians(float(lon2))
-
-        R = 6371.0
-
-        dlat = lat2_rad - lat1_rad
-        dlon = lon2_rad - lon1_rad
-        
-        a = math.sin(dlat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon/2)**2
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-        
-        distance = int(round(R * c))
-        
-        increments = distance // 100
-        
-        penalization_percent = increments * 1
-        
-        if penalization_percent > 20:
-            penalization_percent = 20
-        
-        result = 1 + (penalization_percent / 100)
-        
-        return result
-    
-    def compute_elevation_mp(self, team, opponent, league):
-        self.db = DatabaseManager.DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
-
-        elevation_query = f"""
-            SELECT 
-                team_name, elevation
-            FROM teams_data
-            WHERE league_name = '{league}'
-            AND team_name IN ('{team}', '{opponent}');
-        """
-        elevation_df = self.db.select(elevation_query)
-
-        team_elevation = elevation_df[elevation_df['team_name'] == team]['elevation'].values[0]
-        opponent_elevation = elevation_df[elevation_df['team_name'] == opponent]['elevation'].values[0]
-
-        elevation_dif = opponent_elevation - team_elevation
-        
-        increments = elevation_dif // 100
-        penalization_percent = 0
-
-        if increments > 0:
-            penalization_percent = min(increments * 1, 15)
-            result = 1 + (penalization_percent / 100)
-
-        elif increments < 0:
-            penalization_percent = max(increments * 1, -15)
-            result = 1 + (penalization_percent / 100)
-        
-        result = 1 + (penalization_percent / 100)
-        
-        return result
-    
-    def compute_rest_mp(self, opponent, league, match_date):
-        self.db = DatabaseManager.DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
-
-        lpg_query = f"""
-            SELECT 
-                team_name, last_played_game
-            FROM teams_data
-            WHERE league_name = '{league}'
-            AND team_name = '{opponent}';
-        """
-        lpg_df = self.db.select(lpg_query)
-
-        opponent_lpg = lpg_df[lpg_df['team_name'] == opponent]['last_played_game'].values[0]
-
-        opponent_rest_days = (match_date - opponent_lpg).days
-
-        rest_days = {2: 15, 7: -3, 14: 10}
-        sorted_items = sorted(rest_days.items())
-        
-        if opponent_rest_days <= sorted_items[0][0]:
-            rest_opponent_adjustment = sorted_items[0][1]
-        elif opponent_rest_days >= sorted_items[-1][0]:
-            rest_opponent_adjustment = sorted_items[-1][1]
-        else:
-            for (x0, y0), (x1, y1) in zip(sorted_items[:-1], sorted_items[1:]):
-                if x0 <= opponent_rest_days <= x1:
-                    rest_opponent_adjustment = y0 + (opponent_rest_days - x0) * (y1 - y0) / (x1 - x0)
-                    break
-        penalization_percent = min(rest_opponent_adjustment, 15)
-        result = 1 + (penalization_percent / 100)
-        
-        return result
-    
-    def compute_time_mp(self, match_time):
-        total_seconds = match_time.total_seconds()
-        hours = int(total_seconds // 3600) % 24
-
-        if 0 <= hours < 13:
-            category = "Afternoon"
-        elif 13 <= hours < 20:
-            category = "Evening"
-        elif 20 <= hours <= 23:
-            category = "Night"
-
-        if category == "Afternoon":
-            penalization_percent = 6
-        elif category == "Evening":
-            penalization_percent = -2
-        elif category == "Night":
-            penalization_percent = -4
-        
-        result = 1 - (penalization_percent / 100)
-        
-        return result
-    
+ 
     def get_status(self, home_goals, away_goals):
         diff = home_goals - away_goals
         if diff == 0:
