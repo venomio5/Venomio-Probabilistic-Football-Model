@@ -50,8 +50,8 @@ For each simulated shot:
 From the same **RAS** but for each type (Head or Foot):
 - List of team A players
 - List of team B players
-- Total head abd foot shots by team A
-- Total head abd foot shots by team B
+- Total head and foot shots by team A
+- Total head and foot shots by team B
 - Total minutes played
 
 ## Specific players
@@ -60,34 +60,29 @@ From the same **RAS** but for each type (Head or Foot):
 
 ## Shot Quality
 ### Player-Level Shot Quality Attribution
-This is a base-level contextual impact. For each player: a regularized coefficient reflecting their average influence on xG when present.
-| Feature           | Type        | Description      |
-|-------------------|-------|------------------------|
-| team_A_players    | JSON  | List of team A players |
-| team_B_players    | JSON  | List of team B players |
-| team_A_h/f_xg     | float | Total h/f xg by team A |
-| team_B_h/f_xg     | float | Total h/f xg by team B |
-| shots             | int   | Total shots            |
+Another regularized coefficient reflecting their average influence on xG when present.
+- List of team A players
+- List of team B players
+- Total head and foot xg by team A
+- Total head and foot xg by team B
+- Per shot
 
 **Output**: Each player's contribution to team shot quality.
 
-### Full-Factor Shot Quality Model
+### Refined Shot Quality Model
 Aggregate the ridge data per shot and build a model to learn nonlinear, hierarchical patterns.
-| Feature             | Type          | Description                                                      |
-|---------------------|---------------|------------------------------------------------------------------|
-| Total PLSQA         | float         | General shot quality for type of shot                            |
-| Shooter SQ          | float         | Shooter shot quality for type of shot                            |
-| Assister SQ         | float         | Assister shot quality for type of shot                           |
-| Match_state         | categorical   | (-1.5, -1, 0, 1, 1.5)                                            |
-| Match_segment       | categorical   | (1, 2, 3, 4, 5, 6)                                               |
-| Player_dif          | categorical   | (-1.5, -1, 0, 1, 1.5)                                            |
+- Total PLSQA
+- Shooter SQ
+- Assister SQ
+- Match_state
+- Player_dif
 
 **Output**: Refined shot quality. 
 
 ### Player Performance Modifier
 | Feature             | Type          | Description                                                      |
 |---------------------|---------------|------------------------------------------------------------------|
-| FFSQ                | float         | Refined Shot Quality for type of shot                            |
+| RSQ                | float         | Refined Shot Quality for type of shot                            |
 | Shooter Ability     | float         | Difference between xG and PSxG in %                              |
 | GK Ability          | float         | Difference between PSxG and Goals in %                           |
 | Team_is_home        | bool          | 1 = home, 0 = away                                               |
@@ -318,7 +313,6 @@ CREATE TABLE shots_data (
     shooter_SQ FLOAT DEFAULT NULL,
     assister_SQ FLOAT DEFAULT NULL,
     match_state ENUM('-1.5', '-1', '0', '1', '1.5') NOT NULL,
-    match_segment ENUM('1', '2', '3', '4', '5', '6') NOT NULL,
     player_dif ENUM('-1.5', '-1', '0', '1', '1.5') NOT NULL,
     RSQ FLOAT DEFAULT NULL,
     shooter_A FLOAT DEFAULT NULL,

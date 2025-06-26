@@ -676,6 +676,7 @@ class Extract_Data:
         self.get_recent_games_match_info()
         self.update_matches_info()
         self.update_pdras()
+        self.update_shots()
 
     def get_recent_games_match_info(self):
         def get_games_basic_info(url, lud):
@@ -1204,8 +1205,6 @@ class Extract_Data:
                 else:
                     match_state = "-1.5"
 
-                match_segment = str(min((shot_minute // 15) + 1, 6))
-
                 cum_red_home = sum(1 for minute, _, t in red_events if minute <= seg_end and t == "home")
                 cum_red_away = sum(1 for minute, _, t in red_events if minute <= seg_end and t == "away")
 
@@ -1229,7 +1228,7 @@ class Extract_Data:
 
                 GK_id = opponent_gk_stats[list(opponent_gk_stats.keys())[0]]["player_id"]
 
-                sql_shot = "INSERT IGNORE INTO shots_data (match_id, xg, psxg, shooter_id, assister_id, GK_id, off_players, def_players, match_state, match_segment, player_dif, shot_type) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                sql_shot = "INSERT IGNORE INTO shots_data (match_id, xg, psxg, shooter_id, assister_id, GK_id, off_players, def_players, match_state, player_dif, shot_type) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
                 params_shot = (match_id,
                                shot_xg,
                                shot_psxg,
@@ -1239,7 +1238,6 @@ class Extract_Data:
                                json.dumps(off_players, ensure_ascii=False),
                                json.dumps(def_players, ensure_ascii=False),
                                match_state,
-                               match_segment,
                                player_dif,
                                shot_type)
                 DB.execute(sql_shot, params_shot)
@@ -1371,7 +1369,185 @@ class Extract_Data:
                 (teamA_pdras, teamB_pdras, row['detail_id'])
             )
 
-# remove one year old data
+    def update_shots(self):
+        """
+        Before processing new data, update the shots plsqa, shooter and assister sq. And then the rsq, shooter  and gk ability.
+        """
+        def train_refined_sq_model() -> tuple[xgb.Booster, list[str]]:  
+            sql = """
+                SELECT
+                    total_plsqa,
+                    shooter_sq,
+                    assister_sq,
+                    CASE
+                        WHEN match_state <  0 THEN 'Trailing'
+                        WHEN match_state =  0 THEN 'Level'
+                        ELSE                       'Leading'
+                    END               AS match_state,
+                    CASE
+                        WHEN player_dif <  0 THEN 'Neg'
+                        WHEN player_dif =  0 THEN 'Neu'
+                        ELSE                       'Pos'
+                    END               AS player_dif,
+                    xg
+                FROM shots_data
+                WHERE total_plsqa IS NOT NULL
+            """
+            
+            df = DB.select(sql)
+            
+            cat_cols = ['match_state', 'player_dif']
+            num_cols = ['total_plsqa', 'shooter_sq', 'assister_sq']
+
+            df[num_cols] = df[num_cols].apply(pd.to_numeric, errors='coerce')
+            
+            for c in cat_cols:
+                df[c] = df[c].astype(str)
+            
+            X_cat = pd.get_dummies(df[cat_cols], prefix=cat_cols, dummy_na=True)
+            X     = pd.concat([df[num_cols], X_cat], axis=1).astype(float)
+            y     = df["xg"].astype(float)
+            
+            dtrain = xgb.DMatrix(X, label=y)
+            
+            params = dict(
+                objective        = "reg:logistic",
+                eval_metric      = "rmse",
+                tree_method      = "hist",
+                max_depth        = 6,
+                eta              = 0.05,
+                subsample        = 0.8,
+                colsample_bytree = 0.8,
+                min_child_weight = 2
+            )
+            
+            booster = xgb.train(params, dtrain, num_boost_round=400)
+            return booster, X.columns.tolist()
+
+        def predict_refined_sq(booster        : xgb.Booster,
+                            feature_columns: list[str],
+                            shot_features  : dict,
+                            *,
+                            raw            : bool = False) -> float:
+            
+            cat_cols = ['match_state', 'player_dif']
+            num_cols = ['total_plsqa', 'shooter_sq', 'assister_sq']
+            
+            row = shot_features.copy()
+            
+            for c in cat_cols:
+                row[c] = str(row[c]).title()
+            
+            num_df = pd.DataFrame([{k: row[k] for k in num_cols}])
+            cat_df = pd.get_dummies(pd.DataFrame([{c: row[c] for c in cat_cols}]), prefix=cat_cols)
+            cat_df = cat_df.reindex(
+                columns=[c for c in feature_columns if any(c.startswith(p + '_') for p in cat_cols)],
+                fill_value=0
+            )
+            
+            X = (
+                pd.concat([num_df, cat_df], axis=1)
+                .reindex(columns=feature_columns, fill_value=0)
+                .astype(float)
+            )
+            
+            dmat = xgb.DMatrix(X)
+            pred = booster.predict(dmat, output_margin=raw)
+            return float(pred[0])
+
+        booster, rsq_features = train_refined_sq_model()
+
+        non_updated_matches_df = DB.select("SELECT * FROM shots_data WHERE total_PLSQA IS NULL OR RSQ IS NULL;")
+
+        non_updated_matches_df['off_players'] = non_updated_matches_df['off_players'].apply(
+            lambda v: v if isinstance(v, list) else ast.literal_eval(v)
+        )
+        non_updated_matches_df['def_players'] = non_updated_matches_df['def_players'].apply(
+            lambda v: v if isinstance(v, list) else ast.literal_eval(v)
+        )
+
+        players_needed = set()
+        for _, row in non_updated_matches_df.iterrows():
+            players_needed.update(row['off_players'])
+            players_needed.update(row['def_players'])
+
+        if players_needed:
+            placeholders = ','.join(['%s'] * len(players_needed))
+            players_sql = (
+                f"SELECT player_id, off_hxg_coef, def_hxg_coef, off_fxg_coef, def_fxg_coef, headers, footers, key_passes, hxg, fxg, kp_hxg, kp_fxg, hpsxg, fpsxg, gk_psxg, gk_ga "
+                f"FROM players_data "
+                f"WHERE player_id IN ({placeholders});"
+            )
+            players_data_df  = DB.select(players_sql, list(players_needed))
+            p_dict = players_data_df.set_index("player_id").to_dict("index")
+        else:
+            p_dict = {}
+
+        for _, row in non_updated_matches_df.iterrows():
+            off_ids = row['off_players']
+            def_ids = row['def_players']
+            bp = row['shot_type']
+            shooter_id = row['shooter_id']
+            assister_id = row['assister_id']
+
+            if bp == "head":
+                offense = sum(p_dict.get(pid, {}).get('off_hxg_coef', 0) for pid in off_ids)
+                defense = sum(p_dict.get(pid, {}).get('def_hxg_coef', 0) for pid in def_ids)
+            else:
+                offense = sum(p_dict.get(pid, {}).get('off_fxg_coef', 0) for pid in off_ids)
+                defense = sum(p_dict.get(pid, {}).get('def_fxg_coef', 0) for pid in def_ids)
+
+            plsqa = offense - defense
+
+            shooter_data = p_dict.get(shooter_id, {})
+            if bp == "head":
+                numerator = shooter_data.get('hxg', 0)
+                denominator = shooter_data.get('headers', 1)
+                shooter_A = shooter_data.get('hpsxg', 0) / numerator if numerator else 0.0
+            else:
+                numerator = shooter_data.get('fxg', 0)
+                denominator = shooter_data.get('footers', 1)
+                shooter_A = shooter_data.get('fpsxg', 0) / numerator if numerator else 0.0
+
+            shooter_sq = numerator / denominator if denominator else 0.0
+
+            if not assister_id or not isinstance(p_dict[assister_id], dict):
+                assister_sq = None
+            else:
+                assister_data = p_dict.get(assister_id, {})
+                if bp == "head":
+                    numerator = assister_data.get('kp_hxg', 0)
+                else:
+                    numerator = assister_data.get('kp_fxg', 0)
+                denominator = assister_data.get('key_passes', 1)
+                assister_sq = numerator / denominator if denominator else 0.0
+
+            gk_A = None
+            for pid in def_ids:
+                gk_data = p_dict.get(pid, {})
+                gk_psxg = gk_data.get('gk_psxg')
+                gk_ga = gk_data.get('gk_ga')
+                if gk_psxg is not None and gk_ga is not None and gk_psxg != 0:
+                    gk_A = 1.0 - (gk_ga / gk_psxg)
+                    break
+
+            rsq = predict_refined_sq(
+                booster,
+                rsq_features,
+                dict(
+                    total_plsqa = plsqa,
+                    shooter_sq  = shooter_sq,
+                    assister_sq = assister_sq,
+                    match_state = row['match_state'],
+                    player_dif  = row['player_dif']
+                )
+            )
+
+            DB.execute(
+                "UPDATE shots_data SET total_PLSQA = %s, shooter_SQ = %s, assister_SQ = %s, RSQ = %s, shooter_A = %s, GK_A = %s WHERE shot_id = %s",
+                (plsqa, shooter_sq, assister_sq, rsq, shooter_A, gk_A, row['shot_id'])
+            )
+
 class RemoveOldData:
     def __init__(self, league):
         self.league = league
@@ -1905,8 +2081,8 @@ class Alg:
             home_status, away_status = self.get_status(home_goals, away_goals)
             time_segment = self.get_time_segment(self.match_initial_time)
 
-            home_ras, home_rahs, home_rafs = self.get_teams_ra(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
-            away_ras, away_rahs, away_rafs = self.get_teams_ra(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
+            home_ras, home_rahs, home_rafs, home_plhsq, home_plfsq = self.get_teams_ra(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
+            away_ras, away_rahs, away_rafs, away_plhsq, away_plfsq = self.get_teams_ra(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
             home_players_prob = self.build_player_probs(home_active_players, self.home_players_data)
             away_players_prob = self.build_player_probs(away_active_players, self.away_players_data)
 
@@ -1918,7 +2094,6 @@ class Alg:
 
             context_ras_change = False
             for minute in range(self.match_initial_time, 91):
-                print(minute, home_goals, away_goals)
                 home_status, away_status = self.get_status(home_goals, away_goals)
                 time_segment = self.get_time_segment(minute)
                 if minute in [16, 31, 46, 61, 76]:
@@ -1930,8 +2105,8 @@ class Alg:
                         home_active_players, home_passive_players = self.swap_players(home_active_players, home_passive_players, self.home_players_data, self.home_sub_minutes[minute], home_status)
                     if minute in list(self.away_sub_minutes.keys()):
                         away_active_players, away_passive_players = self.swap_players(away_active_players, away_passive_players, self.away_players_data, self.away_sub_minutes[minute], away_status)
-                    home_ras, home_rahs, home_rafs = self.get_teams_ra(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
-                    away_ras, away_rahs, away_rafs = self.get_teams_ra(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
+                    home_ras, home_rahs, home_rafs, home_plhsq, home_plfsq = self.get_teams_ra(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
+                    away_ras, away_rahs, away_rafs, away_plhsq, away_plfsq = self.get_teams_ra(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
                     home_players_prob = self.build_player_probs(home_active_players, self.home_players_data)
                     away_players_prob = self.build_player_probs(away_active_players, self.away_players_data)
 
@@ -1947,31 +2122,31 @@ class Alg:
                 away_shots = min(np.random.poisson(away_context_ras), 1) # CHANGE THIS TO NO MIN JUST THE RANDOM POISSON
 
                 if home_shots:
-                    for shot in range(home_shots):
+                    for _ in range(home_shots):
                         body_part = self.get_shot_type(home_rahs, home_rafs)
                         shooter = self.get_shooter(home_players_prob, body_part)
                         assister = self.get_assister(home_players_prob, body_part, shooter)
-                        home_goals_scored = np.random.poisson(0.1)
+                        outcome = home_plhsq if body_part == "Head" else home_plfsq
+                        home_goals_scored = np.random.poisson(outcome)
                         home_goals += home_goals_scored
                         if home_goals_scored > 0:
                             context_ras_change = True
                         shot_rows.append((i, minute, shooter, home_team_id, outcome, body_part, assister))
 
                 if away_shots:
-                    for shot in range(away_shots):
+                    for _ in range(away_shots):
                         body_part = self.get_shot_type(away_rahs, away_rafs)
                         shooter = self.get_shooter(away_players_prob, body_part)
                         assister = self.get_assister(away_players_prob, body_part, shooter)
-                        away_goals_scored = np.random.poisson(0.1)
+                        outcome = away_plhsq if body_part == "Head" else away_plfsq
+                        away_goals_scored = np.random.poisson(outcome)
                         away_goals += away_goals_scored
                         if away_goals_scored > 0:
                             context_ras_change = True
-                        shot_rows.append((i, minute, shooter, away_team_id, outcome, body_part, assister))
-
-                outcome = 0
-                assister = "Carlos"         
+                        shot_rows.append((i, minute, shooter, away_team_id, outcome, body_part, assister))  
                 
-            print(shot_rows)
+            for row in shot_rows:
+                print(row)
 
         #self.insert_sim_data(all_rows, self.match_id)
 
@@ -2367,7 +2542,29 @@ class Alg:
 
         team_rafs = team_off_rafs - opp_def_rafs
 
-        return team_total_ras, team_rahs, team_rafs
+        # team_plhsq
+        team_off_plhsq = 0
+        for player in offensive_players:
+            team_off_plhsq += offensive_data[player]['off_hxg_coef']
+
+        opp_def_plhsq = 0
+        for player in defensive_players:
+            opp_def_plhsq += defensive_data[player]['def_hxg_coef']
+
+        team_plhsq = team_off_plhsq - opp_def_plhsq
+
+        # team_plfsq
+        team_off_plfsq = 0
+        for player in offensive_players:
+            team_off_plfsq += offensive_data[player]['off_fxg_coef']
+
+        opp_def_plfsq = 0
+        for player in defensive_players:
+            opp_def_plfsq += defensive_data[player]['def_fxg_coef']
+
+        team_plfsq = team_off_plfsq - opp_def_plfsq
+
+        return team_total_ras, team_rahs, team_rafs, team_plhsq, team_plfsq
 
     def compute_features(self, team, opponent, league, is_home, match_date, match_time):
         if is_home:

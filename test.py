@@ -26,174 +26,181 @@ import core
 import ast
 import xgboost as xgb
 import matplotlib.pyplot as plt
+from xgboost import plot_importance
+from xgboost import plot_tree
 
-def train_context_ras_model():
-    def flip(series: pd.Series) -> pd.Series:
-        flipped = -series
-        flipped[series == 0] = 0.0             # remove the -0.0 sign bit
-        return flipped
-    
-    sql_query = f"""
-        SELECT 
-            mi.match_id,
-            mi.home_elevation_dif,
-            mi.away_elevation_dif,
-            mi.away_travel,
-            mi.home_rest_days,
-            mi.away_rest_days,
-            mi.temperature_c,
-            mi.is_raining,
-            mi.date,
-            md.teamA_pdras,
-            md.teamB_pdras,
-            md.match_state,
-            md.match_segment,
-            md.minutes_played,
-            md.player_dif,
-            (md.teamA_headers + md.teamA_footers) AS home_shots,
-            (md.teamB_headers + md.teamB_footers) AS away_shots
-        FROM match_info mi
-        JOIN match_detail md ON mi.match_id = md.match_id
+
+def train_refined_sq_model() -> tuple[xgb.Booster, list[str]]:  
+    sql = """
+        SELECT
+            total_plsqa,
+            shooter_sq,
+            assister_sq,
+            CASE
+                WHEN match_state <  0 THEN 'Trailing'
+                WHEN match_state =  0 THEN 'Level'
+                ELSE                       'Leading'
+            END               AS match_state,
+            CASE
+                WHEN player_dif <  0 THEN 'Neg'
+                WHEN player_dif =  0 THEN 'Neu'
+                ELSE                       'Pos'
+            END               AS player_dif,
+            xg
+        FROM shots_data
+        WHERE total_plsqa IS NOT NULL
     """
-    context_df = core.DB.select(sql_query)
-    context_df['date'] = pd.to_datetime(context_df['date'])
-    context_df['match_state'] = pd.to_numeric(context_df['match_state'], errors='raise').astype(float)
-    context_df['player_dif']  = pd.to_numeric(context_df['player_dif'],  errors='raise').astype(float)
-
-    def _bucket(ts):
-        h = ts.hour
-        if 9 <= h < 14:
-            return 'aft'
-        if 14 <= h < 19:
-            return 'evening'
-        return 'night'
-
-    home_df = pd.DataFrame({
-        'shots'              : context_df['home_shots'],
-        'total_ras'          : context_df['teamA_pdras'],
-        'minutes_played'     : context_df['minutes_played'],
-        'team_is_home'       : 1,
-        'team_elevation_dif' : context_df['home_elevation_dif'],
-        'opp_elevation_dif'  : context_df['away_elevation_dif'],
-        'team_travel'        : 0,
-        'opp_travel'         : context_df['away_travel'],
-        'team_rest_days'     : context_df['home_rest_days'],
-        'opp_rest_days'      : context_df['away_rest_days'],
-        'match_state'        : context_df['match_state'],
-        'match_segment'      : context_df['match_segment'],
-        'player_dif'         : context_df['player_dif'],
-        'temperature_c'      : context_df['temperature_c'],
-        'is_raining'         : context_df['is_raining'],
-        'match_time'         : context_df['date'].apply(_bucket)
-    })
-
-    away_df = pd.DataFrame({
-        'shots'              : context_df['away_shots'],
-        'total_ras'          : context_df['teamB_pdras'],
-        'minutes_played'     : context_df['minutes_played'],
-        'team_is_home'       : 0,
-        'team_elevation_dif' : context_df['away_elevation_dif'],
-        'opp_elevation_dif'  : context_df['home_elevation_dif'],
-        'team_travel'        : context_df['away_travel'],
-        'opp_travel'         : 0,
-        'team_rest_days'     : context_df['away_rest_days'],
-        'opp_rest_days'      : context_df['home_rest_days'],
-        'match_state'        : flip(context_df['match_state']),
-        'match_segment'      : context_df['match_segment'],
-        'player_dif'         : flip(context_df['player_dif']),
-        'temperature_c'      : context_df['temperature_c'],
-        'is_raining'         : context_df['is_raining'],
-        'match_time'         : context_df['date'].apply(_bucket)
-    })
-
-    df = pd.concat([home_df, away_df], ignore_index=True)
-
-    df['shots_per_min']     = df['shots']      / df['minutes_played']
-    df['ras_per_min']       = df['total_ras']  / df['minutes_played']
-
-    cat_cols  = ['match_state', 'match_segment', 'player_dif', 'match_time']
-    bool_cols = ['team_is_home', 'is_raining']
-    num_cols  = ['team_elevation_dif', 'opp_elevation_dif', 'team_travel', 'opp_travel', 'team_rest_days', 'opp_rest_days', 'temperature_c']
     
-    required_cols = cat_cols + bool_cols + num_cols + ['shots', 'total_ras']
-    missing_cols  = [c for c in ['shots', 'total_ras'] if c not in df.columns]
-    if missing_cols:
-        raise ValueError(f'Missing expected columns: {missing_cols}')
+    df = core.DB.select(sql)
+    
+    cat_cols = ['match_state', 'player_dif']
+    num_cols = ['total_plsqa', 'shooter_sq', 'assister_sq']
 
-    df = df.dropna(subset=[c for c in required_cols if c in df.columns])
-
+    df[num_cols] = df[num_cols].apply(pd.to_numeric, errors='coerce')
+    
     for c in cat_cols:
-        df[c] = df[c].astype(str).str.lower()
-
-    df[bool_cols] = df[bool_cols].astype(int)
-
-    X_cat = pd.get_dummies(df[cat_cols], prefix=cat_cols)
-    X     = pd.concat([df[num_cols], df[bool_cols], X_cat], axis=1)
-
-    y           = df['shots_per_min']
-    base_margin = np.log(df['ras_per_min'].clip(lower=1e-6))
-
-    dtrain = xgb.DMatrix(X, label=y, base_margin=base_margin)
-
-    params = dict(objective='count:poisson',
-                    tree_method='hist',
-                    max_depth=6,
-                    eta=0.05,
-                    subsample=0.8,
-                    colsample_bytree=0.8,
-                    min_child_weight=5)
-
-    booster = xgb.train(params, dtrain, num_boost_round=300)
-    return booster, X.columns
-
-def predict_next_match(booster, feature_columns, new_match):
-    categorical_cols = ['match_state', 'match_segment', 'player_dif', 'match_time']
-    bool_cols = ['team_is_home', 'is_raining']
-    num_cols = ['team_elevation_dif', 'opp_elevation_dif', 'team_travel', 'opp_travel', 'team_rest_days', 'opp_rest_days', 'temperature_c']
+        df[c] = df[c].astype(str)
     
-    base_margin = np.log(new_match.pop('total_ras').clip(lower=1e-6))
+    X_cat = pd.get_dummies(df[cat_cols], prefix=cat_cols, dummy_na=True)
+    X     = pd.concat([df[num_cols], X_cat], axis=1).astype(float)
+    y     = df["xg"].astype(float)
+    
+    dtrain = xgb.DMatrix(X, label=y)
+    
+    params = dict(
+        objective        = "reg:logistic",
+        eval_metric      = "rmse",
+        tree_method      = "hist",
+        max_depth        = 6,
+        eta              = 0.05,
+        subsample        = 0.8,
+        colsample_bytree = 0.8,
+        min_child_weight = 2
+    )
+    
+    booster = xgb.train(params, dtrain, num_boost_round=400)
+    return booster, X.columns.tolist()
 
-    for col in categorical_cols:
-        new_match[col] = new_match[col].astype(str).str.lower()
-    new_match[bool_cols] = new_match[bool_cols].astype(int)
+def predict_refined_sq(booster        : xgb.Booster,
+                       feature_columns: list[str],
+                       shot_features  : dict,
+                       *,
+                       raw            : bool = False) -> float:
+    
+    cat_cols = ['match_state', 'player_dif']
+    num_cols = ['total_plsqa', 'shooter_sq', 'assister_sq']
+    
+    row = shot_features.copy()
+    
+    for c in cat_cols:
+        row[c] = str(row[c]).title()
+    
+    num_df = pd.DataFrame([{k: row[k] for k in num_cols}])
+    cat_df = pd.get_dummies(pd.DataFrame([{c: row[c] for c in cat_cols}]), prefix=cat_cols)
+    cat_df = cat_df.reindex(
+        columns=[c for c in feature_columns if any(c.startswith(p + '_') for p in cat_cols)],
+        fill_value=0
+    )
+    
+    X = (
+        pd.concat([num_df, cat_df], axis=1)
+          .reindex(columns=feature_columns, fill_value=0)
+          .astype(float)
+    )
+    
+    dmat = xgb.DMatrix(X)
+    pred = booster.predict(dmat, output_margin=raw)
+    return float(pred[0])
 
-    new_cat = pd.get_dummies(new_match[categorical_cols], prefix=categorical_cols)
-    new_cat = new_cat.reindex(columns=[col for col in feature_columns if any(col.startswith(prefix + "_") for prefix in categorical_cols)], fill_value=0)
+booster, rsq_features = train_refined_sq_model()
 
-    new_X = pd.concat([
-        new_match[num_cols + bool_cols].reset_index(drop=True),
-        new_cat.reset_index(drop=True)
-    ], axis=1)
+non_updated_matches_df = core.DB.select("SELECT * FROM shots_data WHERE total_PLSQA IS NULL OR RSQ IS NULL;")
 
-    new_X = new_X.reindex(columns=feature_columns, fill_value=0)
+non_updated_matches_df['off_players'] = non_updated_matches_df['off_players'].apply(
+    lambda v: v if isinstance(v, list) else ast.literal_eval(v)
+)
+non_updated_matches_df['def_players'] = non_updated_matches_df['def_players'].apply(
+    lambda v: v if isinstance(v, list) else ast.literal_eval(v)
+)
 
-    dmatrix = xgb.DMatrix(new_X, base_margin=base_margin)
-    prediction = booster.predict(dmatrix)
-    return prediction[0]
+players_needed = set()
+for _, row in non_updated_matches_df.iterrows():
+    players_needed.update(row['off_players'])
+    players_needed.update(row['def_players'])
 
-booster, columns = train_context_ras_model()
-# xgb.plot_importance(booster, importance_type='gain')
-# plt.title("Feature Importance (Gain)")
-# plt.tight_layout()
-# plt.show()
+if players_needed:
+    placeholders = ','.join(['%s'] * len(players_needed))
+    players_sql = (
+        f"SELECT player_id, off_hxg_coef, def_hxg_coef, off_fxg_coef, def_fxg_coef, headers, footers, key_passes, hxg, fxg, kp_hxg, kp_fxg, hpsxg, fpsxg, gk_psxg, gk_ga "
+        f"FROM players_data "
+        f"WHERE player_id IN ({placeholders});"
+    )
+    players_data_df  = core.DB.select(players_sql, list(players_needed))
+    p_dict = players_data_df.set_index("player_id").to_dict("index")
+else:
+    p_dict = {}
 
-next_match = pd.DataFrame([{
-    'shots': 0,  # Placeholder, not used in prediction
-    'total_ras': 0.07,
-    'team_is_home': 1,
-    'team_elevation_dif': 208,
-    'opp_elevation_dif': 569,
-    'team_travel': 0,
-    'opp_travel': 2370,
-    'team_rest_days': 6,
-    'opp_rest_days': 6,
-    'match_state': 0.0,
-    'match_segment': 1,
-    'player_dif': 0.0,
-    'temperature_c': 16.0,
-    'is_raining': 0,
-    'match_time': 'evening'
-}])
+for _, row in non_updated_matches_df.iterrows():
+    off_ids = row['off_players']
+    def_ids = row['def_players']
+    bp = row['shot_type']
+    shooter_id = row['shooter_id']
+    assister_id = row['assister_id']
 
-pred = predict_next_match(booster, columns, next_match)
-print(f"Predicted shots: {pred:.3f}")
+    if bp == "head":
+        offense = sum(p_dict.get(pid, {}).get('off_hxg_coef', 0) for pid in off_ids)
+        defense = sum(p_dict.get(pid, {}).get('def_hxg_coef', 0) for pid in def_ids)
+    else:
+        offense = sum(p_dict.get(pid, {}).get('off_fxg_coef', 0) for pid in off_ids)
+        defense = sum(p_dict.get(pid, {}).get('def_fxg_coef', 0) for pid in def_ids)
+
+    plsqa = offense - defense
+
+    shooter_data = p_dict.get(shooter_id, {})
+    if bp == "head":
+        numerator = shooter_data.get('hxg', 0)
+        denominator = shooter_data.get('headers', 1)
+        shooter_A = shooter_data.get('hpsxg', 0) / numerator if numerator else 0.0
+    else:
+        numerator = shooter_data.get('fxg', 0)
+        denominator = shooter_data.get('footers', 1)
+        shooter_A = shooter_data.get('fpsxg', 0) / numerator if numerator else 0.0
+
+    shooter_sq = numerator / denominator if denominator else 0.0
+
+    if not assister_id or not isinstance(p_dict[assister_id], dict):
+        assister_sq = None
+    else:
+        assister_data = p_dict.get(assister_id, {})
+        if bp == "head":
+            numerator = assister_data.get('kp_hxg', 0)
+        else:
+            numerator = assister_data.get('kp_fxg', 0)
+        denominator = assister_data.get('key_passes', 1)
+        assister_sq = numerator / denominator if denominator else 0.0
+
+    gk_A = None
+    for pid in def_ids:
+        gk_data = p_dict.get(pid, {})
+        gk_psxg = gk_data.get('gk_psxg')
+        gk_ga = gk_data.get('gk_ga')
+        if gk_psxg is not None and gk_ga is not None and gk_psxg != 0:
+            gk_A = 1.0 - (gk_ga / gk_psxg)
+            break
+
+    rsq = predict_refined_sq(
+        booster,
+        rsq_features,
+        dict(
+            total_plsqa = plsqa,
+            shooter_sq  = shooter_sq,
+            assister_sq = assister_sq,
+            match_state = row['match_state'],
+            player_dif  = row['player_dif']
+        )
+    )
+
+    core.DB.execute(
+        "UPDATE shots_data SET total_PLSQA = %s, shooter_SQ = %s, assister_SQ = %s, RSQ = %s, shooter_A = %s, GK_A = %s WHERE shot_id = %s",
+        (plsqa, shooter_sq, assister_sq, rsq, shooter_A, gk_A, row['shot_id'])
+    )
