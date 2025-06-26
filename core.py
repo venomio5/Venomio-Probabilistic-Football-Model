@@ -21,6 +21,8 @@ import json
 from tqdm import tqdm
 import ast
 import xgboost as xgb
+from concurrent.futures import ProcessPoolExecutor
+import itertools  
 
 # --------------- Useful Classes, Functions & Variables ---------------
 class DatabaseManager:
@@ -1863,6 +1865,7 @@ class Alg:
         self.home_n_subs_avail = home_n_subs_avail
         self.away_n_subs_avail = away_n_subs_avail
         self.booster, self.cr_columns = self.train_context_ras_model()
+        self.ctx_mult_home, self.ctx_mult_away = self._precompute_ctx_multipliers()
 
         self.home_starters, self.home_subs = self.divide_matched_players(self.home_players_data)
         self.away_starters, self.away_subs = self.divide_matched_players(self.away_players_data)
@@ -1888,7 +1891,7 @@ class Alg:
         elif self.match_initial_time >= 15:
             range_value = 50000
         elif self.match_initial_time < 15:
-            range_value = 1
+            range_value = 100000
 
         shot_rows = []
 
@@ -1899,16 +1902,27 @@ class Alg:
             away_active_players = self.away_starters
             home_passive_players = self.home_subs
             away_passive_players = self.away_subs
+            home_status, away_status = self.get_status(home_goals, away_goals)
+            time_segment = self.get_time_segment(self.match_initial_time)
 
             home_ras = self.get_teams_ras(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
             away_ras = self.get_teams_ras(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
 
+            home_mult = self.ctx_mult_home[(home_status, time_segment, 0)]
+            away_mult = self.ctx_mult_away[(away_status, time_segment, 0)]
+
+            home_context_ras = max(0, home_ras) * home_mult
+            away_context_ras = max(0, away_ras) * away_mult
+
+            context_ras_change = False
             for minute in range(self.match_initial_time, 91):
-                print(f"Minute {minute}: {home_goals}-{away_goals}")
                 home_status, away_status = self.get_status(home_goals, away_goals)
                 time_segment = self.get_time_segment(minute)
+                if minute in [16, 31, 46, 61, 76]:
+                    context_ras_change = True
 
                 if minute in self.all_sub_minutes:
+                    context_ras_change = True
                     if minute in list(self.home_sub_minutes.keys()):
                         home_active_players, home_passive_players = self.swap_players(home_active_players, home_passive_players, self.home_players_data, self.home_sub_minutes[minute], home_status)
                     if minute in list(self.away_sub_minutes.keys()):
@@ -1916,45 +1930,13 @@ class Alg:
                     home_ras = self.get_teams_ras(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
                     away_ras = self.get_teams_ras(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
 
-                home_context_ras_df = pd.DataFrame([{
-                    'shots': 0,
-                    'total_ras': home_ras,
-                    'team_is_home': 1,
-                    'team_elevation_dif': self.home_elevation_dif,
-                    'opp_elevation_dif': self.away_elevation_dif,
-                    'team_travel': 0,
-                    'opp_travel': self.away_travel,
-                    'team_rest_days': self.home_rest_days,
-                    'opp_rest_days': self.away_rest_days,
-                    'match_state': home_status,
-                    'match_segment': time_segment,
-                    'player_dif': 0.0,
-                    'temperature_c': self.temperature,
-                    'is_raining': self.is_raining,
-                    'match_time': 'evening'
-                }])
+                if context_ras_change:
+                    context_ras_change = False
+                    home_mult = self.ctx_mult_home[(home_status, time_segment, 0)]
+                    away_mult = self.ctx_mult_away[(away_status, time_segment, 0)]
 
-                away_context_ras_df = pd.DataFrame([{
-                    'shots': 0,
-                    'total_ras': away_ras,
-                    'team_is_home': 0,
-                    'team_elevation_dif': self.away_elevation_dif,
-                    'opp_elevation_dif': self.home_elevation_dif,
-                    'team_travel': self.away_travel,
-                    'opp_travel': 0,
-                    'team_rest_days': self.away_rest_days,
-                    'opp_rest_days': self.home_rest_days,
-                    'match_state': away_status,
-                    'match_segment': time_segment,
-                    'player_dif': 0.0,
-                    'temperature_c': self.temperature,
-                    'is_raining': self.is_raining,
-                    'match_time': 'evening'
-                }])
-
-                home_context_ras = self.predict_next_match(self.booster, self.cr_columns, home_context_ras_df)
-                away_context_ras = self.predict_next_match(self.booster, self.cr_columns, away_context_ras_df)
-                print(home_context_ras, away_context_ras)
+                    home_context_ras = max(0, home_ras) * home_mult
+                    away_context_ras = max(0, away_ras) * away_mult
 
                 # Draw shots / goals etc.
                 home_shots = np.random.poisson(home_context_ras)
@@ -1975,6 +1957,8 @@ class Alg:
 
                 home_goals_scored = np.random.poisson(home_proj_xg)
                 away_goals_scored = np.random.poisson(away_proj_xg)
+                if home_goals_scored + away_goals_scored > 0:
+                    context_ras_change = True
 
                 home_goals += home_goals_scored
                 away_goals += away_goals_scored
@@ -2105,7 +2089,7 @@ class Alg:
         booster = xgb.train(params, dtrain, num_boost_round=300)
         return booster, X.columns
 
-    def predict_next_match(self, booster, feature_columns, new_match):
+    def predict_context_ras(self, booster, feature_columns, new_match, *, raw=False):
         categorical_cols = ['match_state', 'match_segment', 'player_dif', 'match_time']
         bool_cols = ['team_is_home', 'is_raining']
         num_cols = ['team_elevation_dif', 'opp_elevation_dif', 'team_travel', 'opp_travel', 'team_rest_days', 'opp_rest_days', 'temperature_c']
@@ -2127,8 +2111,43 @@ class Alg:
         new_X = new_X.reindex(columns=feature_columns, fill_value=0)
 
         dmatrix = xgb.DMatrix(new_X, base_margin=base_margin)
-        prediction = booster.predict(dmatrix)
+        prediction = booster.predict(dmatrix, output_margin=raw)
         return prediction[0]
+
+    def _precompute_ctx_multipliers(self):
+        def _template(is_home: bool):
+            return {
+                'team_is_home'     : int(is_home),
+                'team_elevation_dif': self.home_elevation_dif if is_home else self.away_elevation_dif,
+                'opp_elevation_dif' : self.away_elevation_dif if is_home else self.home_elevation_dif,
+                'team_travel'       : 0 if is_home else self.away_travel,
+                'opp_travel'        : self.away_travel if is_home else 0,
+                'team_rest_days'    : self.home_rest_days if is_home else self.away_rest_days,
+                'opp_rest_days'     : self.away_rest_days if is_home else self.home_rest_days,
+                'temperature_c'     : self.temperature,
+                'is_raining'        : self.is_raining,
+                'match_time'        : 'evening',
+                'total_ras'         : 1.0          # 1 ⇒  log(1)=0  ⇒  pure model effect
+            }
+
+        states       = [-1.5, -1, 0, 1, 1.5]
+        segments     = [1, 2, 3, 4, 5, 6]
+        player_diffs = [-1.5, -1, 0, 1, 1.5]
+
+        home_cache, away_cache = {}, {}
+        for st, sg, pdif in itertools.product(states, segments, player_diffs):
+            for is_home, cache in ((True, home_cache), (False, away_cache)):
+                row = _template(is_home)
+                row.update({'match_state': st,
+                            'match_segment': sg,
+                            'player_dif'  : pdif})
+                # raw=True ⇒ get the margin only
+                raw_margin = self.predict_context_ras(self.booster,
+                                                      self.cr_columns,
+                                                      pd.DataFrame([row]),
+                                                      raw=True)
+                cache[(st, sg, pdif)] = np.exp(raw_margin)   # multiplier
+        return home_cache, away_cache
 
     def divide_matched_players(self, players_data):
         starters = [p['player_id'] for p in players_data if p['on_field']]
@@ -2229,7 +2248,17 @@ class Alg:
 
         return home_distribution, away_distribution
 
-    def swap_players(self, active_players, passive_players, players_data, subs, game_status):
+    def swap_players(self, active_players, passive_players, players_data, subs, game_status_n):
+        def interpret_game_status(status_code):
+            if status_code > 0:
+                return "Leading"
+            elif status_code < 0:
+                return "Trailing"
+            else:
+                return "Level"
+            
+        game_status = interpret_game_status(game_status_n)
+
         total_active_minutes = 0
         for player in active_players:
             total_active_minutes += players_data[player]['minutes_played']
