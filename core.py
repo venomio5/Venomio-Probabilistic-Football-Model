@@ -1865,7 +1865,7 @@ class Alg:
         self.home_n_subs_avail = home_n_subs_avail
         self.away_n_subs_avail = away_n_subs_avail
         self.booster, self.cr_columns = self.train_context_ras_model()
-        self.ctx_mult_home, self.ctx_mult_away = self._precompute_ctx_multipliers()
+        self.ctx_mult_home, self.ctx_mult_away = self.precompute_ctx_multipliers()
 
         self.home_starters, self.home_subs = self.divide_matched_players(self.home_players_data)
         self.away_starters, self.away_subs = self.divide_matched_players(self.away_players_data)
@@ -1891,7 +1891,7 @@ class Alg:
         elif self.match_initial_time >= 15:
             range_value = 50000
         elif self.match_initial_time < 15:
-            range_value = 100000
+            range_value = 1
 
         shot_rows = []
 
@@ -1905,8 +1905,10 @@ class Alg:
             home_status, away_status = self.get_status(home_goals, away_goals)
             time_segment = self.get_time_segment(self.match_initial_time)
 
-            home_ras = self.get_teams_ras(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
-            away_ras = self.get_teams_ras(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
+            home_ras, home_rahs, home_rafs = self.get_teams_ra(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
+            away_ras, away_rahs, away_rafs = self.get_teams_ra(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
+            home_players_prob = self.build_player_probs(home_active_players, self.home_players_data)
+            away_players_prob = self.build_player_probs(away_active_players, self.away_players_data)
 
             home_mult = self.ctx_mult_home[(home_status, time_segment, 0)]
             away_mult = self.ctx_mult_away[(away_status, time_segment, 0)]
@@ -1916,6 +1918,7 @@ class Alg:
 
             context_ras_change = False
             for minute in range(self.match_initial_time, 91):
+                print(minute, home_goals, away_goals)
                 home_status, away_status = self.get_status(home_goals, away_goals)
                 time_segment = self.get_time_segment(minute)
                 if minute in [16, 31, 46, 61, 76]:
@@ -1927,8 +1930,10 @@ class Alg:
                         home_active_players, home_passive_players = self.swap_players(home_active_players, home_passive_players, self.home_players_data, self.home_sub_minutes[minute], home_status)
                     if minute in list(self.away_sub_minutes.keys()):
                         away_active_players, away_passive_players = self.swap_players(away_active_players, away_passive_players, self.away_players_data, self.away_sub_minutes[minute], away_status)
-                    home_ras = self.get_teams_ras(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
-                    away_ras = self.get_teams_ras(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
+                    home_ras, home_rahs, home_rafs = self.get_teams_ra(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
+                    away_ras, away_rahs, away_rafs = self.get_teams_ra(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
+                    home_players_prob = self.build_player_probs(home_active_players, self.home_players_data)
+                    away_players_prob = self.build_player_probs(away_active_players, self.away_players_data)
 
                 if context_ras_change:
                     context_ras_change = False
@@ -1938,32 +1943,35 @@ class Alg:
                     home_context_ras = max(0, home_ras) * home_mult
                     away_context_ras = max(0, away_ras) * away_mult
 
-                # Draw shots / goals etc.
-                home_shots = np.random.poisson(home_context_ras)
-                away_shots = np.random.poisson(away_context_ras)
+                home_shots = min(np.random.poisson(home_context_ras), 1) # CHANGE THIS TO NO MIN JUST THE RANDOM POISSON
+                away_shots = min(np.random.poisson(away_context_ras), 1) # CHANGE THIS TO NO MIN JUST THE RANDOM POISSON
 
-                # CHANGE THIS --------------------------------------------------------
-                #home_proj_xg = home_natural_projected_goals * self.home_features['hna'] * self.home_features[time_segment] * self.home_features[home_status] * self.home_features['Travel'] * self.home_features['Elevation'] * self.home_features['Rest'] * self.home_features['Time'] * home_momentum * self.home_rc_offensive_penalty * self.away_rc_defensive_penalty
-                #away_proj_xg = away_natural_projected_goals * self.away_features['hna'] * self.away_features[time_segment] * self.away_features[away_status] * self.away_features['Travel'] * self.away_features['Elevation'] * self.away_features['Rest'] * self.away_features['Time'] * away_momentum * self.home_rc_defensive_penalty * self.away_rc_offensive_penalty
+                if home_shots:
+                    for shot in range(home_shots):
+                        body_part = self.get_shot_type(home_rahs, home_rafs)
+                        shooter = self.get_shooter(home_players_prob, body_part)
+                        assister = self.get_assister(home_players_prob, body_part, shooter)
+                        home_goals_scored = np.random.poisson(0.1)
+                        home_goals += home_goals_scored
+                        if home_goals_scored > 0:
+                            context_ras_change = True
+                        shot_rows.append((i, minute, shooter, home_team_id, outcome, body_part, assister))
 
-                home_proj_xg = 0.1
-                away_proj_xg = 0.1
+                if away_shots:
+                    for shot in range(away_shots):
+                        body_part = self.get_shot_type(away_rahs, away_rafs)
+                        shooter = self.get_shooter(away_players_prob, body_part)
+                        assister = self.get_assister(away_players_prob, body_part, shooter)
+                        away_goals_scored = np.random.poisson(0.1)
+                        away_goals += away_goals_scored
+                        if away_goals_scored > 0:
+                            context_ras_change = True
+                        shot_rows.append((i, minute, shooter, away_team_id, outcome, body_part, assister))
 
-                shooter = "Carlos"
-                squad = 1
                 outcome = 0
-                body_part = "Carlos"
-                assister = "Carlos"
-
-                home_goals_scored = np.random.poisson(home_proj_xg)
-                away_goals_scored = np.random.poisson(away_proj_xg)
-                if home_goals_scored + away_goals_scored > 0:
-                    context_ras_change = True
-
-                home_goals += home_goals_scored
-                away_goals += away_goals_scored
-
-                shot_rows.append((i, minute, shooter, squad, outcome, body_part, assister))
+                assister = "Carlos"         
+                
+            print(shot_rows)
 
         #self.insert_sim_data(all_rows, self.match_id)
 
@@ -2114,7 +2122,7 @@ class Alg:
         prediction = booster.predict(dmatrix, output_margin=raw)
         return prediction[0]
 
-    def _precompute_ctx_multipliers(self):
+    def precompute_ctx_multipliers(self):
         def _template(is_home: bool):
             return {
                 'team_is_home'     : int(is_home),
@@ -2325,7 +2333,8 @@ class Alg:
 
         return active_players, passive_players
 
-    def get_teams_ras(self, offensive_players, defensive_players, offensive_data, defensive_data):
+    def get_teams_ra(self, offensive_players, defensive_players, offensive_data, defensive_data):
+        # team_total_ras
         team_off_ras = 0
         for player in offensive_players:
             team_off_ras += offensive_data[player]['off_sh_coef']
@@ -2336,7 +2345,29 @@ class Alg:
 
         team_total_ras = team_off_ras - opp_def_ras
 
-        return team_total_ras
+        # team_rahs
+        team_off_rahs = 0
+        for player in offensive_players:
+            team_off_rahs += offensive_data[player]['off_headers_coef']
+
+        opp_def_rahs = 0
+        for player in defensive_players:
+            opp_def_rahs += defensive_data[player]['def_headers_coef']
+
+        team_rahs = team_off_rahs - opp_def_rahs
+
+        # team_rafs
+        team_off_rafs = 0
+        for player in offensive_players:
+            team_off_rafs += offensive_data[player]['off_footers_coef']
+
+        opp_def_rafs = 0
+        for player in defensive_players:
+            opp_def_rafs += defensive_data[player]['def_footers_coef']
+
+        team_rafs = team_off_rafs - opp_def_rafs
+
+        return team_total_ras, team_rahs, team_rafs
 
     def compute_features(self, team, opponent, league, is_home, match_date, match_time):
         if is_home:
@@ -2527,6 +2558,90 @@ class Alg:
         else:
             return 6
         
+    def get_shot_type(self, rahs, rafs):
+        rahs = max(0, rahs)
+        rafs = max(0, rafs)
+
+        total = rahs + rafs
+        if total == 0:
+            probs = [0.5, 0.5]
+        else:
+            probs = [rahs / total, rafs / total]
+        
+        selected_index = np.random.choice([0, 1], p=probs)
+
+        if selected_index == 0:
+            body_part = "Head"
+        else:
+            body_part = "Foot"
+        return body_part
+    
+    def build_player_probs(self, active_players, players_data):
+        def _normalise(rate_dict):
+            tot = sum(rate_dict.values())
+            if tot == 0:
+                n = len(rate_dict)
+                return {k: 1 / n for k in rate_dict}
+            return {k: v / tot for k, v in rate_dict.items()}
+
+        rates = {
+            'headers': {},
+            'footers': {},
+            'non_assisted_footers': {},
+            'key_passes': {}
+        }
+
+        for player in active_players:
+            data    = players_data[player]
+            minutes = max(1, data.get('minutes_played', 1))
+
+            rates['headers'][player]              = data.get('headers', 0) / minutes
+            rates['footers'][player]              = data.get('footers', 0) / minutes
+            rates['non_assisted_footers'][player] = data.get('non_assisted_footers', 0) / minutes
+            rates['key_passes'][player]              = data.get('key_passes', 0) / minutes
+
+        shooter_prob = {
+            'headers': _normalise(rates['headers']),
+            'footers': _normalise(rates['footers'])
+        }
+
+        assist_prob = {'headers': {}, 'footers': {}}
+
+        for shooter in active_players:
+            dist_f = {}
+            dist_f[None] = rates['non_assisted_footers'][shooter]
+            for assister in active_players:
+                if assister == shooter:
+                    continue
+                dist_f[assister] = rates['key_passes'][assister]
+            assist_prob['footers'][shooter] = _normalise(dist_f)
+
+            dist_h = {}
+            for assister in active_players:
+                if assister == shooter:
+                    continue
+                dist_h[assister] = rates['key_passes'][assister]
+            assist_prob['headers'][shooter] = _normalise(dist_h)
+
+        return {'shooter': shooter_prob, 'assist': assist_prob}
+
+    def get_shooter(self, prob_dicts, body_part):
+        _body_part_key = {'Head': 'headers', 'Foot': 'footers'}
+
+        key      = _body_part_key[body_part] 
+        probs    = prob_dicts['shooter'][key]
+        players  = list(probs.keys())
+        p_vals   = list(probs.values())
+        return np.random.choice(players, p=p_vals)
+    
+    def get_assister(self, prob_dicts, body_part, shooter):
+        _body_part_key = {'Head': 'headers', 'Foot': 'footers'}
+        key      = _body_part_key[body_part]
+        probs    = prob_dicts['assist'][key][shooter]
+        ass      = list(probs.keys())
+        p_vals   = list(probs.values())
+        return np.random.choice(ass, p=p_vals)
+
     def insert_sim_data(self, rows, match_id):
         delete_query  = """
         DELETE FROM simulation_data 

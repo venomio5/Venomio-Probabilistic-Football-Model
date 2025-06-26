@@ -46,21 +46,17 @@ RAS values serve as a baseline to an advanced XGBoost model, which integrates cr
 
 # Shot Resolution
 For each simulated shot:
-## Shot Type
-Another **Ridge Regression** for each type (Head or Foot), normalize them and choose based on weighted randomness.  
-| Feature           | Type        | Description      |
-|-------------------|-------|------------------------|
-| team_A_players    | JSON  | List of team A players |
-| team_B_players    | JSON  | List of team B players |
-| team_A_h/f_shots  | int   | Total h/f by team A    |
-| team_B_h/f_shots  | int   | Total h/f by team B    |
-| minutes_played    | int   | Total minutes played   |
+## Regularized Adjusted Shot Type (RAST)
+From the same **RAS** but for each type (Head or Foot):
+- List of team A players
+- List of team B players
+- Total head abd foot shots by team A
+- Total head abd foot shots by team B
+- Total minutes played
 
 ## Specific players
 - **Shooter**: Determined by weighted randomness favoring players with higher shot volume for the type.
 - **Assister**: Determined by weighted randomness where headers receive full weight (100%), and foot depend on the shooting player’s ability to generate their own attempts, augmented by key passes (KP).
-
-Add 1 to everyone for it to always have a probability.
 
 ## Shot Quality
 ### Player-Level Shot Quality Attribution
