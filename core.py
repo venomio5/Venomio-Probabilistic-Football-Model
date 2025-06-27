@@ -1228,10 +1228,11 @@ class Extract_Data:
 
                 GK_id = opponent_gk_stats[list(opponent_gk_stats.keys())[0]]["player_id"]
 
-                sql_shot = "INSERT IGNORE INTO shots_data (match_id, xg, psxg, shooter_id, assister_id, GK_id, off_players, def_players, match_state, player_dif, shot_type) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                sql_shot = "INSERT IGNORE INTO shots_data (match_id, xg, psxg, outcome, shooter_id, assister_id, GK_id, off_players, def_players, match_state, player_dif, shot_type) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
                 params_shot = (match_id,
                                shot_xg,
                                shot_psxg,
+                               1 if outcome == "Goal" else 0,
                                shooter_id,
                                assister_id,
                                GK_id,
@@ -1411,7 +1412,7 @@ class Extract_Data:
             dtrain = xgb.DMatrix(X, label=y)
             
             params = dict(
-                objective        = "reg:logistic",
+                objective        = "reg:squarederror",
                 eval_metric      = "rmse",
                 tree_method      = "hist",
                 max_depth        = 6,
@@ -1457,17 +1458,17 @@ class Extract_Data:
 
         booster, rsq_features = train_refined_sq_model()
 
-        non_updated_matches_df = DB.select("SELECT * FROM shots_data WHERE total_PLSQA IS NULL OR RSQ IS NULL;")
+        non_updated_shots_df = DB.select("SELECT * FROM shots_data WHERE total_PLSQA IS NULL OR RSQ IS NULL;")
 
-        non_updated_matches_df['off_players'] = non_updated_matches_df['off_players'].apply(
+        non_updated_shots_df['off_players'] = non_updated_shots_df['off_players'].apply(
             lambda v: v if isinstance(v, list) else ast.literal_eval(v)
         )
-        non_updated_matches_df['def_players'] = non_updated_matches_df['def_players'].apply(
+        non_updated_shots_df['def_players'] = non_updated_shots_df['def_players'].apply(
             lambda v: v if isinstance(v, list) else ast.literal_eval(v)
         )
 
         players_needed = set()
-        for _, row in non_updated_matches_df.iterrows():
+        for _, row in non_updated_shots_df.iterrows():
             players_needed.update(row['off_players'])
             players_needed.update(row['def_players'])
 
@@ -1483,7 +1484,7 @@ class Extract_Data:
         else:
             p_dict = {}
 
-        for _, row in non_updated_matches_df.iterrows():
+        for _, row in non_updated_shots_df.iterrows():
             off_ids = row['off_players']
             def_ids = row['def_players']
             bp = row['shot_type']
@@ -2045,6 +2046,9 @@ class Alg:
         self.rsq_booster, self.rsq_columns = self.train_refined_sq_model()
         self._rsq_pred_cache = {}
         self._rsq_col_idx    = {c: i for i, c in enumerate(self.rsq_columns)}
+        self.psxg_booster, self.psxg_columns = self.train_post_shot_goal_model()
+        self.psxg_pred_cache = {}
+        self.psg_col_idx     = {c: i for i, c in enumerate(self.psxg_columns)}
 
         self.home_starters, self.home_subs = self.divide_matched_players(self.home_players_data)
         self.away_starters, self.away_subs = self.divide_matched_players(self.away_players_data)
@@ -2060,7 +2064,7 @@ class Alg:
         elif self.match_initial_time >= 60:
             range_value = 20000
         elif self.match_initial_time >= 45:
-            range_value = 30000
+            range_value = 20000
         elif self.match_initial_time >= 30:
             range_value = 40000
         elif self.match_initial_time >= 15:
@@ -2092,10 +2096,12 @@ class Alg:
 
             home_xg_cache = self.build_xg_cache(home_active_players, self.home_players_data,
                                                  home_plhsq, home_plfsq,
-                                                 home_status,  0)
+                                                 home_status,  0,
+                                                 True, self.away_players_data)
             away_xg_cache = self.build_xg_cache(away_active_players, self.away_players_data,
                                                  away_plhsq, away_plfsq,
-                                                 away_status, 0)
+                                                 away_status, 0,
+                                                 False, self.home_players_data)
 
             context_ras_change = False
             for minute in range(self.match_initial_time, 91):
@@ -2123,14 +2129,16 @@ class Alg:
                     away_context_ras = max(0, away_ras) * away_mult
 
                     home_xg_cache = self.build_xg_cache(home_active_players, self.home_players_data,
-                                                         home_plhsq, home_plfsq,
-                                                         home_status,  0)
+                                                        home_plhsq, home_plfsq,
+                                                        home_status,  0,
+                                                        True, self.away_players_data)
                     away_xg_cache = self.build_xg_cache(away_active_players, self.away_players_data,
-                                                         away_plhsq, away_plfsq,
-                                                         away_status, 0)
+                                                        away_plhsq, away_plfsq,
+                                                        away_status, 0,
+                                                        False, self.home_players_data)
 
-                home_shots = min(np.random.poisson(home_context_ras), 1) # CHANGE THIS TO NO MIN JUST THE RANDOM POISSON
-                away_shots = min(np.random.poisson(away_context_ras), 1) # CHANGE THIS TO NO MIN JUST THE RANDOM POISSON
+                home_shots = min(np.random.poisson(home_context_ras), 0.5) # CHANGE THIS TO NO MIN JUST THE RANDOM POISSON
+                away_shots = min(np.random.poisson(away_context_ras), 0.5) # CHANGE THIS TO NO MIN JUST THE RANDOM POISSON
 
                 if home_shots:
                     for _ in range(home_shots):
@@ -2138,8 +2146,8 @@ class Alg:
                         shooter = self.get_shooter(home_players_prob, body_part)
                         assister = self.get_assister(home_players_prob, body_part, shooter)
                         xg_prob   = home_xg_cache.get((shooter, assister, body_part), 0.0)
-                        outcome = xg_prob
-                        home_goals_scored = np.random.poisson(xg_prob)
+                        outcome = max(xg_prob, 0)
+                        home_goals_scored = np.random.poisson(outcome)
                         home_goals += home_goals_scored
                         if home_goals_scored > 0:
                             context_ras_change = True
@@ -2151,8 +2159,8 @@ class Alg:
                         shooter = self.get_shooter(away_players_prob, body_part)
                         assister = self.get_assister(away_players_prob, body_part, shooter)
                         xg_prob   = away_xg_cache.get((shooter, assister, body_part), 0.0)
-                        outcome = xg_prob
-                        away_goals_scored = np.random.poisson(xg_prob)
+                        outcome = max(xg_prob, 0)
+                        away_goals_scored = np.random.poisson(outcome)
                         away_goals += away_goals_scored
                         if away_goals_scored > 0:
                             context_ras_change = True
@@ -2374,7 +2382,7 @@ class Alg:
         y     = df['xg'].astype(float)
 
         dtrain = xgb.DMatrix(X, label=y)
-        params = dict(objective='reg:logistic', eval_metric='rmse',
+        params = dict(objective='reg:squarederror', eval_metric='rmse',
                       tree_method='hist', max_depth=6, eta=0.05,
                       subsample=0.8, colsample_bytree=0.8, min_child_weight=2)
         booster = xgb.train(params, dtrain, num_boost_round=400)
@@ -2400,55 +2408,133 @@ class Alg:
 
         return self.rsq_booster.inplace_predict(X)
 
-    def build_xg_cache(self,
-                       active_ids      : list[int],
-                       players_df      ,
-                       plsqa_head      : float,
-                       plsqa_foot      : float,
-                       match_state_num : int,
-                       player_dif_num  : int) -> dict:
+    def train_post_shot_goal_model(self) -> tuple[xgb.Booster, list[str]]:
+        sql = """
+            SELECT
+                sd.rsq,
+                sd.shooter_ability,
+                sd.gk_ability,
+                sd.shooter_team_is_home  AS team_is_home,
+                CASE WHEN sd.shooter_team_is_home = 1
+                     THEN mi.home_elevation_dif      ELSE mi.away_elevation_dif END  AS team_elevation_dif,
+                CASE WHEN sd.shooter_team_is_home = 1
+                     THEN 0                          ELSE mi.away_travel       END  AS team_travel,
+                CASE WHEN sd.shooter_team_is_home = 1
+                     THEN mi.home_rest_days          ELSE mi.away_rest_days    END  AS team_rest_days,
+                mi.temperature_c,
+                mi.is_raining,
+                mi.date,
+                sd.is_goal AS goal
+            FROM   shots_data sd
+            JOIN   match_info mi ON mi.match_id = sd.match_id
+            WHERE  mi.league_id = %s
+        """
+        df = DB.select(sql, (self.league_id,))
+        df['date'] = pd.to_datetime(df['date'])
+        df['match_time'] = df['date'].apply(lambda t: 'aft' if 9 <= t.hour < 14 else ('evening' if 14 <= t.hour < 19 else 'night'))
 
-        def _safe_sq(src, pid):
+        cat_cols  = ['match_time']
+        bool_cols = ['team_is_home', 'is_raining']
+        num_cols  = ['rsq', 'shooter_ability', 'gk_ability', 'team_elevation_dif', 'team_travel', 'team_rest_days', 'temperature_c']
+
+        df[num_cols]   = df[num_cols].apply(pd.to_numeric, errors='coerce')
+        df[bool_cols]  = df[bool_cols].astype(int)
+        X_cat          = pd.get_dummies(df[cat_cols], prefix=cat_cols, dummy_na=True)
+        X              = pd.concat([df[num_cols + bool_cols], X_cat], axis=1).astype(float)
+        y              = df['goal'].astype(int)
+
+        dtrain = xgb.DMatrix(X, label=y)
+        params = dict(objective='binary:logistic',
+                      eval_metric='logloss',
+                      tree_method='hist',
+                      max_depth=5,
+                      eta=0.05,
+                      subsample=0.9,
+                      colsample_bytree=0.9,
+                      min_child_weight=2)
+        booster = xgb.train(params, dtrain, num_boost_round=300)
+        return booster, X.columns.tolist()
+
+    def _predict_post_shot_bulk(self, df: pd.DataFrame) -> np.ndarray:
+        cat_cols  = ['match_time']
+        bool_cols = ['team_is_home', 'is_raining']
+        num_cols  = ['rsq', 'shooter_ability', 'gk_ability', 'team_elevation_dif', 'team_travel', 'team_rest_days', 'temperature_c']
+
+        n = len(df)
+        X = np.zeros((n, len(self.psxg_columns)), dtype=np.float32)
+
+        for col in num_cols:
+            X[:, self._psg_col_idx[col]] = df[col].astype(float).to_numpy()
+        for col in bool_cols:
+            X[:, self._psg_col_idx[col]] = df[col].astype(int).to_numpy()
+        for col in cat_cols:
+            pref = f'{col}_'
+            for i, v in enumerate(df[col].astype(str)):
+                idx = self._psg_col_idx.get(f'{pref}{v}')
+                if idx is not None:
+                    X[i, idx] = 1.0
+        return self.psxg_booster.inplace_predict(X)
+
+    def build_psxg_cache(self,
+                         active_ids      : list[int],
+                         players_df      ,
+                         plsqa_head      : float,
+                         plsqa_foot      : float,
+                         match_state_num : int,
+                         player_dif_num  : int,
+                         is_home         : bool,
+                         opp_players_df  ) -> dict:
+
+        rsq_cache = self.build_xg_cache(active_ids, players_df,
+                                        plsqa_head, plsqa_foot,
+                                        match_state_num, player_dif_num)
+
+        def _safe(src, pid, col):
             if isinstance(src, pd.DataFrame):
-                if 'sq' in src.columns and pid in src.index:
-                    return float(src.at[pid, 'sq'])
-                return 0.0
+                return float(src.at[pid, col]) if col in src.columns and pid in src.index else 0.0
             rec = src.get(pid, {})
-            if isinstance(rec, dict):
-                return float(rec.get('sq', 0.0))
-            try:
-                return float(rec)
-            except Exception:
-                return 0.0
+            return float(rec.get(col, 0.0)) if isinstance(rec, dict) else 0.0
 
-        state = 'Trailing' if match_state_num < 0 else 'Leading' if match_state_num > 0 else 'Level'
-        pdif  = 'Neg'      if player_dif_num  < 0 else 'Pos'     if player_dif_num  > 0 else 'Neu'
+        if isinstance(opp_players_df, pd.DataFrame):
+            gk_rows = opp_players_df[opp_players_df.get('position') == 'GK']
+            gk_ability = float(gk_rows['gk_ability'].iloc[0]) if not gk_rows.empty else 0.0
+        else:
+            gk_ability = 0.0
 
+        team_elev   = self.home_elevation_dif if is_home else self.away_elevation_dif
+        team_travel = 0.0 if is_home else self.away_travel
+        team_rest   = self.home_rest_days if is_home else self.away_rest_days
+        match_time  = 'evening'
+
+        cache_keys, new_rows, out = [], [], {}
         assist_pool = [None] + active_ids
-        cache_keys, new_rows = [], []
-        out = {}
 
         for shooter in active_ids:
-            shooter_sq = _safe_sq(players_df, shooter)
+            shooter_ability = _safe(players_df, shooter, 'shooter_ability')
             for assister in assist_pool:
-                assister_sq = 0.0 if assister is None else _safe_sq(players_df, assister)
-                for body, plsqa in (('Head', plsqa_head), ('Foot', plsqa_foot)):
-                    key = (round(plsqa, 4), shooter_sq, assister_sq, state, pdif)
+                for body, rsq in (( 'Head', rsq_cache.get((shooter, assister, 'Head'), 0.0)),
+                                  ( 'Foot', rsq_cache.get((shooter, assister, 'Foot'), 0.0))):
+                    key = (round(rsq, 4), shooter_ability, gk_ability, is_home)
                     cache_keys.append((shooter, assister, body, key))
-                    if key not in self._rsq_pred_cache:
-                        new_rows.append(dict(total_plsqa=plsqa,
-                                             shooter_sq=shooter_sq,
-                                             assister_sq=assister_sq,
-                                             match_state=state,
-                                             player_dif=pdif))
+                    if key not in self.psxg_pred_cache:
+                        new_rows.append(dict(rsq=rsq,
+                                             shooter_ability=shooter_ability,
+                                             gk_ability=gk_ability,
+                                             team_is_home=int(is_home),
+                                             team_elevation_dif=team_elev,
+                                             team_travel=team_travel,
+                                             team_rest_days=team_rest,
+                                             temperature_c=self.temperature,
+                                             is_raining=int(self.is_raining),
+                                             match_time=match_time))
 
         if new_rows:
-            preds = self._predict_refined_sq_bulk(pd.DataFrame(new_rows))
-            for k, p in zip([ck[-1] for ck in cache_keys if ck[-1] not in self._rsq_pred_cache], preds):
-                self._rsq_pred_cache[k] = float(p)
+            preds = self._predict_post_shot_bulk(pd.DataFrame(new_rows))
+            for k, p in zip([ck[-1] for ck in cache_keys if ck[-1] not in self.psxg_pred_cache], preds):
+                self.psxg_pred_cache[k] = float(p)
 
         for shooter, assister, body, k in cache_keys:
-            out[(shooter, assister, body)] = self._rsq_pred_cache[k]
+            out[(shooter, assister, body)] = self.psxg_pred_cache[k]
 
         return out
 

@@ -76,6 +76,7 @@ Aggregate the ridge data per shot and build a model to learn nonlinear, hierarch
 - Assister SQ
 - Match_state
 - Player_dif
+- Target: xG
 
 **Output**: Refined shot quality. 
 
@@ -92,6 +93,7 @@ Aggregate the ridge data per shot and build a model to learn nonlinear, hierarch
 | Temperature_C       | float         | Temperature (°C) at kickoff                                      |
 | Is_Raining          | bool          | 1 = yes, 0 = no                                                  |
 | Match_time          | categorical   | (aft, evening, night)                                            |
+- Target: Outcome of the Shot
 
 **Output**: Refined post shot expected goal.
 
@@ -303,9 +305,11 @@ CREATE TABLE shots_data (
     match_id INT,
     xg FLOAT NOT NULL,
     psxg FLOAT NOT NULL,
+    outcome BOOLEAN,
     shot_type ENUM('head', 'foot') NOT NULL,
     shooter_id VARCHAR(50) NOT NULL,
     assister_id VARCHAR(50) NOT NULL,
+    team_id INT NOT NULL,
     GK_id VARCHAR(50) NOT NULL,
     off_players JSON NOT NULL,
     def_players JSON NOT NULL,

@@ -1941,7 +1941,6 @@ class MainWindow(QMainWindow):
         self.ta_dialog = ta_dialog
         ta_dialog.show()
 
-    # Function called when the Arbitrage button is pressed
     def open_arbitrage(self):
         print("Arbitrage opened.")
 
