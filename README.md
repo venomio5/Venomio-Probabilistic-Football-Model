@@ -347,7 +347,7 @@ CREATE TABLE schedule_data (
 ##### simulation_data
 ```
 CREATE TABLE simulation_data (
-    sim_id INT AUTO_INCREMENT PRIMARY KEY,
+    sim_id INT NOT NULL,
     schedule_id INT NOT NULL,
     minute INT NOT NULL,
     shooter VARCHAR(50) NOT NULL,

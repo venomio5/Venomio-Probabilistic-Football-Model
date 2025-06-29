@@ -9,6 +9,7 @@ from functools import partial
 import core
 import warnings 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+import pandas as pd
 
 class WorkerSignals(QObject):
     finished = pyqtSignal() 
@@ -615,15 +616,6 @@ class MainWindow(QMainWindow):
         home_goals_layout.addWidget(home_goals_label)
         home_goals_layout.addWidget(home_goals_spin)
 
-        home_goal_min_label = QLabel("Home Goal Minute:")
-        home_goal_min_label.setStyleSheet("color: white;")
-        home_goal_min_spin = QSpinBox()
-        home_goal_min_spin.setRange(0, 89)
-        home_goal_min_spin.setValue(0)
-        home_goal_min_spin.valueChanged.connect(lambda _: update_odds())
-        home_goals_layout.addWidget(home_goal_min_label)
-        home_goals_layout.addWidget(home_goal_min_spin)
-
         away_goals_layout = QVBoxLayout()
         away_goals_label = QLabel(f"{match['away_team']} Goals:")
         away_goals_label.setStyleSheet("color: white;")
@@ -633,15 +625,6 @@ class MainWindow(QMainWindow):
         away_goals_spin.valueChanged.connect(lambda _: update_odds())
         away_goals_layout.addWidget(away_goals_label)
         away_goals_layout.addWidget(away_goals_spin)
-
-        away_goal_min_label = QLabel("Away Goal Minute:")
-        away_goal_min_label.setStyleSheet("color: white;")
-        away_goal_min_spin = QSpinBox()
-        away_goal_min_spin.setRange(0, 89)
-        away_goal_min_spin.setValue(0)
-        away_goal_min_spin.valueChanged.connect(lambda _: update_odds())
-        away_goals_layout.addWidget(away_goal_min_label)
-        away_goals_layout.addWidget(away_goal_min_spin)
 
         goals_frame.addLayout(home_goals_layout)
         goals_frame.addLayout(away_goals_layout)
@@ -765,45 +748,90 @@ class MainWindow(QMainWindow):
 
         odds_layout.addWidget(team_totals_group)
 
+        def get_aggregated_goals(shots_df, home_team_id, away_team_id):
+            if shots_df is None or shots_df.empty:
+                return pd.DataFrame(columns=['sim_id', 'minute', 'home_goals', 'away_goals'])
+            
+            df = shots_df.copy()
+            
+            df = df.sort_values(['sim_id', 'minute']).reset_index(drop=True)
+            
+            df['squad']   = pd.to_numeric(df['squad'],   errors='coerce').astype('Int64')
+            df['outcome'] = pd.to_numeric(df['outcome'], errors='coerce').fillna(0).astype(int)
+            
+            df['is_home']   = df['squad'] == int(home_team_id)
+            df['home_goal'] = ((df['outcome'] == 1) &  df['is_home']).astype(int)
+            df['away_goal'] = ((df['outcome'] == 1) & ~df['is_home']).astype(int)
+            
+            df['home_goal_cum'] = df.groupby('sim_id')['home_goal'].cumsum()
+            df['away_goal_cum'] = df.groupby('sim_id')['away_goal'].cumsum()
+            
+            agg = (
+                df.groupby(['sim_id', 'minute'])
+                .agg(home_goals=('home_goal_cum', 'last'),
+                    away_goals=('away_goal_cum', 'last'))
+                .reset_index()
+            )
+            
+            max_minute = int(df['minute'].max())
+            full_index = pd.MultiIndex.from_product(
+                [agg['sim_id'].unique(), range(max_minute + 1)],
+                names=['sim_id', 'minute']
+            )
+            
+            agg = (
+                agg.set_index(['sim_id', 'minute'])
+                .reindex(full_index)
+                .groupby(level=0)
+                .ffill()
+                .fillna(0)
+                .reset_index()
+            )
+            
+            return agg
+
         simulation_data = None
+        aggregated_df   = pd.DataFrame() 
         def load_simulation_data():
-            nonlocal simulation_data
+            nonlocal simulation_data, aggregated_df
             schedule_id = int(match['schedule_id']) 
-            sql_query = """SELECT sim_id, minute, home_goals, away_goals 
-                        FROM simulation_data 
-                        WHERE schedule_id = %s"""
+            sql_query = "SELECT * FROM simulation_data WHERE schedule_id = %s"
             simulation_data = self.vpfm_db.select(sql_query, (schedule_id,))
-        #load_simulation_data()
+
+            aggregated_df = get_aggregated_goals(
+                simulation_data,
+                int(match['home_team_id']),
+                int(match['away_team_id'])
+            )
+        load_simulation_data()
 
         def update_odds():
-            if simulation_data is None or simulation_data.empty:
+            nonlocal aggregated_df
+            if aggregated_df.empty:
                 return
             
+            aggregated_df = get_aggregated_goals(
+                simulation_data,
+                int(match['home_team_id']),
+                int(match['away_team_id'])
+            )         
+
             current_minute = current_minute_spin.value()
             max_minute = max_minute_spin.value()
             home_goals = home_goals_spin.value()
             away_goals = away_goals_spin.value()
-            home_goal_min = home_goal_min_spin.value()
-            away_goal_min = away_goal_min_spin.value()
 
-            momentum_flag = 0
-            if home_goal_min and current_minute - home_goal_min <= 10:
-                momentum_flag = 1
-            if away_goal_min and current_minute - away_goal_min <= 10 and (momentum_flag == 0 or away_goal_min > home_goal_min):
-                momentum_flag = 2
-
-            filtered_data = simulation_data[
-                (simulation_data['minute'] == current_minute) & 
-                (simulation_data['home_goals'] == home_goals) & 
-                (simulation_data['away_goals'] == away_goals) &
-                ((momentum_flag == 0) | (simulation_data['momentum'] == momentum_flag))
+            filtered_data = aggregated_df[
+                (aggregated_df['minute'] == current_minute) & 
+                (aggregated_df['home_goals'] == home_goals) & 
+                (aggregated_df['away_goals'] == away_goals)
             ]
 
             relevant_sim_ids = filtered_data['sim_id'].unique()
 
-            final_data = simulation_data[
-                (simulation_data['minute'] == max_minute) &
-                (simulation_data['sim_id'].isin(relevant_sim_ids))
+            final_data = aggregated_df[
+                (aggregated_df['minute'] == max_minute) &
+                (aggregated_df['sim_id'].isin(relevant_sim_ids))
             ]
 
             total_final_data = len(final_data)
@@ -913,7 +941,7 @@ class MainWindow(QMainWindow):
         home_totals_dropdown.currentIndexChanged.connect(update_odds)
         away_totals_dropdown.currentIndexChanged.connect(update_odds)
 
-        #update_odds()
+        update_odds()
 
         # ------------------- Simulator -------------------
         simulator_tab = QWidget()

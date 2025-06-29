@@ -2132,7 +2132,7 @@ class Alg:
         elif self.match_initial_time >= 15:
             range_value = 40000
         elif self.match_initial_time < 15:
-            range_value = 1 # 50000
+            range_value = 500
 
         shot_rows = []
         card_rows = [] 
