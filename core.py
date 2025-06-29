@@ -322,6 +322,21 @@ def match_players(team_id, raw_widget):
 
     return matched_starters, matched_benchers
 
+def get_referee_name(schedule_id):
+    sql_query = "SELECT referee_name FROM schedule_data WHERE schedule_id = %s"
+    result = DB.select(sql_query, (schedule_id,))
+    return result.iloc[0]["referee_name"] if not result.empty else ""
+
+def send_referee_name_to_db(referee_raw_name, schedule_id):
+    sql_get_names = "SELECT DISTINCT referee_name FROM referee_data"
+    referee_rows = DB.select(sql_get_names)
+    all_names = referee_rows["referee_name"].dropna().tolist()
+
+    best_match, _ = process.extractOne(referee_raw_name, all_names, scorer=fuzz.WRatio)
+
+    sql = "UPDATE schedule_data SET referee_name = %s WHERE schedule_id = %s"
+    DB.execute(sql, (best_match, schedule_id))
+
 def send_lineup_to_db(players_list, schedule_id, team):
     column_name = f"{team}_players"
     sql_query = f"UPDATE schedule_data SET {column_name} = %s WHERE schedule_id = %s"
@@ -1228,13 +1243,16 @@ class Extract_Data:
 
                 GK_id = opponent_gk_stats[list(opponent_gk_stats.keys())[0]]["player_id"]
 
-                sql_shot = "INSERT IGNORE INTO shots_data (match_id, xg, psxg, outcome, shooter_id, assister_id, GK_id, off_players, def_players, match_state, player_dif, shot_type) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                team_id = row['home_team_id'] if home_team in row['Squad'] else row['away_team_id']
+
+                sql_shot = "INSERT IGNORE INTO shots_data (match_id, xg, psxg, outcome, shooter_id, assister_id, team_id, GK_id, off_players, def_players, match_state, player_dif, shot_type) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
                 params_shot = (match_id,
                                shot_xg,
                                shot_psxg,
                                1 if outcome == "Goal" else 0,
                                shooter_id,
                                assister_id,
+                               team_id,
                                GK_id,
                                json.dumps(off_players, ensure_ascii=False),
                                json.dumps(def_players, ensure_ascii=False),
@@ -1490,6 +1508,7 @@ class Extract_Data:
             bp = row['shot_type']
             shooter_id = row['shooter_id']
             assister_id = row['assister_id']
+            gk_id = row['GK_id']
 
             if bp == "head":
                 offense = sum(p_dict.get(pid, {}).get('off_hxg_coef', 0) for pid in off_ids)
@@ -1523,14 +1542,8 @@ class Extract_Data:
                 denominator = assister_data.get('key_passes', 1)
                 assister_sq = numerator / denominator if denominator else 0.0
 
-            gk_A = None
-            for pid in def_ids:
-                gk_data = p_dict.get(pid, {})
-                gk_psxg = gk_data.get('gk_psxg')
-                gk_ga = gk_data.get('gk_ga')
-                if gk_psxg is not None and gk_ga is not None and gk_psxg != 0:
-                    gk_A = 1.0 - (gk_ga / gk_psxg)
-                    break
+            gk_data = p_dict.get(gk_id, {})
+            gk_A = 1.0 - (gk_data['gk_ga'] / gk_data['gk_psxg'])
 
             rsq = predict_refined_sq(
                 booster,
@@ -1624,11 +1637,14 @@ class Process_Data:
         """
 
         DB.execute("TRUNCATE TABLE players_data;")
+        DB.execute("TRUNCATE TABLE referee_data;")
 
         self.insert_players_basics()
         self.update_players_shots_coef()
         self.update_players_totals()
         self.update_players_xg_coef()
+        self.update_match_info_referee_totals()
+        self.update_referee_data_totals()
 
     def insert_players_basics(self):
         """
@@ -2019,14 +2035,53 @@ class Process_Data:
                     
                     DB.execute(update_coef_query, (off_coef, def_coef, player))
 
+    def update_match_info_referee_totals(self):
+        sql = """
+        UPDATE match_info AS mi
+        JOIN (
+            SELECT  match_id,
+                    COALESCE(SUM(fouls_committed),0) AS total_fouls,
+                    COALESCE(SUM(yellow_cards),0)    AS yellow_cards,
+                    COALESCE(SUM(red_cards),0)       AS red_cards
+            FROM    match_breakdown
+            GROUP BY match_id
+        ) AS mb ON mb.match_id = mi.match_id
+        SET mi.total_fouls  = mb.total_fouls,
+            mi.yellow_cards = mb.yellow_cards,
+            mi.red_cards    = mb.red_cards
+        WHERE mi.total_fouls = 0;
+        """
+        DB.execute(sql)
+
+    def update_referee_data_totals(self):
+        sql = """
+        INSERT INTO referee_data
+                (referee_name, fouls, yellow_cards, red_cards, matches_played)
+
+        SELECT  referee_name,
+                SUM(COALESCE(total_fouls ,0))  AS fouls,
+                SUM(COALESCE(yellow_cards,0))  AS yellow_cards,
+                SUM(COALESCE(red_cards   ,0))  AS red_cards,
+                COUNT(*)                       AS matches_played
+        FROM    match_info
+        GROUP BY referee_name
+
+        ON DUPLICATE KEY UPDATE
+            fouls          = VALUES(fouls),
+            yellow_cards   = VALUES(yellow_cards),
+            red_cards      = VALUES(red_cards),
+            matches_played = VALUES(matches_played);
+        """
+        DB.execute(sql)
+
 # ------------------------------ Monte Carlo ------------------------------
 class Alg:
-    def __init__(self, schedule_id, home_team_id, away_team_id, home_players_data, away_players_data, league_id, match_time, home_elevation_dif, away_elevation_dif, away_travel, home_rest_days, away_rest_days, temperature, is_raining, home_initial_goals, away_initial_goals, match_initial_time, home_n_subs_avail, away_n_subs_avail):
+    def __init__(self, schedule_id, home_team_id, away_team_id, home_players_data, away_players_data, league_id, match_time, home_elevation_dif, away_elevation_dif, away_travel, home_rest_days, away_rest_days, temperature, is_raining, home_initial_goals, away_initial_goals, match_initial_time, home_n_subs_avail, away_n_subs_avail, referee_name):
         self.schedule_id = schedule_id
         self.home_team_id = home_team_id
         self.away_team_id = away_team_id
-        self.home_players_data = home_players_data
-        self.away_players_data = away_players_data
+        self.home_players_init_data = home_players_data
+        self.away_players_init_data = away_players_data
         self.league_id = league_id
         self.match_time = match_time
         self.home_elevation_dif = home_elevation_dif
@@ -2041,17 +2096,20 @@ class Alg:
         self.match_initial_time = match_initial_time
         self.home_n_subs_avail = home_n_subs_avail
         self.away_n_subs_avail = away_n_subs_avail
+        self.referee_name = referee_name
         self.ras_booster, self.ras_cr_columns = self.train_context_ras_model()
         self.ctx_mult_home, self.ctx_mult_away = self.precompute_ctx_multipliers()
         self.rsq_booster, self.rsq_columns = self.train_refined_sq_model()
-        self._rsq_pred_cache = {}
-        self._rsq_col_idx    = {c: i for i, c in enumerate(self.rsq_columns)}
+        self.rsq_pred_cache = {}
+        self.rsq_col_idx    = {c: i for i, c in enumerate(self.rsq_columns)}
         self.psxg_booster, self.psxg_columns = self.train_post_shot_goal_model()
         self.psxg_pred_cache = {}
         self.psg_col_idx     = {c: i for i, c in enumerate(self.psxg_columns)}
+        self.ref_stats = self.get_referee_stats()
+        self.precompute_card_sim_data()
 
-        self.home_starters, self.home_subs = self.divide_matched_players(self.home_players_data)
-        self.away_starters, self.away_subs = self.divide_matched_players(self.away_players_data)
+        self.home_starters, self.home_subs = self.divide_matched_players(self.home_players_init_data)
+        self.away_starters, self.away_subs = self.divide_matched_players(self.away_players_init_data)
 
         self.home_players_data = self.get_players_data(self.home_team_id, self.home_starters, self.home_subs)
         self.away_players_data = self.get_players_data(self.away_team_id, self.away_starters, self.away_subs)
@@ -2070,9 +2128,10 @@ class Alg:
         elif self.match_initial_time >= 15:
             range_value = 50000
         elif self.match_initial_time < 15:
-            range_value = 1
+            range_value = 100000
 
         shot_rows = []
+        card_rows = [] 
 
         for i in tqdm(range(range_value)):
             home_goals = self.home_initial_goals
@@ -2094,14 +2153,24 @@ class Alg:
             home_context_ras = max(0, home_ras) * home_mult
             away_context_ras = max(0, away_ras) * away_mult
 
-            home_xg_cache = self.build_xg_cache(home_active_players, self.home_players_data,
+            home_psxg_cache = self.build_psxg_cache(home_active_players, self.home_players_data,
                                                  home_plhsq, home_plfsq,
                                                  home_status,  0,
                                                  True, self.away_players_data)
-            away_xg_cache = self.build_xg_cache(away_active_players, self.away_players_data,
+            away_psxg_cache = self.build_psxg_cache(away_active_players, self.away_players_data,
                                                  away_plhsq, away_plfsq,
                                                  away_status, 0,
                                                  False, self.home_players_data)
+            
+            home_foul_p = self.get_team_foul_prob(home_active_players,
+                                                  away_active_players,
+                                                  home_status,
+                                                  is_home=True)
+
+            away_foul_p = self.get_team_foul_prob(away_active_players,
+                                                  home_active_players,
+                                                  away_status,
+                                                  is_home=False)
 
             context_ras_change = False
             for minute in range(self.match_initial_time, 91):
@@ -2128,28 +2197,37 @@ class Alg:
                     home_context_ras = max(0, home_ras) * home_mult
                     away_context_ras = max(0, away_ras) * away_mult
 
-                    home_xg_cache = self.build_xg_cache(home_active_players, self.home_players_data,
+                    home_psxg_cache = self.build_psxg_cache(home_active_players, self.home_players_data,
                                                         home_plhsq, home_plfsq,
                                                         home_status,  0,
                                                         True, self.away_players_data)
-                    away_xg_cache = self.build_xg_cache(away_active_players, self.away_players_data,
+                    away_psxg_cache = self.build_psxg_cache(away_active_players, self.away_players_data,
                                                         away_plhsq, away_plfsq,
                                                         away_status, 0,
                                                         False, self.home_players_data)
+                    
+                    home_foul_p = self.get_team_foul_prob(home_active_players,
+                                                          away_active_players,
+                                                          home_status,
+                                                          is_home=True)
 
-                home_shots = min(np.random.poisson(home_context_ras), 0.5) # CHANGE THIS TO NO MIN JUST THE RANDOM POISSON
-                away_shots = min(np.random.poisson(away_context_ras), 0.5) # CHANGE THIS TO NO MIN JUST THE RANDOM POISSON
+                    away_foul_p = self.get_team_foul_prob(away_active_players,
+                                                          home_active_players,
+                                                          away_status,
+                                                          is_home=False)
+
+                home_shots = min(np.random.poisson(home_context_ras), 1) # CHANGE THIS TO NO MIN JUST THE RANDOM POISSON
+                away_shots = min(np.random.poisson(away_context_ras), 1) # CHANGE THIS TO NO MIN JUST THE RANDOM POISSON
 
                 if home_shots:
                     for _ in range(home_shots):
                         body_part = self.get_shot_type(home_rahs, home_rafs)
                         shooter = self.get_shooter(home_players_prob, body_part)
                         assister = self.get_assister(home_players_prob, body_part, shooter)
-                        xg_prob   = home_xg_cache.get((shooter, assister, body_part), 0.0)
-                        outcome = max(xg_prob, 0)
-                        home_goals_scored = np.random.poisson(outcome)
-                        home_goals += home_goals_scored
-                        if home_goals_scored > 0:
+                        xg_prob   = home_psxg_cache.get((shooter, assister, body_part), 0.0)
+                        outcome = int(np.random.rand() < xg_prob)
+                        if outcome == 1:
+                            home_goals += 1
                             context_ras_change = True
                         shot_rows.append((i, minute, shooter, home_team_id, outcome, body_part, assister))
 
@@ -2158,16 +2236,50 @@ class Alg:
                         body_part = self.get_shot_type(away_rahs, away_rafs)
                         shooter = self.get_shooter(away_players_prob, body_part)
                         assister = self.get_assister(away_players_prob, body_part, shooter)
-                        xg_prob   = away_xg_cache.get((shooter, assister, body_part), 0.0)
-                        outcome = max(xg_prob, 0)
-                        away_goals_scored = np.random.poisson(outcome)
-                        away_goals += away_goals_scored
-                        if away_goals_scored > 0:
+                        xg_prob   = away_psxg_cache.get((shooter, assister, body_part), 0.0)
+                        outcome = int(np.random.rand() < xg_prob) 
+                        if outcome == 1:
+                            away_goals += 1
                             context_ras_change = True
                         shot_rows.append((i, minute, shooter, away_team_id, outcome, body_part, assister))  
+
+
+                home_fouls = np.random.poisson(home_foul_p)
+                for _ in range(home_fouls):
+                    fouler     = self.choose_fouler(home_active_players, self.home_players_data)
+                    card_type  = self.determine_card(fouler, self.home_players_data)
+                    if card_type != 'NONE':
+                        card_rows.append((i, minute, fouler, self.home_team_id, card_type))
+                    if card_type == 'YC':
+                        self.home_players_data[fouler]['sim_yellow'] += 1
+                        if self.home_players_data[fouler]['sim_yellow'] >= 2:
+                            home_active_players.remove(fouler)
+                            context_ras_change = True
+                    elif card_type == 'RC':
+                        self.home_players_data[fouler]['sim_red'] = True
+                        if fouler in home_active_players:
+                            home_active_players.remove(fouler)
+                            context_ras_change = True
+
+                away_fouls = np.random.poisson(away_foul_p)
+                for _ in range(away_fouls):
+                    fouler     = self.choose_fouler(away_active_players, self.away_players_data)
+                    card_type  = self.determine_card(fouler, self.away_players_data)
+                    if card_type != 'NONE':
+                        card_rows.append((i, minute, fouler, self.away_team_id, card_type))
+                    if card_type == 'YC':
+                        self.away_players_data[fouler]['sim_yellow'] += 1
+                        if self.away_players_data[fouler]['sim_yellow'] >= 2:
+                            away_active_players.remove(fouler)
+                            context_ras_change = True
+                    elif card_type == 'RC':
+                        self.away_players_data[fouler]['sim_red'] = True
+                        if fouler in away_active_players:
+                            away_active_players.remove(fouler)
+                            context_ras_change = True
                 
-            for row in shot_rows:
-                print(row)
+            # for row in shot_rows:
+            #     print(row)
 
         #self.insert_sim_data(all_rows, self.match_id)
 
@@ -2396,13 +2508,13 @@ class Alg:
         X = np.zeros((n, len(self.rsq_columns)), dtype=np.float32)
 
         for col in num_cols:
-            X[:, self._rsq_col_idx[col]] = df[col].astype(float).to_numpy()
+            X[:, self.rsq_col_idx[col]] = df[col].astype(float).to_numpy()
 
         for col in cat_cols:
             pref = f'{col}_'
             vals = df[col].astype(str)
             for i, v in enumerate(vals):
-                idx = self._rsq_col_idx.get(f'{pref}{v}')
+                idx = self.rsq_col_idx.get(f'{pref}{v}')
                 if idx is not None:
                     X[i, idx] = 1.0
 
@@ -2411,37 +2523,54 @@ class Alg:
     def train_post_shot_goal_model(self) -> tuple[xgb.Booster, list[str]]:
         sql = """
             SELECT
-                sd.rsq,
-                sd.shooter_ability,
-                sd.gk_ability,
-                sd.shooter_team_is_home  AS team_is_home,
-                CASE WHEN sd.shooter_team_is_home = 1
-                     THEN mi.home_elevation_dif      ELSE mi.away_elevation_dif END  AS team_elevation_dif,
-                CASE WHEN sd.shooter_team_is_home = 1
-                     THEN 0                          ELSE mi.away_travel       END  AS team_travel,
-                CASE WHEN sd.shooter_team_is_home = 1
-                     THEN mi.home_rest_days          ELSE mi.away_rest_days    END  AS team_rest_days,
+                sd.RSQ,
+                sd.shooter_A,
+                sd.GK_A,
+                CASE WHEN sd.team_id = mi.home_team_id
+                     THEN 1 ELSE 0 END                       AS team_is_home,
+                CASE WHEN sd.team_id = mi.home_team_id
+                     THEN mi.home_elevation_dif
+                     ELSE mi.away_elevation_dif END          AS team_elevation_dif,
+                CASE WHEN sd.team_id = mi.home_team_id
+                     THEN 0 ELSE mi.away_travel END          AS team_travel,
+                CASE WHEN sd.team_id = mi.home_team_id
+                     THEN mi.home_rest_days
+                     ELSE mi.away_rest_days END              AS team_rest_days,
                 mi.temperature_c,
                 mi.is_raining,
                 mi.date,
-                sd.is_goal AS goal
+                sd.outcome
             FROM   shots_data sd
             JOIN   match_info mi ON mi.match_id = sd.match_id
-            WHERE  mi.league_id = %s
         """
-        df = DB.select(sql, (self.league_id,))
-        df['date'] = pd.to_datetime(df['date'])
-        df['match_time'] = df['date'].apply(lambda t: 'aft' if 9 <= t.hour < 14 else ('evening' if 14 <= t.hour < 19 else 'night'))
+        df = DB.select(sql)
+
+        df['date']       = pd.to_datetime(df['date'])
+        df['match_time'] = df['date'].apply(lambda t: 'aft' if 9 <= t.hour < 14
+                                                      else ('evening' if 14 <= t.hour < 19
+                                                            else 'night'))
 
         cat_cols  = ['match_time']
         bool_cols = ['team_is_home', 'is_raining']
-        num_cols  = ['rsq', 'shooter_ability', 'gk_ability', 'team_elevation_dif', 'team_travel', 'team_rest_days', 'temperature_c']
+        num_cols  = ['RSQ', 'shooter_A', 'GK_A',
+                     'team_elevation_dif', 'team_travel',
+                     'team_rest_days', 'temperature_c']
 
-        df[num_cols]   = df[num_cols].apply(pd.to_numeric, errors='coerce')
-        df[bool_cols]  = df[bool_cols].astype(int)
-        X_cat          = pd.get_dummies(df[cat_cols], prefix=cat_cols, dummy_na=True)
-        X              = pd.concat([df[num_cols + bool_cols], X_cat], axis=1).astype(float)
-        y              = df['goal'].astype(int)
+        df[num_cols] = df[num_cols].apply(pd.to_numeric, errors='coerce')
+
+        df[bool_cols] = (
+            df[bool_cols]
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0)              # ← ensure no NaNs remain
+            .astype(int)            # ← safe cast to int
+        )
+
+        df.replace([np.inf, -np.inf], np.nan, inplace=True)
+        df = df.dropna(subset=num_cols)
+
+        X_cat = pd.get_dummies(df[cat_cols], prefix=cat_cols, dummy_na=True)
+        X     = pd.concat([df[num_cols + bool_cols], X_cat], axis=1).astype(float)
+        y     = df['outcome'].astype(int)
 
         dtrain = xgb.DMatrix(X, label=y)
         params = dict(objective='binary:logistic',
@@ -2458,22 +2587,74 @@ class Alg:
     def _predict_post_shot_bulk(self, df: pd.DataFrame) -> np.ndarray:
         cat_cols  = ['match_time']
         bool_cols = ['team_is_home', 'is_raining']
-        num_cols  = ['rsq', 'shooter_ability', 'gk_ability', 'team_elevation_dif', 'team_travel', 'team_rest_days', 'temperature_c']
+        num_cols  = ['RSQ', 'shooter_A', 'GK_A',
+                     'team_elevation_dif', 'team_travel',
+                     'team_rest_days', 'temperature_c']
 
         n = len(df)
         X = np.zeros((n, len(self.psxg_columns)), dtype=np.float32)
 
         for col in num_cols:
-            X[:, self._psg_col_idx[col]] = df[col].astype(float).to_numpy()
+            X[:, self.psg_col_idx[col]] = df[col].astype(float).to_numpy()
+
         for col in bool_cols:
-            X[:, self._psg_col_idx[col]] = df[col].astype(int).to_numpy()
+            X[:, self.psg_col_idx[col]] = df[col].astype(int).to_numpy()
+
         for col in cat_cols:
             pref = f'{col}_'
             for i, v in enumerate(df[col].astype(str)):
-                idx = self._psg_col_idx.get(f'{pref}{v}')
+                idx = self.psg_col_idx.get(f'{pref}{v}')
                 if idx is not None:
                     X[i, idx] = 1.0
+
         return self.psxg_booster.inplace_predict(X)
+
+    def build_xg_cache(self,
+                       active_ids      : list[int],
+                       players_df      ,
+                       plsqa_head      : float,
+                       plsqa_foot      : float,
+                       match_state_num : int,
+                       player_dif_num  : int) -> dict:
+
+        def _safe_sq(src, pid):
+            if isinstance(src, pd.DataFrame):
+                for col in ('sq', 'shooter_sq'):
+                    if col in src.columns and pid in src.index:
+                        return float(src.at[pid, col])
+                return 0.0
+            rec = src.get(pid, {})
+            return float(rec.get('sq', 0.0)) if isinstance(rec, dict) else 0.0
+
+        state = 'Trailing' if match_state_num < 0 else 'Leading' if match_state_num > 0 else 'Level'
+        pdif  = 'Neg'      if player_dif_num  < 0 else 'Pos'     if player_dif_num  > 0 else 'Neu'
+
+        assist_pool = [None] + active_ids
+        cache_keys, new_rows, out = [], [], {}
+
+        for shooter in active_ids:
+            shooter_sq = _safe_sq(players_df, shooter)
+            for assister in assist_pool:
+                assister_sq = 0.0 if assister is None else _safe_sq(players_df, assister)
+                for body, plsqa in (('Head', plsqa_head), ('Foot', plsqa_foot)):
+                    key = (round(plsqa, 4), shooter_sq, assister_sq, state, pdif)
+                    cache_keys.append((shooter, assister, body, key))
+                    if key not in self.rsq_pred_cache:
+                        new_rows.append(dict(total_plsqa=plsqa,
+                                             shooter_sq=shooter_sq,
+                                             assister_sq=assister_sq,
+                                             match_state=state,
+                                             player_dif=pdif))
+
+        if new_rows:
+            preds = self._predict_refined_sq_bulk(pd.DataFrame(new_rows))
+            for k, p in zip([ck[-1] for ck in cache_keys if ck[-1] not in self.rsq_pred_cache], preds):
+                self.rsq_pred_cache[k] = float(p)
+
+        for shooter, assister, body, k in cache_keys:
+            out[(shooter, assister, body)] = self.rsq_pred_cache[k]
+
+        return out
 
     def build_psxg_cache(self,
                          active_ids      : list[int],
@@ -2497,7 +2678,7 @@ class Alg:
 
         if isinstance(opp_players_df, pd.DataFrame):
             gk_rows = opp_players_df[opp_players_df.get('position') == 'GK']
-            gk_ability = float(gk_rows['gk_ability'].iloc[0]) if not gk_rows.empty else 0.0
+            gk_ability = float(gk_rows['GK_A'].iloc[0]) if not gk_rows.empty else 0.0
         else:
             gk_ability = 0.0
 
@@ -2510,23 +2691,25 @@ class Alg:
         assist_pool = [None] + active_ids
 
         for shooter in active_ids:
-            shooter_ability = _safe(players_df, shooter, 'shooter_ability')
+            shooter_ability = _safe(players_df, shooter, 'shooter_A')
             for assister in assist_pool:
                 for body, rsq in (( 'Head', rsq_cache.get((shooter, assister, 'Head'), 0.0)),
                                   ( 'Foot', rsq_cache.get((shooter, assister, 'Foot'), 0.0))):
                     key = (round(rsq, 4), shooter_ability, gk_ability, is_home)
                     cache_keys.append((shooter, assister, body, key))
                     if key not in self.psxg_pred_cache:
-                        new_rows.append(dict(rsq=rsq,
-                                             shooter_ability=shooter_ability,
-                                             gk_ability=gk_ability,
-                                             team_is_home=int(is_home),
-                                             team_elevation_dif=team_elev,
-                                             team_travel=team_travel,
-                                             team_rest_days=team_rest,
-                                             temperature_c=self.temperature,
-                                             is_raining=int(self.is_raining),
-                                             match_time=match_time))
+                        new_rows.append(dict(
+                            RSQ=rsq,
+                            shooter_A=shooter_ability,
+                            GK_A=gk_ability,
+                            team_is_home=int(is_home),
+                            team_elevation_dif=team_elev,
+                            team_travel=team_travel,
+                            team_rest_days=team_rest,
+                            temperature_c=self.temperature,
+                            is_raining=int(self.is_raining),
+                            match_time=match_time
+                        ))
 
         if new_rows:
             preds = self._predict_post_shot_bulk(pd.DataFrame(new_rows))
@@ -2589,6 +2772,8 @@ class Alg:
             player_info['out_status_prob'] = _status_prob(player_info.get('out_status'))
 
             players_dict[player_id] = player_info
+            players_dict[player_id]['sim_yellow'] = 1 if player_info.get('yellow_card') else 0
+            players_dict[player_id]['sim_red']    = player_info.get('red_card', False)
 
         return players_dict
 
@@ -2905,6 +3090,113 @@ class Alg:
                 params.extend([match_id] + list(row))
 
             self.db.execute(insert_sql, params)    
+
+    def get_referee_stats(self):
+        sql = f"""
+            SELECT fouls, yellow_cards, red_cards, matches_played
+            FROM referee_data
+            WHERE referee_name = '{self.referee_name}'
+        """
+        df = DB.select(sql)
+        if df.empty:
+            return {'fouls': 26.5, 'yellow_cards': 3.8, 'red_cards': 0.14, 'matches_played': 1}
+        return df.iloc[0].to_dict()
+
+    def precompute_card_sim_data(self):
+        self.team_factor   = {True: 0.95, False: 1.05}
+        self.status_factor = {'Leading': 0.88, 'Level': 1.0, 'Trailing': 1.11,
+                              1: 0.88, 0: 1.0, -1: 1.11}      # handles numeric status too
+
+        rf                 = max(1, self.ref_stats['matches_played'])
+        self.ref_fouls_pm  = self.ref_stats['fouls']        / rf
+        self.ref_ycs_pm    = self.ref_stats['yellow_cards'] / rf
+        self.ref_rcs_pm    = self.ref_stats['red_cards']    / rf
+
+        self.yc_prob_given_foul   = self.ref_ycs_pm / max(1e-5, self.ref_fouls_pm)
+        self.rc_prob_given_foul   = self.ref_rcs_pm / max(1e-5, self.ref_fouls_pm)
+        self.none_prob_given_foul = max(0.0, 1.0 - self.yc_prob_given_foul - self.rc_prob_given_foul)
+
+        self.foul_prob_cache = {}
+
+    def _calc_team_fouls_per90(self, active_players, opponent_players, players_data, opp_data):
+        minutes_team = sum(players_data[p]['minutes_played'] for p in active_players) or 1
+        minutes_opp  = sum(opp_data[p]['minutes_played']    for p in opponent_players) or 1
+
+        commits_per90 = sum(
+            (players_data[p]['fouls_committed'] / max(1, players_data[p]['minutes_played'])) * 90
+            for p in active_players
+        )
+        drawn_per90 = sum(
+            (opp_data[p]['fouls_drawn'] / max(1, opp_data[p]['minutes_played'])) * 90
+            for p in opponent_players
+        )
+
+        return (commits_per90 + drawn_per90) / 2.0
+
+    def get_team_foul_prob(self, active_players, opponent_players, status, is_home):
+        key = (frozenset(active_players), frozenset(opponent_players), status, is_home)
+        if key not in self.foul_prob_cache:
+            players_data = self.home_players_data if is_home else self.away_players_data
+            opp_data     = self.away_players_data if is_home else self.home_players_data
+
+            team_f90  = self._calc_team_fouls_per90(active_players, opponent_players,
+                                                    players_data, opp_data)
+            
+            opp_f90  = self._calc_team_fouls_per90(opponent_players,
+                                                active_players,
+                                                opp_data, players_data)
+
+            sum_f90      = team_f90 + opp_f90
+            normaliser   = (sum_f90 + self.ref_fouls_pm) / 2.0
+            adjust_fac   = team_f90 / max(1e-5, normaliser)
+
+            raw_per_min = team_f90 / 90.0 
+
+            per_min = raw_per_min * adjust_fac * self.team_factor[is_home] * self.status_factor[status]
+
+            self.foul_prob_cache[key] = max(per_min, 1e-6)   # keep ≥ very small
+        return self.foul_prob_cache[key]
+    
+    def choose_fouler(self, active_players, players_dict):
+        weights = [(players_dict[p]['fouls_committed'] / max(1, players_dict[p]['minutes_played']))
+                   for p in active_players]
+        total = sum(weights)
+        if total == 0:
+            weights = [1 / len(active_players)] * len(active_players)
+        else:
+            weights = [w / total for w in weights]
+        return np.random.choice(active_players, p=weights)
+    
+    def determine_card(self, player_id, players_dict, k: int = 10):
+        pdata = players_dict[player_id]
+
+        fouls = pdata.get('fouls_committed', 0)
+        ycs   = pdata.get('yellow_cards',     0)
+        rcs   = pdata.get('red_cards',        0)
+
+        player_yc_rate = (ycs + k * self.yc_prob_given_foul) / (fouls + k)
+        player_rc_rate = (rcs + k * self.rc_prob_given_foul) / (fouls + k)
+
+        weight_player = 0.5
+        weight_ref    = 1.0 - weight_player
+
+        yc_prob = weight_player * player_yc_rate + weight_ref * self.yc_prob_given_foul
+        rc_prob = weight_player * player_rc_rate + weight_ref * self.rc_prob_given_foul
+
+        total = yc_prob + rc_prob
+        if total > 1.0:
+            yc_prob /= total
+            rc_prob /= total
+            total = 1.0
+
+        none_prob = 1.0 - total 
+        probs     = [yc_prob, rc_prob, none_prob]
+
+        probs = [max(p, 0.0) for p in probs]
+        probs = np.array(probs) / np.sum(probs)
+
+        outcome = np.random.choice(['YC', 'RC', 'NONE'], p=probs)
+        return outcome
 
 # ------------------------------ Automatization ------------------------------
 class AutoLineups:

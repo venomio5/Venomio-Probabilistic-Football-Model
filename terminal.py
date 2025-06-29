@@ -319,6 +319,17 @@ class MainWindow(QMainWindow):
         build_layout = QVBoxLayout(build_game_tab)
         
         form_layout = QFormLayout()
+
+        referee_label = QLabel("Referee Name:")
+        referee_label.setStyleSheet("color: white;")
+        self.referee_input = QLineEdit()
+        self.referee_input.setStyleSheet("background-color: #2a2a2a; color: white;")
+        self.referee_input.setPlaceholderText("Type referee name...")
+        form_layout.addRow(referee_label, self.referee_input)
+
+        saved_referee = core.get_referee_name(match['schedule_id'])
+        if saved_referee:
+            self.referee_input.setText(saved_referee)
         
         home_players_label = QLabel(f"{match['home_team']} Players:")
         home_players_label.setStyleSheet("color: white;")
@@ -456,6 +467,10 @@ class MainWindow(QMainWindow):
             return table
 
         def on_create_lineups():
+            referee_name = self.referee_input.text().strip()
+            if referee_name:
+                core.send_referee_name_to_db(referee_name, match['schedule_id'])
+
             if home_saved_players:
                 home_final_players = home_saved_players
             else:
@@ -520,6 +535,7 @@ class MainWindow(QMainWindow):
             match_initial_time = self.initial_minute_spin.value()
             home_initial_n_subs = self.home_subs_spin.value()
             away_initial_n_subs = self.away_subs_spin.value()
+            referee_name = self.referee_input.text()
 
             home_players_data = extract_players_data(self.home_players_table)
             away_players_data = extract_players_data(self.away_players_table)
@@ -547,7 +563,8 @@ class MainWindow(QMainWindow):
                 away_initial_goals=away_initial_goals,
                 match_initial_time=match_initial_time,
                 home_n_subs_avail=home_initial_n_subs,
-                away_n_subs_avail=away_initial_n_subs
+                away_n_subs_avail=away_initial_n_subs,
+                referee_name=referee_name
             )
             worker.signals.finished.connect(lambda: self.remove_task_from_queue(list_item))
             worker.signals.error.connect(lambda err: print("Simulation error:", err))

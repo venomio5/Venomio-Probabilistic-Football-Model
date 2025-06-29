@@ -29,14 +29,19 @@ import matplotlib.pyplot as plt
 from xgboost import plot_importance
 from xgboost import plot_tree
 
+non_updated_fouls_df = core.DB.select("SELECT * FROM match_info WHERE total_fouls == 0;")
 
-non_updated_shots_df = core.DB.select("SELECT * FROM shots_data WHERE team_id IS NULL;")
+for _, row in non_updated_fouls_df.iterrows():
+    match_id = row['match_id']
+    print(match_id)
 
-for _, row in non_updated_shots_df.iterrows():
-    psxg = float(row['psxg'])
-    outcome = np.random.poisson(psxg)
+    match_bd_df = core.DB.select("SELECT fouls_committed, yellow_cards, red_cards FROM match_breakdown WHERE match_id = %s;", (match_id,))
 
-    core.DB.execute(
-        "UPDATE shots_data SET outcome = %s WHERE shot_id = %s",
-        (outcome, row['shot_id'])
-    )
+    for _, row in match_bd_df.iterrows():
+        match_id = row['match_id']
+    current_team = player_id_df.iloc[0]['current_team']
+
+    # core.DB.execute(
+    #     "UPDATE shots_data SET team_id = %s WHERE shot_id = %s",
+    #     (int(current_team), int(row['shot_id']))
+    # )

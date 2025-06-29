@@ -81,18 +81,16 @@ Aggregate the ridge data per shot and build a model to learn nonlinear, hierarch
 **Output**: Refined shot quality. 
 
 ### Player Performance Modifier
-| Feature             | Type          | Description                                                      |
-|---------------------|---------------|------------------------------------------------------------------|
-| RSQ                | float         | Refined Shot Quality for type of shot                            |
-| Shooter Ability     | float         | Difference between xG and PSxG in %                              |
-| GK Ability          | float         | Difference between PSxG and Goals in %                           |
-| Team_is_home        | bool          | 1 = home, 0 = away                                               |
-| Team_elevation_dif  | float         | Elevation difference (km): stadium elevation - avg(league, team) |
-| Team_travel         | float         | Travel distance (km)                                             |
-| Team_rest_days      | int           | Team number of rest days                                         |
-| Temperature_C       | float         | Temperature (°C) at kickoff                                      |
-| Is_Raining          | bool          | 1 = yes, 0 = no                                                  |
-| Match_time          | categorical   | (aft, evening, night)                                            |
+- RSQ
+- Shooter Ability (Difference between xG and PSxG in %)
+- GK Ability (Difference between PSxG and Goals in %)
+- Team_is_home
+- Team_elevation_dif
+- Team_travel
+- Team_rest_days
+- Temperature_C
+- Is_Raining
+- Match_time (aft, evening, night)
 - Target: Outcome of the Shot
 
 **Output**: Refined post shot expected goal.
@@ -115,41 +113,15 @@ Aggregate the ridge data per shot and build a model to learn nonlinear, hierarch
 Repeat this process each time a substitution minute is reached.
 
 ## Card and Foul Simulation
-### Fouls per Minute
-| **Feature**                | **Type**    | **Description**                                        |
-| -------------------------- | ----------- | ------------------------------------------------------ |
-| `referee_id`               | Categorical | Encodes referee id                             |
-| `team_id`                  | Categorical | Team committing the foul                               |
-| `opp_id`                   | Categorical | Opposition team                                        |
-| `is_home`                  | bool        | 1 if team is home                                      |
-| `team_avg_fouls_committed` | Numeric     | Historical aggression level                            |
-| `opp_avg_fouls_drawn`      | Numeric     | Tendency to provoke fouls                              |
-| `referee_avg_fouls`        | Numeric     | General foul call rate by referee                      |
-| `total_fouls`              | Numeric     | Total match fouls (optional context)                   |
-| `minutes_played`           | Numeric     | Duration of the match (optional if embedded in target) |
-
-**Target**: fouls_committed / minutes_played
-
-### Card per Foul
-2 for each card.
-| **Feature**              | **Type**    | **Description**                       |
-| ------------------------ | ----------- | ------------------------------------- |
-| `referee_id`             | Categorical | Referee ID                            |
-| `team_id`                | Categorical | Team receiving yellow                 |
-| `opp_id`                 | Categorical | Opposition team                       |
-| `is_home`                | Binary      | 1 if team is home                     |
-| `team_cards_per_foul`    | Numeric     | Historical yellow-per-foul rate       |
-| `referee_cards_per_foul` | Numeric     | Ref’s card strictness                 |
-| `total_cards`            | Numeric     | Total cards in match (context)        |
-| `total_fouls`            | Numeric     | Total fouls in match (optional)       |
-
-**Target**: cards / fouls_committed
-On red card (Or two yellows) → player removed, team plays short-handed.
+1. Get the teams fouls per 90 minutes by getting the average of the team fouls comitted and the opponent fouls drawn.
+2. Get the normalized teams fouls per 90 minutes by getting the average from the referee fouls per match, and the sum of the team and opponent fouls per 90 minutes. Then divide the teams fouls per 90 minute by the total average.
+3. Multiply each normalized team fouls per minute with home and away factors, and team status (leading, trailing, level)
+4. Choose on weighed  probability on who fouled, and then on weighed probability, choose between YC, RD, and None, based on referee data and player´s data. 
 
 ## Output Metrics
 Minute-by-minute event log:
 - Score.
-- Players goals, assists, and red cards. 
+- Players goals, assists, and red cards.
 
 ### SQL Setup
 #### Database
@@ -295,7 +267,7 @@ CREATE TABLE referee_data (
     fouls INT DEFAULT 0,
     yellow_cards INT DEFAULT 0,
     red_cards INT DEFAULT 0,
-    minutes_played INT DEFAULT 0 
+    matches_played INT DEFAULT 0 
 );
 ```
 ##### shots_data
@@ -368,6 +340,7 @@ CREATE TABLE schedule_data (
     is_raining BOOLEAN,
     home_players JSON,
     away_players JSON,
+    referee_name VARCHAR(100),
     UNIQUE (home_team_id, away_team_id)
 );
 ```
