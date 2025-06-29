@@ -22,7 +22,8 @@ from tqdm import tqdm
 import ast
 import xgboost as xgb
 from concurrent.futures import ProcessPoolExecutor
-import itertools  
+import itertools 
+import copy
 
 # --------------- Useful Classes, Functions & Variables ---------------
 class DatabaseManager:
@@ -2114,6 +2115,9 @@ class Alg:
         self.home_players_data = self.get_players_data(self.home_team_id, self.home_starters, self.home_subs)
         self.away_players_data = self.get_players_data(self.away_team_id, self.away_starters, self.away_subs)
 
+        self._base_home_players_data = copy.deepcopy(self.home_players_data)
+        self._base_away_players_data = copy.deepcopy(self.away_players_data)
+
         self.home_sub_minutes, self.away_sub_minutes = self.get_sub_minutes(self.home_team_id, self.away_team_id, self.match_initial_time, self.home_n_subs_avail, self.away_n_subs_avail)
         self.all_sub_minutes = list(set(list(self.home_sub_minutes.keys()) + list(self.away_sub_minutes.keys())))
 
@@ -2134,12 +2138,15 @@ class Alg:
         card_rows = [] 
 
         for i in tqdm(range(range_value)):
+            self.home_players_data = copy.deepcopy(self._base_home_players_data)
+            self.away_players_data = copy.deepcopy(self._base_away_players_data)
+
             home_goals = self.home_initial_goals
             away_goals = self.away_initial_goals
-            home_active_players = self.home_starters
-            away_active_players = self.away_starters
-            home_passive_players = self.home_subs
-            away_passive_players = self.away_subs
+            home_active_players  = self.home_starters.copy()
+            away_active_players  = self.away_starters.copy()
+            home_passive_players = self.home_subs.copy()
+            away_passive_players = self.away_subs.copy()
             home_status, away_status = self.get_status(home_goals, away_goals)
             time_segment = self.get_time_segment(self.match_initial_time)
 
@@ -3134,6 +3141,8 @@ class Alg:
         return (commits_per90 + drawn_per90) / 2.0
 
     def get_team_foul_prob(self, active_players, opponent_players, status, is_home):
+        if isinstance(status, (int, float)):
+            status = 1 if status > 0 else -1 if status < 0 else 0
         key = (frozenset(active_players), frozenset(opponent_players), status, is_home)
         if key not in self.foul_prob_cache:
             players_data = self.home_players_data if is_home else self.away_players_data
