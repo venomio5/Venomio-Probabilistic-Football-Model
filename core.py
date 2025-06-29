@@ -21,7 +21,8 @@ import json
 from tqdm import tqdm
 import ast
 import xgboost as xgb
-from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
+import os
 import itertools 
 import copy
 
@@ -2121,171 +2122,190 @@ class Alg:
         self.home_sub_minutes, self.away_sub_minutes = self.get_sub_minutes(self.home_team_id, self.away_team_id, self.match_initial_time, self.home_n_subs_avail, self.away_n_subs_avail)
         self.all_sub_minutes = list(set(list(self.home_sub_minutes.keys()) + list(self.away_sub_minutes.keys())))
 
-        if self.match_initial_time >= 75:
-            range_value = 5000
-        elif self.match_initial_time >= 60:
-            range_value = 10000
-        elif self.match_initial_time >= 45:
+        if self.match_initial_time >= 45:
+            range_value = 2000
+        elif self.match_initial_time < 45:
+            range_value = 8000
+        elif self.match_initial_time < 1:
             range_value = 20000
-        elif self.match_initial_time >= 30:
-            range_value = 30000
-        elif self.match_initial_time >= 15:
-            range_value = 40000
-        elif self.match_initial_time < 15:
-            range_value = 500
+
+        shot_rows, card_rows = self.run_simulations(range_value, 4)
+        self.insert_sim_data(shot_rows, self.schedule_id)
+
+    def _simulate_single(self, i):
+        self.home_players_data = copy.deepcopy(self._base_home_players_data)
+        self.away_players_data = copy.deepcopy(self._base_away_players_data)
+
+        home_goals = self.home_initial_goals
+        away_goals = self.away_initial_goals
+        home_active_players  = self.home_starters.copy()
+        away_active_players  = self.away_starters.copy()
+        home_passive_players = self.home_subs.copy()
+        away_passive_players = self.away_subs.copy()
 
         shot_rows = []
-        card_rows = [] 
+        card_rows = []
 
-        for i in tqdm(range(range_value)):
-            self.home_players_data = copy.deepcopy(self._base_home_players_data)
-            self.away_players_data = copy.deepcopy(self._base_away_players_data)
+        home_status, away_status = self.get_status(home_goals, away_goals)
+        time_segment = self.get_time_segment(self.match_initial_time)
 
-            home_goals = self.home_initial_goals
-            away_goals = self.away_initial_goals
-            home_active_players  = self.home_starters.copy()
-            away_active_players  = self.away_starters.copy()
-            home_passive_players = self.home_subs.copy()
-            away_passive_players = self.away_subs.copy()
+        home_ras, home_rahs, home_rafs, home_plhsq, home_plfsq = self.get_teams_ra(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
+        away_ras, away_rahs, away_rafs, away_plhsq, away_plfsq = self.get_teams_ra(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
+        home_players_prob = self.build_player_probs(home_active_players, self.home_players_data)
+        away_players_prob = self.build_player_probs(away_active_players, self.away_players_data)
+
+        home_mult = self.ctx_mult_home[(home_status, time_segment, 0)]
+        away_mult = self.ctx_mult_away[(away_status, time_segment, 0)]
+        home_context_ras = max(0, home_ras) * home_mult
+        away_context_ras = max(0, away_ras) * away_mult
+
+        home_psxg_cache = self.build_psxg_cache(home_active_players, self.home_players_data,
+                                                home_plhsq, home_plfsq,
+                                                home_status,  0,
+                                                True, self.away_players_data)
+        away_psxg_cache = self.build_psxg_cache(away_active_players, self.away_players_data,
+                                                away_plhsq, away_plfsq,
+                                                away_status, 0,
+                                                False, self.home_players_data)
+        
+        home_foul_p = self.get_team_foul_prob(home_active_players,
+                                                away_active_players,
+                                                home_status,
+                                                is_home=True)
+
+        away_foul_p = self.get_team_foul_prob(away_active_players,
+                                                home_active_players,
+                                                away_status,
+                                                is_home=False)
+
+        context_ras_change = False
+        for minute in range(self.match_initial_time, 91):
             home_status, away_status = self.get_status(home_goals, away_goals)
-            time_segment = self.get_time_segment(self.match_initial_time)
+            time_segment = self.get_time_segment(minute)
+            if minute in [16, 31, 46, 61, 76]:
+                context_ras_change = True
 
-            home_ras, home_rahs, home_rafs, home_plhsq, home_plfsq = self.get_teams_ra(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
-            away_ras, away_rahs, away_rafs, away_plhsq, away_plfsq = self.get_teams_ra(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
-            home_players_prob = self.build_player_probs(home_active_players, self.home_players_data)
-            away_players_prob = self.build_player_probs(away_active_players, self.away_players_data)
+            if minute in self.all_sub_minutes:
+                context_ras_change = True
+                if minute in list(self.home_sub_minutes.keys()):
+                    home_active_players, home_passive_players = self.swap_players(home_active_players, home_passive_players, self.home_players_data, self.home_sub_minutes[minute], home_status)
+                if minute in list(self.away_sub_minutes.keys()):
+                    away_active_players, away_passive_players = self.swap_players(away_active_players, away_passive_players, self.away_players_data, self.away_sub_minutes[minute], away_status)
+                home_ras, home_rahs, home_rafs, home_plhsq, home_plfsq = self.get_teams_ra(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
+                away_ras, away_rahs, away_rafs, away_plhsq, away_plfsq = self.get_teams_ra(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
+                home_players_prob = self.build_player_probs(home_active_players, self.home_players_data)
+                away_players_prob = self.build_player_probs(away_active_players, self.away_players_data)
 
-            home_mult = self.ctx_mult_home[(home_status, time_segment, 0)]
-            away_mult = self.ctx_mult_away[(away_status, time_segment, 0)]
-            home_context_ras = max(0, home_ras) * home_mult
-            away_context_ras = max(0, away_ras) * away_mult
+            if context_ras_change:
+                context_ras_change = False
+                home_mult = self.ctx_mult_home[(home_status, time_segment, 0)]
+                away_mult = self.ctx_mult_away[(away_status, time_segment, 0)]
+                home_context_ras = max(0, home_ras) * home_mult
+                away_context_ras = max(0, away_ras) * away_mult
 
-            home_psxg_cache = self.build_psxg_cache(home_active_players, self.home_players_data,
-                                                 home_plhsq, home_plfsq,
-                                                 home_status,  0,
-                                                 True, self.away_players_data)
-            away_psxg_cache = self.build_psxg_cache(away_active_players, self.away_players_data,
-                                                 away_plhsq, away_plfsq,
-                                                 away_status, 0,
-                                                 False, self.home_players_data)
-            
-            home_foul_p = self.get_team_foul_prob(home_active_players,
-                                                  away_active_players,
-                                                  home_status,
-                                                  is_home=True)
+                home_psxg_cache = self.build_psxg_cache(home_active_players, self.home_players_data,
+                                                    home_plhsq, home_plfsq,
+                                                    home_status,  0,
+                                                    True, self.away_players_data)
+                away_psxg_cache = self.build_psxg_cache(away_active_players, self.away_players_data,
+                                                    away_plhsq, away_plfsq,
+                                                    away_status, 0,
+                                                    False, self.home_players_data)
+                
+                home_foul_p = self.get_team_foul_prob(home_active_players,
+                                                        away_active_players,
+                                                        home_status,
+                                                        is_home=True)
 
-            away_foul_p = self.get_team_foul_prob(away_active_players,
-                                                  home_active_players,
-                                                  away_status,
-                                                  is_home=False)
+                away_foul_p = self.get_team_foul_prob(away_active_players,
+                                                        home_active_players,
+                                                        away_status,
+                                                        is_home=False)
 
-            context_ras_change = False
-            for minute in range(self.match_initial_time, 91):
-                home_status, away_status = self.get_status(home_goals, away_goals)
-                time_segment = self.get_time_segment(minute)
-                if minute in [16, 31, 46, 61, 76]:
-                    context_ras_change = True
+            home_shots = np.random.poisson(home_context_ras)
+            away_shots = np.random.poisson(away_context_ras)
 
-                if minute in self.all_sub_minutes:
-                    context_ras_change = True
-                    if minute in list(self.home_sub_minutes.keys()):
-                        home_active_players, home_passive_players = self.swap_players(home_active_players, home_passive_players, self.home_players_data, self.home_sub_minutes[minute], home_status)
-                    if minute in list(self.away_sub_minutes.keys()):
-                        away_active_players, away_passive_players = self.swap_players(away_active_players, away_passive_players, self.away_players_data, self.away_sub_minutes[minute], away_status)
-                    home_ras, home_rahs, home_rafs, home_plhsq, home_plfsq = self.get_teams_ra(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
-                    away_ras, away_rahs, away_rafs, away_plhsq, away_plfsq = self.get_teams_ra(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
-                    home_players_prob = self.build_player_probs(home_active_players, self.home_players_data)
-                    away_players_prob = self.build_player_probs(away_active_players, self.away_players_data)
+            if home_shots:
+                for _ in range(home_shots):
+                    body_part = self.get_shot_type(home_rahs, home_rafs)
+                    shooter = self.get_shooter(home_players_prob, body_part)
+                    assister = self.get_assister(home_players_prob, body_part, shooter)
+                    xg_prob   = home_psxg_cache.get((shooter, assister, body_part), 0.0)
+                    outcome = int(np.random.rand() < xg_prob)
+                    if outcome == 1:
+                        home_goals += 1
+                        context_ras_change = True
+                    shot_rows.append((i, minute, shooter, self.home_team_id, outcome, body_part, assister))
 
-                if context_ras_change:
-                    context_ras_change = False
-                    home_mult = self.ctx_mult_home[(home_status, time_segment, 0)]
-                    away_mult = self.ctx_mult_away[(away_status, time_segment, 0)]
-                    home_context_ras = max(0, home_ras) * home_mult
-                    away_context_ras = max(0, away_ras) * away_mult
-
-                    home_psxg_cache = self.build_psxg_cache(home_active_players, self.home_players_data,
-                                                        home_plhsq, home_plfsq,
-                                                        home_status,  0,
-                                                        True, self.away_players_data)
-                    away_psxg_cache = self.build_psxg_cache(away_active_players, self.away_players_data,
-                                                        away_plhsq, away_plfsq,
-                                                        away_status, 0,
-                                                        False, self.home_players_data)
-                    
-                    home_foul_p = self.get_team_foul_prob(home_active_players,
-                                                          away_active_players,
-                                                          home_status,
-                                                          is_home=True)
-
-                    away_foul_p = self.get_team_foul_prob(away_active_players,
-                                                          home_active_players,
-                                                          away_status,
-                                                          is_home=False)
-
-                home_shots = min(np.random.poisson(home_context_ras), 1) # CHANGE THIS TO NO MIN JUST THE RANDOM POISSON
-                away_shots = min(np.random.poisson(away_context_ras), 1) # CHANGE THIS TO NO MIN JUST THE RANDOM POISSON
-
-                if home_shots:
-                    for _ in range(home_shots):
-                        body_part = self.get_shot_type(home_rahs, home_rafs)
-                        shooter = self.get_shooter(home_players_prob, body_part)
-                        assister = self.get_assister(home_players_prob, body_part, shooter)
-                        xg_prob   = home_psxg_cache.get((shooter, assister, body_part), 0.0)
-                        outcome = int(np.random.rand() < xg_prob)
-                        if outcome == 1:
-                            home_goals += 1
-                            context_ras_change = True
-                        shot_rows.append((i, minute, shooter, home_team_id, outcome, body_part, assister))
-
-                if away_shots:
-                    for _ in range(away_shots):
-                        body_part = self.get_shot_type(away_rahs, away_rafs)
-                        shooter = self.get_shooter(away_players_prob, body_part)
-                        assister = self.get_assister(away_players_prob, body_part, shooter)
-                        xg_prob   = away_psxg_cache.get((shooter, assister, body_part), 0.0)
-                        outcome = int(np.random.rand() < xg_prob) 
-                        if outcome == 1:
-                            away_goals += 1
-                            context_ras_change = True
-                        shot_rows.append((i, minute, shooter, away_team_id, outcome, body_part, assister))  
+            if away_shots:
+                for _ in range(away_shots):
+                    body_part = self.get_shot_type(away_rahs, away_rafs)
+                    shooter = self.get_shooter(away_players_prob, body_part)
+                    assister = self.get_assister(away_players_prob, body_part, shooter)
+                    xg_prob   = away_psxg_cache.get((shooter, assister, body_part), 0.0)
+                    outcome = int(np.random.rand() < xg_prob) 
+                    if outcome == 1:
+                        away_goals += 1
+                        context_ras_change = True
+                    shot_rows.append((i, minute, shooter, self.away_team_id, outcome, body_part, assister))  
 
 
-                home_fouls = np.random.poisson(home_foul_p)
-                for _ in range(home_fouls):
-                    fouler     = self.choose_fouler(home_active_players, self.home_players_data)
-                    card_type  = self.determine_card(fouler, self.home_players_data)
-                    if card_type != 'NONE':
-                        card_rows.append((i, minute, fouler, self.home_team_id, card_type))
-                    if card_type == 'YC':
-                        self.home_players_data[fouler]['sim_yellow'] += 1
-                        if self.home_players_data[fouler]['sim_yellow'] >= 2:
-                            home_active_players.remove(fouler)
-                            context_ras_change = True
-                    elif card_type == 'RC':
-                        self.home_players_data[fouler]['sim_red'] = True
-                        if fouler in home_active_players:
-                            home_active_players.remove(fouler)
-                            context_ras_change = True
+            home_fouls = np.random.poisson(home_foul_p)
+            for _ in range(home_fouls):
+                fouler     = self.choose_fouler(home_active_players, self.home_players_data)
+                card_type  = self.determine_card(fouler, self.home_players_data)
+                if card_type != 'NONE':
+                    card_rows.append((i, minute, fouler, self.home_team_id, card_type))
+                if card_type == 'YC':
+                    self.home_players_data[fouler]['sim_yellow'] += 1
+                    if self.home_players_data[fouler]['sim_yellow'] >= 2:
+                        home_active_players.remove(fouler)
+                        context_ras_change = True
+                elif card_type == 'RC':
+                    self.home_players_data[fouler]['sim_red'] = True
+                    if fouler in home_active_players:
+                        home_active_players.remove(fouler)
+                        context_ras_change = True
 
-                away_fouls = np.random.poisson(away_foul_p)
-                for _ in range(away_fouls):
-                    fouler     = self.choose_fouler(away_active_players, self.away_players_data)
-                    card_type  = self.determine_card(fouler, self.away_players_data)
-                    if card_type != 'NONE':
-                        card_rows.append((i, minute, fouler, self.away_team_id, card_type))
-                    if card_type == 'YC':
-                        self.away_players_data[fouler]['sim_yellow'] += 1
-                        if self.away_players_data[fouler]['sim_yellow'] >= 2:
-                            away_active_players.remove(fouler)
-                            context_ras_change = True
-                    elif card_type == 'RC':
-                        self.away_players_data[fouler]['sim_red'] = True
-                        if fouler in away_active_players:
-                            away_active_players.remove(fouler)
-                            context_ras_change = True
+            away_fouls = np.random.poisson(away_foul_p)
+            for _ in range(away_fouls):
+                fouler     = self.choose_fouler(away_active_players, self.away_players_data)
+                card_type  = self.determine_card(fouler, self.away_players_data)
+                if card_type != 'NONE':
+                    card_rows.append((i, minute, fouler, self.away_team_id, card_type))
+                if card_type == 'YC':
+                    self.away_players_data[fouler]['sim_yellow'] += 1
+                    if self.away_players_data[fouler]['sim_yellow'] >= 2:
+                        away_active_players.remove(fouler)
+                        context_ras_change = True
+                elif card_type == 'RC':
+                    self.away_players_data[fouler]['sim_red'] = True
+                    if fouler in away_active_players:
+                        away_active_players.remove(fouler)
+                        context_ras_change = True
+        return shot_rows, card_rows
 
-        self.insert_sim_data(shot_rows, self.schedule_id)
+    def run_simulations(self, n_sims, n_workers):
+        if n_workers is None:
+            n_workers = os.cpu_count() or 1
+
+        shot_rows = []
+        card_rows = []
+
+        if n_workers > 1:
+            with multiprocessing.Pool(processes=n_workers) as pool:
+                for s, c in tqdm(pool.imap_unordered(self._simulate_single, range(n_sims)),
+                                 total=n_sims,
+                                 desc=f'Simulations ({n_workers} workers)'):
+                    shot_rows.extend(s)
+                    card_rows.extend(c)
+        else: 
+            for i in tqdm(range(n_sims), desc='Simulations (1 worker)'):
+                s, c = self._simulate_single(i)
+                shot_rows.extend(s)
+                card_rows.extend(c)
+
+        return shot_rows, card_rows
 
     def train_context_ras_model(self):
         def flip(series: pd.Series) -> pd.Series:
