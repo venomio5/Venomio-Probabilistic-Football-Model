@@ -2122,17 +2122,17 @@ class Alg:
         self.all_sub_minutes = list(set(list(self.home_sub_minutes.keys()) + list(self.away_sub_minutes.keys())))
 
         if self.match_initial_time >= 75:
-            range_value = 10000
+            range_value = 5000
         elif self.match_initial_time >= 60:
-            range_value = 20000
+            range_value = 10000
         elif self.match_initial_time >= 45:
             range_value = 20000
         elif self.match_initial_time >= 30:
-            range_value = 40000
+            range_value = 30000
         elif self.match_initial_time >= 15:
-            range_value = 50000
+            range_value = 40000
         elif self.match_initial_time < 15:
-            range_value = 100000
+            range_value = 1 # 50000
 
         shot_rows = []
         card_rows = [] 
@@ -2284,11 +2284,8 @@ class Alg:
                         if fouler in away_active_players:
                             away_active_players.remove(fouler)
                             context_ras_change = True
-                
-            # for row in shot_rows:
-            #     print(row)
 
-        #self.insert_sim_data(all_rows, self.match_id)
+        self.insert_sim_data(shot_rows, self.schedule_id)
 
     def train_context_ras_model(self):
         def flip(series: pd.Series) -> pd.Series:
@@ -3075,28 +3072,28 @@ class Alg:
         p_vals   = list(probs.values())
         return np.random.choice(ass, p=p_vals)
 
-    def insert_sim_data(self, rows, match_id):
+    def insert_sim_data(self, rows, schedule_id):
         delete_query  = """
         DELETE FROM simulation_data 
-        WHERE match_id = %s
+        WHERE schedule_id = %s
         """
 
-        self.db.execute(delete_query, (match_id,))
+        DB.execute(delete_query, (schedule_id,))
 
         batch_size = 200
         for i in range(0, len(rows), batch_size):
             chunk = rows[i:i + batch_size]
-            placeholders = ', '.join(['(%s, %s, %s, %s, %s, %s)'] * len(chunk))
+            placeholders = ', '.join(['(%s, %s, %s, %s, %s, %s, %s, %s)'] * len(chunk))
             insert_sql = f"""
             INSERT INTO simulation_data 
-                (match_id, sim_id, minute, home_goals, away_goals, momentum)
+                (sim_id, schedule_id, minute, shooter, squad, outcome, body_part, assister)
             VALUES {placeholders}
             """
             params = []
             for row in chunk:
-                params.extend([match_id] + list(row))
+                params.extend([row[0], schedule_id] + list(row[1:]))
 
-            self.db.execute(insert_sql, params)    
+            DB.execute(insert_sql, params)
 
     def get_referee_stats(self):
         sql = f"""

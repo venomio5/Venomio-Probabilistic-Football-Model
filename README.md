@@ -348,14 +348,14 @@ CREATE TABLE schedule_data (
 ```
 CREATE TABLE simulation_data (
     sim_id INT AUTO_INCREMENT PRIMARY KEY,
-    match_id INT NOT NULL,
+    schedule_id INT NOT NULL,
     minute INT NOT NULL,
     shooter VARCHAR(50) NOT NULL,
     squad VARCHAR(20) NOT NULL,
     outcome VARCHAR(20) NOT NULL,
     body_part VARCHAR(20) NOT NULL,
     assister VARCHAR(50),
-    FOREIGN KEY (match_id) REFERENCES match_info(match_id)
+    FOREIGN KEY (schedule_id) REFERENCES schedule_data(schedule_id)
         ON DELETE CASCADE
 );
 ```
