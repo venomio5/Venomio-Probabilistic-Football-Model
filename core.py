@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from typing import Any, Iterable, Sequence
 import pandas as pd
 from mysql.connector.pooling import MySQLConnectionPool
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, time, timedelta
 import numpy as np
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -351,6 +351,24 @@ def get_saved_lineup(schedule_id, team):
     players_list = json.loads(result.iloc[0][column_name]) if not result.empty else []
     return players_list
 
+def _bucket_time(ts):
+
+    if ts is None or pd.isna(ts):
+        return 'evening'
+
+    if isinstance(ts, time):
+        ts = datetime.combine(date.today(), ts)
+
+    if not isinstance(ts, (pd.Timestamp, datetime)):
+        ts = pd.to_datetime(ts)
+
+    h = ts.hour
+    if 9 <= h < 14:
+        return 'aft'
+    if 14 <= h < 19:
+        return 'evening'
+    return 'night'
+
 # ------------------------------ Fetch & Remove Data ------------------------------
 class UpdateSchedule:
     def __init__(self, from_date):
@@ -694,6 +712,7 @@ class Extract_Data:
         self.update_matches_info()
         self.update_pdras()
         self.update_shots()
+        self.remove_old_data()
 
     def get_recent_games_match_info(self):
         def get_games_basic_info(url, lud):
@@ -1564,72 +1583,15 @@ class Extract_Data:
                 (plsqa, shooter_sq, assister_sq, rsq, shooter_A, gk_A, row['shot_id'])
             )
 
-class RemoveOldData:
-    def __init__(self, league):
-        self.league = league
-        self.cd = datetime.now()
-        self.a_year_ago_date = (self.cd - timedelta(days=365)).date()
-        self.a_week_ago_date = (self.cd - timedelta(days=10)).date()
-
-        self.db = DatabaseManager.DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
-
-        get_teams_query = f"""
-            SELECT team_name
-            WHERE league_name = {league}
-            FROM teams_data;
-        """
-
-        self.teams_df = self.db.select(get_teams_query)
-        self.league_teams = []
-        for index, row in self.teams_df.iterrows():
-            self.league_teams.append(row['team_name'])
+    def remove_old_data(self):
+        self.a_year_ago_date = self.upto_date - timedelta(days=365)
 
         delete_query  = """
-        DELETE FROM players_data 
+        DELETE FROM match_info 
         WHERE date < %s
-        AND league_name = %s;
         """
 
-        self.db.execute(delete_query, (self.a_year_ago_date, self.league))
-
-        if self.league_teams:
-            placeholders = ', '.join(['%s'] * len(self.league_teams))
-            
-            delete_all_query = f"""
-            DELETE FROM players_data 
-            WHERE league_name = %s
-            AND team_name NOT IN ({placeholders})
-            """
-            params = (self.league,) + tuple(self.league_teams)
-            
-            self.db.execute(delete_all_query, params)
-        else:
-            print("No teams found. Skipping deletion.")
-
-        select_deleted_data_query = """
-        SELECT match_id FROM schedule_data
-        WHERE match_date < %s
-        """
-        
-        match_ids_df = self.db.select(select_deleted_data_query, (self.a_week_ago_date,))
-        match_ids_list = match_ids_df["match_id"].tolist()
-
-        if match_ids_list:
-            ids_placeholders = ', '.join(['%s'] * len(match_ids_list))
-
-            delete_schedule_query = f"""
-            DELETE FROM schedule_data 
-            WHERE match_id IN ({ids_placeholders})
-            """
-            
-            self.db.execute(delete_schedule_query, tuple(match_ids_list))
-
-            delete_sim_query = f"""
-            DELETE FROM simulation_data 
-            WHERE match_id IN ({ids_placeholders})
-            """
-            
-            self.db.execute(delete_sim_query, tuple(match_ids_list))
+        DB.execute(delete_query, (self.a_year_ago_date,))
 
 # ------------------------------ Process data ------------------------------
 class Process_Data:
@@ -2096,6 +2058,7 @@ class Alg:
         self.home_initial_goals = home_initial_goals
         self.away_initial_goals = away_initial_goals
         self.match_initial_time = match_initial_time
+        self.match_time_label = _bucket_time(self.match_initial_time)
         self.home_n_subs_avail = home_n_subs_avail
         self.away_n_subs_avail = away_n_subs_avail
         self.referee_name = referee_name
@@ -2343,14 +2306,6 @@ class Alg:
         context_df['match_state'] = pd.to_numeric(context_df['match_state'], errors='raise').astype(float)
         context_df['player_dif']  = pd.to_numeric(context_df['player_dif'],  errors='raise').astype(float)
 
-        def _bucket(ts):
-            h = ts.hour
-            if 9 <= h < 14:
-                return 'aft'
-            if 14 <= h < 19:
-                return 'evening'
-            return 'night'
-
         home_df = pd.DataFrame({
             'shots'              : context_df['home_shots'],
             'total_ras'          : context_df['teamA_pdras'],
@@ -2367,7 +2322,7 @@ class Alg:
             'player_dif'         : context_df['player_dif'],
             'temperature_c'      : context_df['temperature_c'],
             'is_raining'         : context_df['is_raining'],
-            'match_time'         : context_df['date'].apply(_bucket)
+            'match_time'         : context_df['date'].apply(_bucket_time)
         })
 
         away_df = pd.DataFrame({
@@ -2386,7 +2341,7 @@ class Alg:
             'player_dif'         : flip(context_df['player_dif']),
             'temperature_c'      : context_df['temperature_c'],
             'is_raining'         : context_df['is_raining'],
-            'match_time'         : context_df['date'].apply(_bucket)
+            'match_time'         : context_df['date'].apply(_bucket_time)
         })
         
         df = pd.concat([home_df, away_df], ignore_index=True)
@@ -2466,7 +2421,7 @@ class Alg:
                 'opp_rest_days'     : self.away_rest_days if is_home else self.home_rest_days,
                 'temperature_c'     : self.temperature,
                 'is_raining'        : self.is_raining,
-                'match_time'        : 'evening',
+                'match_time'        : self.match_time_label,
                 'total_ras'         : 1.0          # 1 ⇒  log(1)=0  ⇒  pure model effect
             }
 
@@ -2709,7 +2664,7 @@ class Alg:
         team_elev   = self.home_elevation_dif if is_home else self.away_elevation_dif
         team_travel = 0.0 if is_home else self.away_travel
         team_rest   = self.home_rest_days if is_home else self.away_rest_days
-        match_time  = 'evening'
+        match_time  = self.match_time_label
 
         cache_keys, new_rows, out = [], [], {}
         assist_pool = [None] + active_ids
