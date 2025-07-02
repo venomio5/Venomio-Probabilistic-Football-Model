@@ -8,6 +8,7 @@ import numpy as np
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import TimeoutException
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -122,7 +123,7 @@ class Fill_Teams_Data:
     - Removes obsolete team entries for the league. 
     """
     def __init__(self, league_id):
-        self.league_id = league_id
+        self.league_id = int(league_id)
         league_df = DB.select(f"SELECT league_id, fbref_fixtures_url FROM league_data WHERE league_id = {self.league_id}")
         league_url = league_df['fbref_fixtures_url'].values[0]
 
@@ -164,7 +165,7 @@ class Fill_Teams_Data:
     def get_teams(self, url):
         s=Service('chromedriver.exe')
         options = webdriver.ChromeOptions()
-        options.add_argument("--headless")
+        options.add_argument("--headless=new")  
         driver = webdriver.Chrome(service=s, options=options)
         driver.get(url)
         driver.execute_script("window.scrollTo(0, 1000);")
@@ -238,7 +239,12 @@ class Fill_Teams_Data:
     def get_scores_fixtures_url(self, team_page_url):
         s = Service('chromedriver.exe')
         options = webdriver.ChromeOptions()
-        options.add_argument("--headless")
+        options.add_argument("--headless=new")  
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--blink-settings=imagesEnabled=false")
+        options.add_argument("--ignore-certificate-errors")
         driver = webdriver.Chrome(service=s, options=options)
         driver.get(team_page_url)
 
@@ -251,7 +257,7 @@ class Fill_Teams_Data:
         driver.quit()
         return fixtures_url
 
-DB = DatabaseManager(host="localhost", user="root", password="venomio", database="finaltest")
+DB = DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
 
 def get_team_name_by_id(team_id):
     query = "SELECT team_name FROM team_data WHERE team_id = %s"
@@ -385,6 +391,14 @@ class UpdateSchedule:
                 game_date = games_dates[i]
                 game_local_time = games_local_time[i]
                 game_venue_time = games_venue_time[i]
+
+                if game_local_time is None and game_venue_time is None:
+                    continue
+                if game_local_time is None:
+                    game_local_time = game_venue_time
+                if game_venue_time is None:
+                    game_venue_time = game_local_time
+
                 home_team = home_teams[i]
                 home_id = get_team_id_by_name(home_team)
                 away_team = away_teams[i]
@@ -496,6 +510,22 @@ class UpdateSchedule:
             """
             DB.execute(delete_sql, (self.from_date, league_id))
 
+            cutoff_date = self.from_date - timedelta(days=30)
+            
+            stale_delete_sql = """
+            DELETE  sd
+            FROM    schedule_data AS sd
+            LEFT JOIN match_info AS mi
+                   ON mi.home_team_id = sd.home_team_id
+                  AND mi.away_team_id = sd.away_team_id
+                  AND DATE(mi.date)  = sd.date
+                  AND mi.league_id   = sd.league_id
+            WHERE mi.home_team_id IS NULL
+              AND sd.date < %s
+              AND sd.league_id = %s
+            """
+            DB.execute(stale_delete_sql, (cutoff_date, league_id))
+
     def _schedule_exists(self, home_id, away_id, game_date, league_id):
         sql = """
         SELECT 1
@@ -522,52 +552,65 @@ class UpdateSchedule:
         return value
     
     def get_games_basic_info(self, url, upto_date):
-        s=Service('chromedriver.exe')
+        s = Service('chromedriver.exe')
         options = webdriver.ChromeOptions()
-        options.add_argument("--headless")
+        options.add_argument("--headless=new")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--blink-settings=imagesEnabled=false")
+        options.add_argument("--ignore-certificate-errors")
         driver = webdriver.Chrome(service=s, options=options)
         driver.get(url)
         driver.execute_script("window.scrollTo(0, 1000);")
 
-        fixtures_table = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.stats_table")))
+        fixtures_table = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "table.stats_table"))
+        )
         rows = fixtures_table.find_elements(By.XPATH, "./tbody/tr")
+
         games_dates = []
         games_local_time = []
         games_venue_time = []
         home_teams = []
         away_teams = []
 
+        def _parse_time(ts):
+            ts = ts.strip("()")
+            if not ts or ts.lower() in {"tbd", "nan"}:
+                return None
+            try:
+                return datetime.strptime(ts, "%H:%M").time()
+            except ValueError:
+                return None
+
         for row in rows:
             date_element = row.find_element(By.CSS_SELECTOR, "[data-stat='date']")
             date_text = date_element.text.strip()
-            cleaned_date_text = re.sub(r'[^0-9-]', '', date_text)
-            if cleaned_date_text:
-                game_date = datetime.strptime(cleaned_date_text, '%Y-%m-%d').date()
-            else:
+            cleaned_date_text = re.sub(r"[^0-9-]", "", date_text)
+            if not cleaned_date_text:
                 continue
 
-            if self.from_date <= game_date < upto_date:
-                games_dates.append(game_date)
+            game_date = datetime.strptime(cleaned_date_text, "%Y-%m-%d").date()
+            if not (self.from_date <= game_date < upto_date):
+                continue
 
-                venue_time_element = row.find_element(By.CSS_SELECTOR, '.venuetime')
-                venue_time_str = venue_time_element.text.strip("()")
-                venue_time_obj = datetime.strptime(venue_time_str, "%H:%M").time()
-                games_venue_time.append(venue_time_obj)
+            venue_time_el = row.find_element(By.CSS_SELECTOR, ".venuetime")
+            local_time_el = row.find_element(By.CSS_SELECTOR, ".localtime")
 
-                local_time_element = row.find_element(By.CSS_SELECTOR, '.localtime')
-                local_time_str = local_time_element.text.strip("()")
-                local_time_obj = datetime.strptime(local_time_str, "%H:%M").time()
-                games_local_time.append(local_time_obj)
+            venue_time_obj = _parse_time(venue_time_el.text)
+            local_time_obj = _parse_time(local_time_el.text)
 
-                home_name_element = row.find_element(By.CSS_SELECTOR, "[data-stat='home_team']")
-                home_name = home_name_element.text
-                home_teams.append(home_name)
+            home_name = row.find_element(By.CSS_SELECTOR, "[data-stat='home_team']").text
+            away_name = row.find_element(By.CSS_SELECTOR, "[data-stat='away_team']").text
 
-                away_name_element = row.find_element(By.CSS_SELECTOR, "[data-stat='away_team']")
-                away_name = away_name_element.text
-                away_teams.append(away_name)
+            games_dates.append(game_date)
+            games_local_time.append(local_time_obj)
+            games_venue_time.append(venue_time_obj)
+            home_teams.append(home_name)
+            away_teams.append(away_name)
+
         driver.quit()
-        
         return games_dates, games_local_time, games_venue_time, home_teams, away_teams
 
     def get_team_elevation_dif(self, home_id, away_id, mode):
@@ -628,7 +671,7 @@ class UpdateSchedule:
 
         s=Service('chromedriver.exe')
         options = webdriver.ChromeOptions()
-        options.add_argument("--headless")
+        options.add_argument("--headless=new")  
         driver = webdriver.Chrome(service=s, options=options)
         driver.get(team_fixtures_url)
 
@@ -658,18 +701,20 @@ class UpdateSchedule:
         return rest_days
 
     def get_weather(self, home_id, game_date, game_venue_time):
-        team_df = DB.select(f"SELECT * FROM team_data WHERE team_id = {home_id}")
+        if game_venue_time is None:
+            return None, None
 
-        team_coordinates = team_df['team_coordinates'].values[0]
-        lat, lon = team_coordinates.split(',')
+        team_df = DB.select(f"SELECT * FROM team_data WHERE team_id = {home_id}")
+        lat, lon = team_df["team_coordinates"].values[0].split(",")
+
         today = datetime.today().date()
-        if game_date < today:
-            base_url = "https://archive-api.open-meteo.com/v1/archive?"
-        else:
-            base_url = "https://api.open-meteo.com/v1/forecast?"
+        base_url = (
+            "https://archive-api.open-meteo.com/v1/archive?"
+            if game_date < today
+            else "https://api.open-meteo.com/v1/forecast?"
+        )
 
         dummy_date = datetime(2000, 1, 1, game_venue_time.hour, game_venue_time.minute)
-
         start_datetime = dummy_date - timedelta(hours=1)
         end_datetime = dummy_date + timedelta(hours=2)
 
@@ -683,9 +728,8 @@ class UpdateSchedule:
 
         response = requests.get(url)
         data = response.json()
-
         if "hourly" not in data:
-            raise ValueError(f"No data returned for {game_date}")
+            return None, None
 
         times = data["hourly"]["time"]
         temps = data["hourly"]["temperature_2m"]
@@ -693,17 +737,18 @@ class UpdateSchedule:
 
         filtered_temps = []
         filtered_rains = []
-
         for t, temp, rain in zip(times, temps, rains):
             dt = datetime.fromisoformat(t)
             if start_datetime.time() <= dt.time() <= end_datetime.time():
                 filtered_temps.append(temp)
                 filtered_rains.append(rain)
 
-        avg_temp = sum(filtered_temps) / len(filtered_temps)
-        rain = any(r > 0.0 for r in filtered_rains)
+        if not filtered_temps:
+            return None, None
 
-        return avg_temp, rain
+        avg_temp = sum(filtered_temps) / len(filtered_temps)
+        raining = any(r > 0.0 for r in filtered_rains)
+        return avg_temp, raining
 
 class Extract_Data:
     def __init__(self, upto_date):
@@ -718,7 +763,7 @@ class Extract_Data:
         def get_games_basic_info(url, lud):
             s=Service('chromedriver.exe')
             options = webdriver.ChromeOptions()
-            options.add_argument("--headless")
+            options.add_argument("--headless=new")  
             driver = webdriver.Chrome(service=s, options=options)
             driver.get(url)
             driver.execute_script("window.scrollTo(0, 1000);")
@@ -875,21 +920,32 @@ class Extract_Data:
 
         match_info = DB.select("SELECT match_id, url, home_team_id, away_team_id FROM match_info")
         match_detail = DB.select("SELECT match_id FROM match_detail")
+        match_breakdown = DB.select("SELECT match_id FROM match_breakdown")
 
-        match_detail_ids = set(match_detail['match_id'].tolist())
+        detail_ids = set(match_detail['match_id'])
+        breakdown_ids = set(match_breakdown['match_id'])
 
-        missing_matches_df = match_info[~match_info['match_id'].isin(match_detail_ids)]
+        existing_in_both = detail_ids.intersection(breakdown_ids)
 
-        for _, row in tqdm(missing_matches_df.iterrows()):
+        missing_matches_df = match_info[~match_info['match_id'].isin(existing_in_both)]
+
+        for _, mi_row in tqdm(missing_matches_df.iterrows()):
             # Match detail
             s = Service('chromedriver.exe')
             options = webdriver.ChromeOptions()
-            options.add_argument("--headless")
+            options.add_argument("--headless=new")  
+            options.add_argument("--disable-gpu")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--blink-settings=imagesEnabled=false")
+            options.add_argument("--ignore-certificate-errors")
             driver = webdriver.Chrome(service=s, options=options)
-            driver.get(row['url'])
-            home_team = get_team_name_by_id(row['home_team_id'])
-            away_team = get_team_name_by_id(row['away_team_id'])
-            match_id = row["match_id"]
+            driver.get(mi_row['url'])
+            home_team       = get_team_name_by_id(mi_row['home_team_id'])
+            away_team       = get_team_name_by_id(mi_row['away_team_id'])
+            home_team_id    = mi_row['home_team_id']
+            away_team_id    = mi_row['away_team_id']
+            match_id        = mi_row["match_id"]
 
             home_table = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, '//*[@id="a"]/table')))
             home_data = pd.read_html(driver.execute_script("return arguments[0].outerHTML;", home_table))
@@ -951,7 +1007,12 @@ class Extract_Data:
 
             total_minutes = 90 + extra_first_half + extra_second_half
 
-            shots_table = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, '//*[@id="shots_all"]')))
+            try:
+                shots_table = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, '//*[@id="shots_all"]')))
+            except TimeoutException:
+                driver.quit()
+                DB.execute("DELETE FROM match_info WHERE match_id = %s", (mi_row["match_id"],))
+                continue
             shots_data = pd.read_html(driver.execute_script("return arguments[0].outerHTML;", shots_table))
             shots_df = shots_data[0]
             shots_df.columns = pd.MultiIndex.from_tuples(shots_df.columns)
@@ -989,21 +1050,21 @@ class Extract_Data:
                 teamB_footers = 0
                 teamB_hxg = 0.0
                 teamB_fxg = 0.0
-                for _, row in seg_shots.iterrows():
-                    if home_team in row['Squad']:
-                        if "Head" in row['Body Part']:
+                for _, seg_row in seg_shots.iterrows():
+                    if home_team in seg_row['Squad']:
+                        if "Head" in seg_row['Body Part']:
                             teamA_headers += 1
-                            teamA_hxg += row['xG']
-                        elif "Foot" in row['Body Part']:
+                            teamA_hxg += seg_row['xG']
+                        elif "Foot" in seg_row['Body Part']:
                             teamA_footers += 1
-                            teamA_fxg += row['xG']
-                    elif away_team in row['Squad']:
-                        if "Head" in row['Body Part']:
+                            teamA_fxg += seg_row['xG']
+                    elif away_team in seg_row['Squad']:
+                        if "Head" in seg_row['Body Part']:
                             teamB_headers += 1
-                            teamB_hxg += row['xG']
-                        elif "Foot" in row['Body Part']:
+                            teamB_hxg += seg_row['xG']
+                        elif "Foot" in seg_row['Body Part']:
                             teamB_footers += 1
-                            teamB_fxg += row['xG']
+                            teamB_fxg += seg_row['xG']
 
                 cum_goal_home = sum(1 for minute, t in goal_events if minute <= seg_end and t == "home")
                 cum_goal_away = sum(1 for minute, t in goal_events if minute <= seg_end and t == "away")
@@ -1061,7 +1122,11 @@ class Extract_Data:
                             home_player_stats[key]["in_status"] = state
                             found_in = True
                     if not found_in:
-                        home_player_stats[player_in] = {"starter": False, "sub_in_min": sub_minute, "in_status": state}
+                        new_stats = initialize_player_stats([player_in])
+                        new_stats[player_in]["starter"] = False
+                        new_stats[player_in]["sub_in_min"] = sub_minute
+                        new_stats[player_in]["in_status"] = state
+                        home_player_stats.update(new_stats)
                 else:
                     away_goals = sum(1 for minute, t in goal_events if t == "away" and minute <= sub_minute)
                     home_goals = sum(1 for minute, t in goal_events if t == "home" and minute <= sub_minute)
@@ -1077,7 +1142,11 @@ class Extract_Data:
                             away_player_stats[key]["in_status"] = state
                             found_in = True
                     if not found_in:
-                        away_player_stats[player_in] = {"starter": False, "sub_in_min": sub_minute, "in_status": state}
+                        new_stats = initialize_player_stats([player_in])
+                        new_stats[player_in]["starter"] = False
+                        new_stats[player_in]["sub_in_min"] = sub_minute
+                        new_stats[player_in]["in_status"] = state
+                        away_player_stats.update(new_stats)
             
             for key, stat in list(home_player_stats.items()):
 
@@ -1140,14 +1209,14 @@ class Extract_Data:
             all_shots['SCA 1_Player'] = all_shots['SCA 1_Player'].astype(str).str.strip()
             all_shots['SCA 1_Event'] = all_shots['SCA 1_Event'].astype(str).str.strip()
 
-            for idx, shot in all_shots.iterrows():
-                shooter_name = shot["Player"].strip()
-                shot_body = shot["Body Part"]
-                shot_xg = float(shot["xG"])
-                shot_psxg = float(shot["PSxG"])
-                outcome = shot["Outcome"]
-                sca_event = shot["SCA 1_Event"]
-                sca_player = shot["SCA 1_Player"].strip()
+            for idx, shot_row in all_shots.iterrows():
+                shooter_name = shot_row["Player"].strip()
+                shot_body = shot_row["Body Part"]
+                shot_xg = float(shot_row["xG"])
+                shot_psxg = float(shot_row["PSxG"])
+                outcome = shot_row["Outcome"]
+                sca_event = shot_row["SCA 1_Event"]
+                sca_player = shot_row["SCA 1_Player"].strip()
 
                 if math.isnan(shot_xg):
                     shot_xg = 0.00
@@ -1174,6 +1243,8 @@ class Extract_Data:
                 if shooter_key is None:
                     continue
                 
+                shooter_team = "home" if shooter_key in home_player_stats else "away"
+
                 shot_type = None
                 if "Head" in shot_body:
                     shot_type = "head"
@@ -1212,7 +1283,7 @@ class Extract_Data:
                     opponent_gk_stats[opponent_gk_key]["gk_ga"] += 1
 
                 # Shots data
-                shot_minute = int(shot["Minute"])
+                shot_minute = int(shot_row["Minute"])
 
                 if shooter_key in home_player_stats:
                     shooter_team = "home"
@@ -1264,7 +1335,7 @@ class Extract_Data:
 
                 GK_id = opponent_gk_stats[list(opponent_gk_stats.keys())[0]]["player_id"]
 
-                team_id = row['home_team_id'] if home_team in row['Squad'] else row['away_team_id']
+                team_id = home_team_id if shooter_team == "home" else away_team_id
 
                 sql_shot = "INSERT IGNORE INTO shots_data (match_id, xg, psxg, outcome, shooter_id, assister_id, team_id, GK_id, off_players, def_players, match_state, player_dif, shot_type) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
                 params_shot = (match_id,
@@ -1510,6 +1581,10 @@ class Extract_Data:
         for _, row in non_updated_shots_df.iterrows():
             players_needed.update(row['off_players'])
             players_needed.update(row['def_players'])
+            if row['assister_id']:
+                players_needed.add(row['assister_id'])
+            players_needed.add(row['shooter_id'])
+            players_needed.add(row['GK_id'])
 
         if players_needed:
             placeholders = ','.join(['%s'] * len(players_needed))
@@ -1552,19 +1627,21 @@ class Extract_Data:
 
             shooter_sq = numerator / denominator if denominator else 0.0
 
-            if not assister_id or not isinstance(p_dict[assister_id], dict):
+            if not assister_id or assister_id not in p_dict:
                 assister_sq = None
             else:
-                assister_data = p_dict.get(assister_id, {})
+                assister_data = p_dict[assister_id]
                 if bp == "head":
-                    numerator = assister_data.get('kp_hxg', 0)
+                    num = assister_data.get('kp_hxg', 0)
                 else:
-                    numerator = assister_data.get('kp_fxg', 0)
-                denominator = assister_data.get('key_passes', 1)
-                assister_sq = numerator / denominator if denominator else 0.0
+                    num = assister_data.get('kp_fxg', 0)
+                den         = assister_data.get('key_passes', 1)
+                assister_sq = num / den if den else 0.0
 
             gk_data = p_dict.get(gk_id, {})
-            gk_A = 1.0 - (gk_data['gk_ga'] / gk_data['gk_psxg'])
+            gk_psxg = gk_data.get('gk_psxg', 0)
+            gk_ga   = gk_data.get('gk_ga',   0)
+            gk_A    = 1.0 - (gk_ga / gk_psxg) if gk_psxg else 0.0
 
             rsq = predict_refined_sq(
                 booster,
@@ -1650,6 +1727,10 @@ class Process_Data:
             for shot_type in ["headers", "footers"]:
                 league_matches_df = DB.select(f"SELECT match_id FROM match_info WHERE league_id = {league_id}")
                 matches_ids = league_matches_df['match_id'].tolist()
+
+                if not matches_ids:
+                    continue            
+
                 matches_ids_placeholder = ','.join(['%s'] * len(matches_ids))
                 matches_sql = f"""
                 SELECT 
@@ -1794,14 +1875,19 @@ class Process_Data:
             for _, status_row in status_result.iterrows():
                 in_stat = status_row["in_status"]
                 out_stat = status_row["out_status"]
+
                 if in_stat in in_status_dict:
                     in_status_dict[in_stat] += 1
                 if out_stat in out_status_dict:
                     out_status_dict[out_stat] += 1
-                if status_row["sub_in"]:
-                    subs_in_list.append(status_row["sub_in"])
-                if status_row["sub_out"]:
-                    subs_out_list.append(status_row["sub_out"])
+
+                sub_in_val = status_row["sub_in"]
+                if pd.notna(sub_in_val) and sub_in_val != "":
+                    subs_in_list.append(sub_in_val)
+
+                sub_out_val = status_row["sub_out"]
+                if pd.notna(sub_out_val) and sub_out_val != "":
+                    subs_out_list.append(sub_out_val)
 
             pupdate_query = """
             UPDATE players_data
@@ -1849,45 +1935,9 @@ class Process_Data:
                 row["red_cards"],
                 json.dumps(in_status_dict),
                 json.dumps(out_status_dict),
-                json.dumps(subs_in_list),
-                json.dumps(subs_out_list),
+                json.dumps(subs_in_list, allow_nan=False),
+                json.dumps(subs_out_list, allow_nan=False),
                 player_id
-            ))
-
-        # referee
-        referee_df = DB.select("SELECT DISTINCT referee_name FROM match_info")
-        
-        for referee in referee_df["referee_name"].tolist():
-            ragg_query = """
-            SELECT
-                COALESCE(SUM(total_fouls), 0) AS fouls,
-                COALESCE(SUM(yellow_cards), 0) AS yellow_cards,
-                COALESCE(SUM(red_cards), 0) AS red_cards,
-                COUNT(*) * 90 AS minutes_played
-            FROM match_info
-            WHERE referee_name = %s
-            """
-            ragg_result = DB.select(ragg_query, (referee,))
-            if ragg_result.empty:
-                continue
-
-            row = ragg_result.iloc[0]
-
-            rupdate_query = """
-            UPDATE referee_data
-            SET 
-                fouls = %s,
-                yellow_cards = %s,
-                red_cards = %s,
-                minutes_played = %s 
-            WHERE referee_name = %s
-            """
-            DB.execute(rupdate_query, (
-                int(row["fouls"]),
-                int(row["yellow_cards"]),
-                int(row["red_cards"]),
-                int(row["minutes_played"]),
-                referee
             ))
 
     def update_players_xg_coef(self):
@@ -3211,7 +3261,7 @@ class AutoLineups:
 
         s=Service('chromedriver.exe')
         options = webdriver.ChromeOptions()
-        options.add_argument("--headless")
+        options.add_argument("--headless=new")  
         driver = webdriver.Chrome(service=s, options=options)
         driver.get(league_url)
 
