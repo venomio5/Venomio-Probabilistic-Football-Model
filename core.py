@@ -16,6 +16,7 @@ import requests
 import math
 from fuzzywuzzy import process, fuzz
 import re
+from sklearn.model_selection import GridSearchCV
 from sklearn.linear_model import Ridge
 import scipy.sparse as sp
 import json
@@ -354,8 +355,19 @@ def get_saved_lineup(schedule_id, team):
     column_name = f"{team}_players"
     sql_query = f"SELECT {column_name} FROM schedule_data WHERE schedule_id = %s"
     result = DB.select(sql_query, (schedule_id,))
-    players_list = json.loads(result.iloc[0][column_name]) if not result.empty else []
-    return players_list
+
+    if result.empty:
+        return []
+
+    raw_value = result.iloc[0][column_name]
+
+    if not raw_value:
+        return []
+
+    try:
+        return json.loads(raw_value)
+    except (TypeError, json.JSONDecodeError):
+        return []
 
 def _bucket_time(ts):
 
@@ -1435,7 +1447,19 @@ class Extract_Data:
         """
         Before processing new data, update the pre defined RAS for old matches.
         """
-        non_pdras_matches_df = DB.select("SELECT detail_id, match_id, teamA_players, teamB_players, minutes_played FROM match_detail WHERE teamA_pdras IS NULL OR teamB_pdras IS NULL;")
+        non_pdras_matches_df = DB.select("""
+            SELECT 
+                md.detail_id,
+                md.match_id,
+                mi.league_id,
+                md.teamA_players,
+                md.teamB_players,
+                md.minutes_played
+            FROM match_detail md
+            JOIN match_info mi ON mi.match_id = md.match_id
+            WHERE md.teamA_pdras IS NULL 
+               OR md.teamB_pdras IS NULL;
+        """)
 
         non_pdras_matches_df['teamA_players'] = non_pdras_matches_df['teamA_players'].apply(
             lambda v: v if isinstance(v, list) else ast.literal_eval(v)
@@ -1462,18 +1486,24 @@ class Extract_Data:
         else:
             off_sh_coef_dict, def_sh_coef_dict = {}, {}
 
+        baseline_df = DB.select("SELECT league_id, sh_baseline_coef FROM league_data;")
+        baseline_dict = baseline_df.set_index("league_id")["sh_baseline_coef"].fillna(0).to_dict()
+
         for _, row in non_pdras_matches_df.iterrows():
             minutes = row['minutes_played']
+            league_id = row['league_id']
+            baseline = baseline_dict.get(league_id, 0.0)
+
             teamA_ids = row['teamA_players']
             teamB_ids = row['teamB_players']
 
             teamA_offense = sum(off_sh_coef_dict.get(p, 0) for p in teamA_ids)
             teamB_defense = sum(def_sh_coef_dict.get(p, 0) for p in teamB_ids)
-            teamA_pdras = (teamA_offense - teamB_defense) * minutes
+            teamA_pdras = (baseline + teamA_offense - teamB_defense) * minutes
 
             teamB_offense = sum(off_sh_coef_dict.get(p, 0) for p in teamB_ids)
             teamA_defense = sum(def_sh_coef_dict.get(p, 0) for p in teamA_ids)
-            teamB_pdras = (teamB_offense - teamA_defense) * minutes
+            teamB_pdras = (baseline + teamB_offense - teamA_defense) * minutes
 
             DB.execute(
                 "UPDATE match_detail SET teamA_pdras = %s, teamB_pdras = %s WHERE detail_id = %s",
@@ -1724,6 +1754,7 @@ class Process_Data:
         league_id_df = DB.select("SELECT league_id FROM league_data WHERE is_active = 1")
 
         for league_id in league_id_df['league_id'].tolist():
+            baseline_total = 0.0  
             for shot_type in ["headers", "footers"]:
                 league_matches_df = DB.select(f"SELECT match_id FROM match_info WHERE league_id = {league_id}")
                 matches_ids = league_matches_df['match_id'].tolist()
@@ -1799,15 +1830,25 @@ class Process_Data:
                     sample_weights.append(minutes)
                     row_num += 1
 
+                alphas = np.logspace(-3, 3, 13)
+
                 X = sp.csr_matrix((data_vals, (rows, cols)), shape=(row_num, 2 * num_players))
                 y_array = np.array(y)
                 sample_weights_array = np.array(sample_weights)
 
-                ridge = Ridge(alpha=1.0, fit_intercept=False, solver='sparse_cg')
-                ridge.fit(X, y_array, sample_weight=sample_weights_array)
+                ridge_base = Ridge(fit_intercept=True, solver='sparse_cg')
+                grid = GridSearchCV(ridge_base,
+                                    param_grid={'alpha': alphas},
+                                    scoring='neg_mean_squared_error',
+                                    cv=5,
+                                    n_jobs=-1)
+                grid.fit(X, y_array, sample_weight=sample_weights_array)
 
-                offensive_ratings = dict(zip(players, ridge.coef_[:num_players]))
-                defensive_ratings = dict(zip(players, ridge.coef_[num_players:]))
+                best_model = grid.best_estimator_
+                baseline_total += float(best_model.intercept_)
+
+                offensive_ratings = dict(zip(players, best_model.coef_[:num_players]))
+                defensive_ratings = dict(zip(players, best_model.coef_[num_players:]))
 
                 for player in players:
                     off_sh = offensive_ratings[player]
@@ -1818,6 +1859,11 @@ class Process_Data:
                     WHERE player_id = %s
                     """
                     DB.execute(update_coef_query, (off_sh, def_sh, player))
+            DB.execute("""
+                UPDATE league_data
+                SET sh_baseline_coef = %s
+                WHERE league_id = %s
+            """, (baseline_total, league_id))
         sum_coef_sql = """
         UPDATE players_data
         SET off_sh_coef = COALESCE(off_headers_coef, 0) + COALESCE(off_footers_coef, 0),
@@ -2112,6 +2158,13 @@ class Alg:
         self.home_n_subs_avail = home_n_subs_avail
         self.away_n_subs_avail = away_n_subs_avail
         self.referee_name = referee_name
+
+        baseline_df = DB.select(
+            "SELECT sh_baseline_coef FROM league_data WHERE league_id = %s",
+            (self.league_id,)
+        )
+        self.sh_baseline_coef = float(baseline_df.iloc[0]['sh_baseline_coef']) if not baseline_df.empty and baseline_df.iloc[0]['sh_baseline_coef'] is not None else 0.0
+
         self.ras_booster, self.ras_cr_columns = self.train_context_ras_model()
         self.ctx_mult_home, self.ctx_mult_away = self.precompute_ctx_multipliers()
         self.rsq_booster, self.rsq_columns = self.train_refined_sq_model()
@@ -2137,10 +2190,10 @@ class Alg:
 
         if self.match_initial_time >= 45:
             range_value = 2000
+        elif self.match_initial_time < 1:
+            range_value = 1
         elif self.match_initial_time < 45:
             range_value = 8000
-        elif self.match_initial_time < 1:
-            range_value = 20000
 
         shot_rows, card_rows = self.run_simulations(range_value, 4)
         self.insert_sim_data(shot_rows, self.schedule_id)
@@ -2169,8 +2222,8 @@ class Alg:
 
         home_mult = self.ctx_mult_home[(home_status, time_segment, 0)]
         away_mult = self.ctx_mult_away[(away_status, time_segment, 0)]
-        home_context_ras = max(0, home_ras) * home_mult
-        away_context_ras = max(0, away_ras) * away_mult
+        home_context_ras = max(1e-6, home_ras) * home_mult
+        away_context_ras = max(1e-6, away_ras) * away_mult
 
         home_psxg_cache = self.build_psxg_cache(home_active_players, self.home_players_data,
                                                 home_plhsq, home_plfsq,
@@ -2213,8 +2266,8 @@ class Alg:
                 context_ras_change = False
                 home_mult = self.ctx_mult_home[(home_status, time_segment, 0)]
                 away_mult = self.ctx_mult_away[(away_status, time_segment, 0)]
-                home_context_ras = max(0, home_ras) * home_mult
-                away_context_ras = max(0, away_ras) * away_mult
+                home_context_ras = max(1e-6, home_ras) * home_mult
+                away_context_ras = max(1e-6, away_ras) * away_mult
 
                 home_psxg_cache = self.build_psxg_cache(home_active_players, self.home_players_data,
                                                     home_plhsq, home_plfsq,
@@ -2260,8 +2313,7 @@ class Alg:
                     if outcome == 1:
                         away_goals += 1
                         context_ras_change = True
-                    shot_rows.append((i, minute, shooter, self.away_team_id, outcome, body_part, assister))  
-
+                    shot_rows.append((i, minute, shooter, self.away_team_id, outcome, body_part, assister)) 
 
             home_fouls = np.random.poisson(home_foul_p)
             for _ in range(home_fouls):
@@ -2930,58 +2982,28 @@ class Alg:
 
     def get_teams_ra(self, offensive_players, defensive_players, offensive_data, defensive_data):
         # team_total_ras
-        team_off_ras = 0
-        for player in offensive_players:
-            team_off_ras += offensive_data[player]['off_sh_coef']
-
-        opp_def_ras = 0
-        for player in defensive_players:
-            opp_def_ras += defensive_data[player]['def_sh_coef']
-
-        team_total_ras = team_off_ras - opp_def_ras
+        team_off_ras = sum(offensive_data[p]['off_sh_coef'] for p in offensive_players)
+        opp_def_ras  = sum(defensive_data[p]['def_sh_coef'] for p in defensive_players)
+        team_total_ras = self.sh_baseline_coef + team_off_ras - opp_def_ras
 
         # team_rahs
-        team_off_rahs = 0
-        for player in offensive_players:
-            team_off_rahs += offensive_data[player]['off_headers_coef']
-
-        opp_def_rahs = 0
-        for player in defensive_players:
-            opp_def_rahs += defensive_data[player]['def_headers_coef']
-
+        team_off_rahs = sum(offensive_data[p]['off_headers_coef'] for p in offensive_players)
+        opp_def_rahs  = sum(defensive_data[p]['def_headers_coef'] for p in defensive_players)
         team_rahs = team_off_rahs - opp_def_rahs
 
         # team_rafs
-        team_off_rafs = 0
-        for player in offensive_players:
-            team_off_rafs += offensive_data[player]['off_footers_coef']
-
-        opp_def_rafs = 0
-        for player in defensive_players:
-            opp_def_rafs += defensive_data[player]['def_footers_coef']
-
+        team_off_rafs = sum(offensive_data[p]['off_footers_coef'] for p in offensive_players)
+        opp_def_rafs  = sum(defensive_data[p]['def_footers_coef'] for p in defensive_players)
         team_rafs = team_off_rafs - opp_def_rafs
 
         # team_plhsq
-        team_off_plhsq = 0
-        for player in offensive_players:
-            team_off_plhsq += offensive_data[player]['off_hxg_coef']
-
-        opp_def_plhsq = 0
-        for player in defensive_players:
-            opp_def_plhsq += defensive_data[player]['def_hxg_coef']
-
+        team_off_plhsq = sum(offensive_data[p]['off_hxg_coef'] for p in offensive_players)
+        opp_def_plhsq  = sum(defensive_data[p]['def_hxg_coef'] for p in defensive_players)
         team_plhsq = team_off_plhsq - opp_def_plhsq
 
         # team_plfsq
-        team_off_plfsq = 0
-        for player in offensive_players:
-            team_off_plfsq += offensive_data[player]['off_fxg_coef']
-
-        opp_def_plfsq = 0
-        for player in defensive_players:
-            opp_def_plfsq += defensive_data[player]['def_fxg_coef']
-
+        team_off_plfsq = sum(offensive_data[p]['off_fxg_coef'] for p in offensive_players)
+        opp_def_plfsq  = sum(defensive_data[p]['def_fxg_coef'] for p in defensive_players)
         team_plfsq = team_off_plfsq - opp_def_plfsq
 
         return team_total_ras, team_rahs, team_rafs, team_plhsq, team_plfsq
@@ -3014,15 +3036,13 @@ class Alg:
             return 6
         
     def get_shot_type(self, rahs, rafs):
-        rahs = max(0, rahs)
-        rafs = max(0, rafs)
+        sharpness = 50
+        delta = rafs - rahs
+        foot_prob = 1 / (1 + np.exp(-sharpness * delta))
+        head_prob = 1 - foot_prob
 
-        total = rahs + rafs
-        if total == 0:
-            probs = [0.5, 0.5]
-        else:
-            probs = [rahs / total, rafs / total]
-        
+        probs = [head_prob, foot_prob]
+
         selected_index = np.random.choice([0, 1], p=probs)
 
         if selected_index == 0:

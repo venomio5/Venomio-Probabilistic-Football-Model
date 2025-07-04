@@ -318,7 +318,8 @@ CREATE TABLE league_data (
     fbref_fixtures_url VARCHAR(200),
     last_updated_date DATE,
     is_active BOOLEAN,
-    league_sg_url VARCHAR(200)
+    league_sg_url VARCHAR(200),
+    sh_baseline_coef FLOAT
 );
 ```
 ##### schedule_data
