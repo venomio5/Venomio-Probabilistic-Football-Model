@@ -319,7 +319,9 @@ CREATE TABLE league_data (
     last_updated_date DATE,
     is_active BOOLEAN,
     league_sg_url VARCHAR(200),
-    sh_baseline_coef FLOAT
+    sh_baseline_coef FLOAT,
+    hxg_baseline_coef FLOAT,
+    fxg_baseline_coef FLOAT
 );
 ```
 ##### schedule_data

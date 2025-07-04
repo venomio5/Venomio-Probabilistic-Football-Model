@@ -3,67 +3,77 @@ import ast
 from sklearn.linear_model import Ridge
 import scipy.sparse as sp
 import numpy as np
+import xgboost as xgb
+import pandas as pd
 
-"""
-Before processing new data, update the pre defined RAS for old matches.
-"""
-non_pdras_matches_df = core.DB.select("""
-    SELECT 
-        md.detail_id,
-        md.match_id,
-        mi.league_id,
-        md.teamA_players,
-        md.teamB_players,
-        md.minutes_played
-    FROM match_detail md
-    JOIN match_info mi ON mi.match_id = md.match_id
-""")
+def train_refined_sq_model() -> tuple[xgb.Booster, list[str]]:
+    sql = """
+        SELECT
+            total_plsqa,
+            shooter_sq,
+            assister_sq,
+            CASE WHEN match_state < 0 THEN 'Trailing'
+                    WHEN match_state = 0 THEN 'Level'
+                    ELSE 'Leading' END AS match_state,
+            CASE WHEN player_dif < 0 THEN 'Neg'
+                    WHEN player_dif = 0 THEN 'Neu'
+                    ELSE 'Pos' END      AS player_dif,
+            xg
+        FROM shots_data
+        WHERE total_plsqa IS NOT NULL
+    """
+    df = core.DB.select(sql)
+    print(df)
 
-non_pdras_matches_df['teamA_players'] = non_pdras_matches_df['teamA_players'].apply(
-    lambda v: v if isinstance(v, list) else ast.literal_eval(v)
-)
-non_pdras_matches_df['teamB_players'] = non_pdras_matches_df['teamB_players'].apply(
-    lambda v: v if isinstance(v, list) else ast.literal_eval(v)
-)
+    cat_cols = ['match_state', 'player_dif']
+    num_cols = ['total_plsqa', 'shooter_sq', 'assister_sq']
+    df[num_cols] = df[num_cols].apply(pd.to_numeric, errors='coerce')
+    for c in cat_cols:
+        df[c] = df[c].astype(str)
 
-players_needed = set()
-for _, row in non_pdras_matches_df.iterrows():
-    players_needed.update(row['teamA_players'])
-    players_needed.update(row['teamB_players'])
+    X_cat = pd.get_dummies(df[cat_cols], prefix=cat_cols, dummy_na=True)
+    X     = pd.concat([df[num_cols], X_cat], axis=1).astype(float)
+    y     = df['xg'].astype(float)
 
-if players_needed:
-    placeholders = ','.join(['%s'] * len(players_needed))
-    players_sql = (
-        f"SELECT player_id, off_sh_coef, def_sh_coef "
-        f"FROM players_data "
-        f"WHERE player_id IN ({placeholders});"
-    )
-    players_coef_df = core.DB.select(players_sql, list(players_needed))
-    off_sh_coef_dict = players_coef_df.set_index("player_id")["off_sh_coef"].to_dict()
-    def_sh_coef_dict = players_coef_df.set_index("player_id")["def_sh_coef"].to_dict()
-else:
-    off_sh_coef_dict, def_sh_coef_dict = {}, {}
+    dtrain = xgb.DMatrix(X, label=y)
+    params = dict(objective='reg:squarederror', eval_metric='rmse',
+                    tree_method='hist', max_depth=6, eta=0.05,
+                    subsample=0.8, colsample_bytree=0.8, min_child_weight=2)
+    booster = xgb.train(params, dtrain, num_boost_round=400)
+    return booster, X.columns.tolist()
 
-baseline_df = core.DB.select("SELECT league_id, sh_baseline_coef FROM league_data;")
-baseline_dict = baseline_df.set_index("league_id")["sh_baseline_coef"].fillna(0).to_dict()
+booster, feature_names = train_refined_sq_model()
 
-for _, row in non_pdras_matches_df.iterrows():
-    minutes = row['minutes_played']
-    league_id = row['league_id']
-    baseline = baseline_dict.get(league_id, 0.0)
+def predict_custom_input(feature_values: dict):
+    """
+    Given a dictionary of feature values, build a DataFrame,
+    align it to the trained feature space, and make prediction.
+    """
+    # Create default zero row
+    input_df = pd.DataFrame([0.0] * len(feature_names), index=feature_names).T
 
-    teamA_ids = row['teamA_players']
-    teamB_ids = row['teamB_players']
+    # Assign provided values
+    for key, val in feature_values.items():
+        if key in input_df.columns:
+            input_df.at[0, key] = val
+        else:
+            print(f"Warning: Feature '{key}' not recognized in trained model.")
 
-    teamA_offense = sum(off_sh_coef_dict.get(p, 0) for p in teamA_ids)
-    teamB_defense = sum(def_sh_coef_dict.get(p, 0) for p in teamB_ids)
-    teamA_pdras = (baseline + teamA_offense - teamB_defense) * minutes
+    # Create DMatrix and predict
+    dtest = xgb.DMatrix(input_df)
+    prediction = booster.predict(dtest)
+    return prediction[0]
 
-    teamB_offense = sum(off_sh_coef_dict.get(p, 0) for p in teamB_ids)
-    teamA_defense = sum(def_sh_coef_dict.get(p, 0) for p in teamA_ids)
-    teamB_pdras = (baseline + teamB_offense - teamA_defense) * minutes
+# === Example Usage ===
+if __name__ == "__main__":
+    # Modify these values to probe model behavior
+    input_features = {
+        'total_plsqa': 0.1,
+        'shooter_sq': 0.75,
+        'assister_sq': 0.55,
+        'match_state_Trailing': 1.0,
+        'player_dif_Pos': 1.0
+    }
 
-    core.DB.execute(
-        "UPDATE match_detail SET teamA_pdras = %s, teamB_pdras = %s WHERE detail_id = %s",
-        (teamA_pdras, teamB_pdras, row['detail_id'])
-    )
+    result = predict_custom_input(input_features)
+    print(f"Predicted xG: {result:.4f}")
