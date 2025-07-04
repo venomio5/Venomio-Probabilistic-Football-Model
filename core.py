@@ -2249,7 +2249,6 @@ class Alg:
         self.rsq_pred_cache = {}
         self.rsq_col_idx    = {c: i for i, c in enumerate(self.rsq_columns)}
         self.psxg_booster, self.psxg_columns = self.train_post_shot_goal_model()
-        importance = self.psxg_booster.get_score(importance_type='gain')
         self.psxg_pred_cache = {}
         self.psg_col_idx     = {c: i for i, c in enumerate(self.psxg_columns)}
         self.ref_stats = self.get_referee_stats()
@@ -2270,9 +2269,9 @@ class Alg:
         if self.match_initial_time >= 45:
             range_value = 2000
         elif self.match_initial_time < 1:
-            range_value = 10000
-        elif self.match_initial_time < 45:
             range_value = 8000
+        elif self.match_initial_time < 45:
+            range_value = 6000
 
         shot_rows, card_rows = self.run_simulations(range_value, 4)
         self.insert_sim_data(shot_rows, self.schedule_id)
