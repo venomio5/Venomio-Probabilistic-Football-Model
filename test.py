@@ -1,79 +1,132 @@
-import core
-import ast
-from sklearn.linear_model import Ridge
-import scipy.sparse as sp
-import numpy as np
-import xgboost as xgb
-import pandas as pd
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import TimeoutException
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+import re
 
-def train_refined_sq_model() -> tuple[xgb.Booster, list[str]]:
-    sql = """
-        SELECT
-            total_plsqa,
-            shooter_sq,
-            assister_sq,
-            CASE WHEN match_state < 0 THEN 'Trailing'
-                    WHEN match_state = 0 THEN 'Level'
-                    ELSE 'Leading' END AS match_state,
-            CASE WHEN player_dif < 0 THEN 'Neg'
-                    WHEN player_dif = 0 THEN 'Neu'
-                    ELSE 'Pos' END      AS player_dif,
-            xg
-        FROM shots_data
-        WHERE total_plsqa IS NOT NULL
-    """
-    df = core.DB.select(sql)
-    print(df)
+s = Service('chromedriver.exe')
+options = webdriver.ChromeOptions()
+options.add_argument("--headless=new")
+options.add_argument("--disable-gpu")
+options.add_argument("--no-sandbox")
+options.add_argument("--disable-dev-shm-usage")
+options.add_argument("--blink-settings=imagesEnabled=false")
+options.add_argument("--ignore-certificate-errors")
+driver = webdriver.Chrome(service=s, options=options)
+driver.get("https://www.sofascore.com/football/match/colorado-rapids-2-houston-dynamo-2/JUmdsuCod#id:13430529")
 
-    cat_cols = ['match_state', 'player_dif']
-    num_cols = ['total_plsqa', 'shooter_sq', 'assister_sq']
-    df[num_cols] = df[num_cols].apply(pd.to_numeric, errors='coerce')
-    for c in cat_cols:
-        df[c] = df[c].astype(str)
+# squad_container = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "xYoqG")))
 
-    X_cat = pd.get_dummies(df[cat_cols], prefix=cat_cols, dummy_na=True)
-    X     = pd.concat([df[num_cols], X_cat], axis=1).astype(float)
-    y     = df['xg'].astype(float)
+# teams = [el for el in squad_container.find_elements(By.CLASS_NAME, "hiWfit") if el.text.strip()]
 
-    dtrain = xgb.DMatrix(X, label=y)
-    params = dict(objective='reg:squarederror', eval_metric='rmse',
-                    tree_method='hist', max_depth=6, eta=0.05,
-                    subsample=0.8, colsample_bytree=0.8, min_child_weight=2)
-    booster = xgb.train(params, dtrain, num_boost_round=400)
-    return booster, X.columns.tolist()
+# home = teams[0].text
+# away = teams[2].text
 
-booster, feature_names = train_refined_sq_model()
+# minute_container = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "diKTsJ")))
+# inner_minute_element = minute_container.find_element(By.CSS_SELECTOR, ".fPSBzf.bYPznK")
+# print(f"Home {home} - {away} Away at {inner_minute_element.text}")
 
-def predict_custom_input(feature_values: dict):
-    """
-    Given a dictionary of feature values, build a DataFrame,
-    align it to the trained feature space, and make prediction.
-    """
-    # Create default zero row
-    input_df = pd.DataFrame([0.0] * len(feature_names), index=feature_names).T
+details_cont = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".fPSBzf.gasSYy")))
+details_divs = driver.find_elements(By.CSS_SELECTOR, ".fRBCCw.dkmVnc")
+row_div = details_divs[2].find_element(By.CSS_SELECTOR, ".xYoiw") 
 
-    # Assign provided values
-    for key, val in feature_values.items():
-        if key in input_df.columns:
-            input_df.at[0, key] = val
-        else:
-            print(f"Warning: Feature '{key}' not recognized in trained model.")
+key_elements = row_div.find_elements(By.CSS_SELECTOR, ".ioWvhD")
 
-    # Create DMatrix and predict
-    dtest = xgb.DMatrix(input_df)
-    prediction = booster.predict(dtest)
-    return prediction[0]
+events = {
+    "substitutions": [],
+    "yellow_cards": [],
+    "red_cards": [],
+    "goals": []
+}
 
-# === Example Usage ===
-if __name__ == "__main__":
-    # Modify these values to probe model behavior
-    input_features = {
-        'total_plsqa': 0.1,
-        'shooter_sq': 0.75,
-        'assister_sq': 0.55,
-        'match_state_Trailing': 1.0,
-        'player_dif_Pos': 1.0
-    }
+minute_pattern = re.compile(r"^\d+'\s*(\+\d+)?$")
+score_pattern = re.compile(r"^\d+\s*-\s*\d+$")
 
-    result = predict_custom_input(input_features)
-    print(f"Predicted xG: {result:.4f}")
+def is_valid_name(text):
+    if minute_pattern.match(text):
+        return False
+    if score_pattern.match(text):
+        return False
+    return True
+
+def clean_part(text):
+    text = text.strip()
+    for prefix in ["yellow card", "red card", "goal"]:
+        if text.lower().startswith(prefix):
+            text = text[len(prefix):].strip()
+    return text
+
+for ke in key_elements:
+    try:
+        sub_elements = ke.find_elements(By.CSS_SELECTOR, '.fPSBzf.cMGtQw, .fPSBzf.etJpkR')
+        for se in sub_elements:
+            se_text = se.text.strip()
+            parts = se_text.split("\n")
+            cleaned_parts = [clean_part(p) for p in parts if p.strip() != ""]
+            names = [p for p in cleaned_parts if is_valid_name(p)]
+            
+            title_text = None
+            try:
+                svg = se.find_element(By.TAG_NAME, 'svg')
+                try:
+                    title_text = driver.execute_script("return arguments[0].querySelector('title')?.textContent;", svg)
+                except Exception:
+                    title_text = None
+            except Exception:
+                title_text = None
+
+            event_type = None
+            if title_text:
+                lower_title = title_text.lower()
+                if "yellow card" in lower_title:
+                    event_type = "yellow_cards"
+                elif "red card" in lower_title:
+                    event_type = "red_cards"
+                elif "goal" in lower_title:
+                    event_type = "goals"
+            if not event_type:
+                lower_text = se_text.lower()
+                if "yellow card" in lower_text:
+                    event_type = "yellow_cards"
+                elif "red card" in lower_text:
+                    event_type = "red_cards"
+                elif "goal" in lower_text:
+                    event_type = "goals"
+                else:
+                    event_type = "substitution"
+
+            if event_type == "substitution":
+                if len(names) >= 2:
+                    substitution = {"out": names[0], "in": names[1]}
+                    if substitution not in events["substitutions"]:
+                        events["substitutions"].append(substitution)
+            elif event_type == "yellow_cards":
+                if names:
+                    card_name = names[0]
+                    if card_name not in events["yellow_cards"]:
+                        events["yellow_cards"].append(card_name)
+            elif event_type == "red_cards":
+                if names:
+                    card_name = names[0]
+                    if card_name not in events["red_cards"]:
+                        events["red_cards"].append(card_name)
+            elif event_type == "goals":
+                if len(names) == 1:
+                    goal_name = names[0]
+                    if goal_name not in events["goals"]:
+                        events["goals"].append(goal_name)
+                elif len(names) >= 2:
+                    goal_event = {"scorer": names[0], "assist": names[1]}
+                    if goal_event not in events["goals"]:
+                        events["goals"].append(goal_event)
+    except Exception:
+        continue
+
+for type in events:
+    print(type)
+    print(events[type])
+
+driver.quit()
