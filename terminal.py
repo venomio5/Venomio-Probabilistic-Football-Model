@@ -418,8 +418,8 @@ class MainWindow(QMainWindow):
         build_layout.addLayout(button_layout)
 
         def create_players_table(players):
-            table = QTableWidget(len(players), 7)
-            table.setHorizontalHeaderLabels(["Player", "YC", "RC", "Goals", "Assists", "On Field", "Bench"])
+            table = QTableWidget(len(players), 5)
+            table.setHorizontalHeaderLabels(["Player", "YC", "RC", "On Field", "Bench"])
             table.horizontalHeader().setStretchLastSection(False)
             table.verticalHeader().setVisible(False)
             table.setStyleSheet(
@@ -428,7 +428,7 @@ class MainWindow(QMainWindow):
             )
 
             table.setColumnWidth(0, 160)
-            for i in range(1, 7):
+            for i in range(1, 5):
                 table.setColumnWidth(i, 60)
 
             table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
@@ -443,15 +443,6 @@ class MainWindow(QMainWindow):
                 table.setCellWidget(row, 1, yc_cb)
                 table.setCellWidget(row, 2, rc_cb)
 
-                goals_sb = QSpinBox()
-                goals_sb.setRange(0, 20)
-                assists_sb = QSpinBox()
-                assists_sb.setRange(0, 20)
-                goals_sb.setFixedWidth(55)
-                assists_sb.setFixedWidth(55)
-                table.setCellWidget(row, 3, goals_sb)
-                table.setCellWidget(row, 4, assists_sb)
-
                 on_field_cb = QCheckBox()
                 bench_cb = QCheckBox()
                 on_field_cb.setFixedWidth(55)
@@ -462,8 +453,8 @@ class MainWindow(QMainWindow):
                 else:
                     bench_cb.setChecked(True)
 
-                table.setCellWidget(row, 5, on_field_cb)
-                table.setCellWidget(row, 6, bench_cb)
+                table.setCellWidget(row, 3, on_field_cb)
+                table.setCellWidget(row, 4, bench_cb)
 
             return table
 
@@ -513,17 +504,13 @@ class MainWindow(QMainWindow):
 
                 yc = table.cellWidget(row, 1).isChecked()
                 rc = table.cellWidget(row, 2).isChecked()
-                goals = table.cellWidget(row, 3).value()
-                assists = table.cellWidget(row, 4).value()
-                on_field = table.cellWidget(row, 5).isChecked()
-                bench = table.cellWidget(row, 6).isChecked()
+                on_field = table.cellWidget(row, 3).isChecked()
+                bench = table.cellWidget(row, 4).isChecked()
 
                 players_data.append({
                     "player_id": player_id,
                     "yellow_card": yc,
                     "red_card": rc,
-                    "goals": goals,
-                    "assists": assists,
                     "on_field": on_field,
                     "bench": bench
                 })

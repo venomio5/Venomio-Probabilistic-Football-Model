@@ -1917,7 +1917,7 @@ class Process_Data:
                     SET off_{shot_type}_coef = %s, def_{shot_type}_coef = %s
                     WHERE player_id = %s
                     """
-                    DB.execute(update_coef_query, (off_sh, def_sh, player))
+                    DB.execute(update_coef_query, (float(off_sh), float(def_sh), player))
             DB.execute("""
                 UPDATE league_data
                 SET sh_baseline_coef = %s
@@ -2257,8 +2257,8 @@ class Alg:
         self.home_starters, self.home_subs = self.divide_matched_players(self.home_players_init_data)
         self.away_starters, self.away_subs = self.divide_matched_players(self.away_players_init_data)
 
-        self.home_players_data = self.get_players_data(self.home_team_id, self.home_starters, self.home_subs)
-        self.away_players_data = self.get_players_data(self.away_team_id, self.away_starters, self.away_subs)
+        self.home_players_data = self.get_players_data(self.home_team_id, self.home_starters, self.home_subs, self.home_players_init_data)
+        self.away_players_data = self.get_players_data(self.away_team_id, self.away_starters, self.away_subs, self.away_players_init_data)
 
         self._base_home_players_data = copy.deepcopy(self.home_players_data)
         self._base_away_players_data = copy.deepcopy(self.away_players_data)
@@ -2948,7 +2948,7 @@ class Alg:
         subs = [p['player_id'] for p in players_data if p['bench']]
         return starters, subs
 
-    def get_players_data(self, team_id, team_starters, team_subs):
+    def get_players_data(self, team_id, team_starters, team_subs, initial_data=None):
         all_players = team_starters + team_subs
 
         escaped_players = [player.replace("'", "''") for player in all_players]
@@ -2966,6 +2966,11 @@ class Alg:
         numeric_cols = ['sub_in', 'sub_out']
         for col in numeric_cols:
             players_df[col] = pd.to_numeric(players_df[col], errors='coerce').fillna(0)
+
+        initial_mapping = {}
+        if initial_data is not None:
+            initial_mapping = {player['player_id']: player for player in initial_data}
+
         players_dict = {}
 
         for player_id in players_df['player_id'].unique():
@@ -2994,8 +2999,14 @@ class Alg:
             player_info['out_status_prob'] = _status_prob(player_info.get('out_status'))
 
             players_dict[player_id] = player_info
-            players_dict[player_id]['sim_yellow'] = 1 if player_info.get('yellow_card') else 0
-            players_dict[player_id]['sim_red']    = player_info.get('red_card', False)
+            
+            if player_id in initial_mapping:
+                extracted = initial_mapping[player_id]
+                players_dict[player_id]['sim_yellow'] = 1 if extracted.get('yellow_card') else 0
+                players_dict[player_id]['sim_red'] = extracted.get('red_card', False)
+            else:
+                players_dict[player_id]['sim_yellow'] = 1 if player_info.get('yellow_card') else 0
+                players_dict[player_id]['sim_red'] = player_info.get('red_card', False)
 
         return players_dict
 

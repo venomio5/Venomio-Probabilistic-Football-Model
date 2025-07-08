@@ -6,6 +6,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 import re
+import venosch
 
 s = Service('chromedriver.exe')
 options = webdriver.ChromeOptions()
@@ -130,3 +131,5 @@ for type in events:
     print(events[type])
 
 driver.quit()
+
+input("hi")
