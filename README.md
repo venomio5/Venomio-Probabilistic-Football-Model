@@ -301,13 +301,14 @@ CREATE TABLE shots_data (
 ```
 CREATE TABLE team_data (
     team_id INT AUTO_INCREMENT PRIMARY KEY,
-    team_name VARCHAR(100) NOT NULL UNIQUE,
+    team_name VARCHAR(100) NOT NULL,
     team_elevation INT NOT NULL,
     team_coordinates VARCHAR(50) NOT NULL,
     team_fixtures_url VARCHAR(200) NOT NULL,
     league_id INT NOT NULL,
     FOREIGN KEY (league_id) REFERENCES league_data(league_id)
-        ON DELETE CASCADE
+        ON DELETE CASCADE,
+    UNIQUE KEY uniq_team_league (team_name, league_id)
 );
 ```
 ##### league_data
@@ -318,7 +319,7 @@ CREATE TABLE league_data (
     fbref_fixtures_url VARCHAR(200),
     last_updated_date DATE,
     is_active BOOLEAN,
-    league_sg_url VARCHAR(200),
+    ss_url VARCHAR(200),
     sh_baseline_coef FLOAT,
     hxg_baseline_coef FLOAT,
     fxg_baseline_coef FLOAT
@@ -343,6 +344,7 @@ CREATE TABLE schedule_data (
     is_raining BOOLEAN,
     home_players JSON,
     away_players JSON,
+    ss_url VARCHAR(200),
     referee_name VARCHAR(100),
     UNIQUE (home_team_id, away_team_id)
 );

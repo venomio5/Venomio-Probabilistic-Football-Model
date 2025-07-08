@@ -14,7 +14,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 import requests
 import math
-from fuzzywuzzy import process, fuzz
+from rapidfuzz import process, fuzz
 import re
 from sklearn.model_selection import GridSearchCV
 from sklearn.linear_model import Ridge
@@ -394,10 +394,12 @@ class UpdateSchedule:
         active_leagues_df = DB.select("SELECT * FROM league_data WHERE is_active = 1")
         
         for league_id in tqdm(active_leagues_df["league_id"].tolist(), desc="Processing leagues"):
-            url = active_leagues_df[active_leagues_df['league_id'] == league_id]['fbref_fixtures_url'].values[0]
+            fbref_url = active_leagues_df[active_leagues_df['league_id'] == league_id]['fbref_fixtures_url'].values[0]
+            ss_url = active_leagues_df[active_leagues_df['league_id'] == league_id]['ss_url'].values[0]
             upto_date = self.from_date + timedelta(days=5)
 
-            games_dates, games_local_time, games_venue_time, home_teams, away_teams = self.get_games_basic_info(url, upto_date)
+            games_dates, games_local_time, games_venue_time, home_teams, away_teams = self.get_games_basic_info(fbref_url, upto_date)
+            smatches_dict = self.get_ss_urls(ss_url)
 
             for i in tqdm(range(len(games_dates)), desc="Games"):
                 game_date = games_dates[i]
@@ -415,6 +417,8 @@ class UpdateSchedule:
                 home_id = get_team_id_by_name(home_team)
                 away_team = away_teams[i]
                 away_id = get_team_id_by_name(away_team)
+
+                ss_url = self.get_matched_teams_url(smatches_dict, f"{home_team} vs {away_team}")
 
                 home_elevation_dif = self.get_team_elevation_dif(home_id, away_id, "home")
                 away_elevation_dif = self.get_team_elevation_dif(home_id, away_id, "away")
@@ -459,9 +463,10 @@ class UpdateSchedule:
                     home_rest_days,
                     away_rest_days,
                     temperature,
-                    is_raining
+                    is_raining,
+                    ss_url
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 ON DUPLICATE KEY UPDATE
                     date         = VALUES(date),
@@ -469,6 +474,7 @@ class UpdateSchedule:
                     venue_time   = VALUES(venue_time),
                     temperature  = VALUES(temperature),
                     is_raining   = VALUES(is_raining);
+                    ss_url       = IF(ss_url IS NULL, VALUES(ss_url), ss_url);
                 """
 
                 raw_params = (
@@ -484,7 +490,8 @@ class UpdateSchedule:
                     home_rest_days,
                     away_rest_days,
                     temp,
-                    rain
+                    rain,
+                    ss_url
                 )
 
                 params = tuple(self._to_python(p) for p in raw_params)
@@ -624,6 +631,63 @@ class UpdateSchedule:
 
         driver.quit()
         return games_dates, games_local_time, games_venue_time, home_teams, away_teams
+
+    def get_ss_urls(self, ss_url):
+        s = Service('chromedriver.exe')
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless=new")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--blink-settings=imagesEnabled=false")
+        options.add_argument("--ignore-certificate-errors")
+        driver = webdriver.Chrome(service=s, options=options)
+        driver.get(ss_url)
+
+        try:
+            popup_close = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".Button.RVwfR")))
+            popup_close.click()
+        except Exception as e:
+            print("Popup not found or not clickable:", e)
+
+        round_div = driver.find_elements(By.CSS_SELECTOR, ".Box.kiSsvW")
+
+        href_list = []
+        for div in round_div:
+            anchor_tags = div.find_elements(By.TAG_NAME, "a")
+            for a in anchor_tags:
+                href = a.get_attribute("href")
+                if href:
+                    href_list.append(href)
+
+        smatches_dict = {}
+        for url in href_list:
+            driver.get(url)
+            try:
+                elements = WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, ".fPSBzf.iRgpoQ.bYPztT")))
+                home_cont = elements[0]
+                away_cont = elements[1]
+                key = f"{home_cont.text} vs {away_cont.text}"
+                smatches_dict[key] = url
+            except:
+                continue
+
+        driver.quit()
+        return smatches_dict
+
+    def get_matched_teams_url(self, ssdict, target_title):
+        match, score, _ = process.extractOne(
+            target_title,
+            ssdict.keys(),
+            scorer=fuzz.ratio,
+        )
+
+        if score > 50:
+            best_url = ssdict[match]
+        else:
+            best_url = None
+
+        return best_url
 
     def get_team_elevation_dif(self, home_id, away_id, mode):
         teams_df = DB.select(f"SELECT * FROM team_data WHERE team_id IN ({home_id}, {away_id})")
@@ -3403,73 +3467,62 @@ class Alg:
 
 # ------------------------------ Automatization ------------------------------
 class AutoLineups:
-    """
-            auto_lineups_btn = QPushButton("AutoLineups")
-            auto_lineups_btn.setStyleSheet("background-color: #333; color: white;")
-            build_layout.addWidget(auto_lineups_btn)    
-            
-    This is how to use it:
-            def auto_lineups():
-                lineups = core.AutoLineups(match["league_name"], f"{match['home_team']} vs {match['away_team']}")
-                home_text = "\n".join(lineups.home_starters) + "\n\n" + "\n".join(lineups.home_subs)
-                away_text = "\n".join(lineups.away_starters) + "\n\n" + "\n".join(lineups.away_subs)
-                home_players_input.setPlainText(home_text)
-                away_players_input.setPlainText(away_text)
-
-            auto_lineups_btn.clicked.connect(auto_lineups)
-    """
-    def __init__(self, league, title):
-        self.league = league
-        self.target_title = title
+    def __init__(self, schedule_id):
+        self.schedule_id = schedule_id
 
         sql_query = f"""
             SELECT 
-                league_sg
-            FROM leagues_data
-            WHERE league_name = '{self.league}';
+                ss_url
+            FROM schedule_data
+            WHERE schedule_id = '{self.schedule_id}';
         """
         result = DB.select(sql_query)
-        league_url = result['league_sg'].iloc[0]
+        match_url = result['ss_url'].iloc[0]
 
         s=Service('chromedriver.exe')
         options = webdriver.ChromeOptions()
-        options.add_argument("--headless=new")  
+        # options.add_argument("--headless=new") 
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--blink-settings=imagesEnabled=false")
+        options.add_argument("--ignore-certificate-errors")
         driver = webdriver.Chrome(service=s, options=options)
-        driver.get(league_url)
+        driver.get(match_url)
+        driver.execute_script("window.scrollTo(0, 1000);")
 
-        fixtures_container = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'content-block team-news-container')]")))
-        fixtures_table = fixtures_container.find_element(By.XPATH, ".//div[contains(@class, 'fxs-table table-for-lineups')]")
-        rows = fixtures_table.find_elements(By.XPATH, ".//div[contains(@class, 'table-row-loneups')]")
+        lineups_tab = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, "//a[@href='#tab:lineups']")))
+        lineups_tab.click()
 
-        for row in rows:
-            fxs_game = row.find_element(By.XPATH, ".//div[contains(@class, 'fxs-game')]")
-            normalized_text = " ".join(fxs_game.text.strip().split())
-            score = fuzz.ratio(normalized_text, self.target_title)
+        lineup_containers = WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.XPATH, "//div[contains(@class,'Box Flex ggRYVx cQgcrM sc-fPXMVe')]")))
+        
+        home_container = lineup_containers[0]
+        away_container = lineup_containers[1]
+    
+        home_elements = home_container.find_elements(By.XPATH, ".//span[contains(@class, 'efuQbl')]")
+        away_elements = away_container.find_elements(By.XPATH, ".//span[contains(@class, 'efuQbl')]")
 
-            if score >= 80:
-                fxs_btn = row.find_element(By.XPATH, ".//div[contains(@class, 'fxs-btn')]//a")
-                driver.execute_script("arguments[0].click();", fxs_btn)
+        self.home_starters = [element.text.lstrip("0123456789").replace("(c)", "").strip() for element in home_elements]
+        self.away_starters = [element.text.lstrip("0123456789").replace("(c)", "").strip() for element in away_elements]
 
-                home_lineup = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'lineups-home reverse')]")))
-                away_lineup = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'lineups-away')]")))
-            
-                home_players_elements = home_lineup.find_elements(By.XPATH, ".//span[contains(@class, 'player-name')]")
-                away_players_elements = away_lineup.find_elements(By.XPATH, ".//span[contains(@class, 'player-name')]")
-                
-                self.home_starters = [elem.text.strip() for elem in home_players_elements]
-                self.away_starters = [elem.text.strip() for elem in away_players_elements]
-                
-                subs_container = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'lineups-teams')]")))
-                teams_items = subs_container.find_elements(By.XPATH, ".//div[contains(@class, 'teams-item')]")
-                
-                self.home_subs = []
-                self.away_subs = []
-                if teams_items:
-                    home_subs_elements = teams_items[0].find_elements(By.XPATH, ".//ul[contains(@class, 'lineups-sub')]/li[contains(@class, 'sub-player')]")
-                    self.home_subs = [re.sub(r'^\d+\s*', '', elem.text.strip()) for elem in home_subs_elements]
-                if len(teams_items) > 1:
-                    away_subs_elements = teams_items[1].find_elements(By.XPATH, ".//ul[contains(@class, 'lineups-sub')]/li[contains(@class, 'sub-player')]")
-                    self.away_subs = [re.sub(r'^\d+\s*', '', elem.text.strip()) for elem in away_subs_elements]
+        def extract_subs(driver):
+            subs_container = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'Box DooVT')]")))
+            sub_elements = subs_container.find_elements(By.TAG_NAME, "a")
+
+            subs = []
+            for sub in sub_elements:
+                text = sub.text.strip()
+                first_line = text.split('\n', 1)[0]
+                name = re.sub(r"^\d+\s*", "", first_line)
+                subs.append(name)
+            return subs
+
+        self.home_subs = extract_subs(driver)
+        away_team_icon = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, "//div[contains(@class, 'fPSBzf bYPztT bYPznK xMSSK hlUslA kFYoVQ jwJnX xYosm bZRhvx')]")))
+        driver.execute_script("arguments[0].click();", away_team_icon)
+        self.away_subs = extract_subs(driver)
+
+        driver.quit()
 
 # ------------------------------ Trading ------------------------------
 class MatchTrade:

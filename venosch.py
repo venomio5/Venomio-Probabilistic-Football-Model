@@ -29,12 +29,12 @@ def schedule_all_games():
             scheduler.add_job(
                 func=execute_autolineup_once,
                 trigger=DateTrigger(run_date=trigger_time),
-                args=[row["schedule_id"]],
+                args=[row["schedule_id"], row["league_id"], f"{core.get_team_name_by_id(row['home_team_id'])} vs {core.get_team_name_by_id(row['away_team_id'])}"],
                 id=job_id
             )
 
-def execute_autolineup_once(schedule_id):
-    core.AutoLineups(schedule_id)
+def execute_autolineup_once(schedule_id, league_id, title):
+    core.AutoLineups(league_id, title)
     if check_players_exist(schedule_id):
         core.Alg(schedule_id)
     else:
@@ -42,13 +42,13 @@ def execute_autolineup_once(schedule_id):
             func=retry_autolineup_until_players,
             trigger='interval',
             seconds=600,
-            args=[schedule_id],
+            args=[schedule_id, league_id, title],
             id=f"retry_{schedule_id}",
             replace_existing=True
         )
 
-def retry_autolineup_until_players(schedule_id):
-    core.AutoLineups(schedule_id) 
+def retry_autolineup_until_players(schedule_id, league_id, title):
+    core.AutoLineups(league_id, title) 
     if check_players_exist(schedule_id):
         scheduler.remove_job(f"retry_{schedule_id}")
         core.Alg(schedule_id)
