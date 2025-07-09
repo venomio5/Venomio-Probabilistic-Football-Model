@@ -27,6 +27,7 @@ import multiprocessing
 import os
 import itertools 
 import copy
+import unicodedata
 
 # --------------- Useful Classes, Functions & Variables ---------------
 class DatabaseManager:
@@ -1842,16 +1843,16 @@ class Process_Data:
         Class to reset the players_data table and fill it with new data.
         """
 
-        DB.execute("TRUNCATE TABLE players_data;")
-        DB.execute("TRUNCATE TABLE referee_data;")
+        # DB.execute("TRUNCATE TABLE players_data;")
+        # DB.execute("TRUNCATE TABLE referee_data;")
 
-        self.insert_players_basics()
-        self.update_players_shots_coef()
-        self.update_players_totals()
-        self.update_players_xg_coef()
-        self.update_match_info_referee_totals()
-        self.update_referee_data_totals()
-        # self.train_context_ras_model()
+        # self.insert_players_basics()
+        # self.update_players_shots_coef()
+        # self.update_players_totals()
+        # self.update_players_xg_coef()
+        # self.update_match_info_referee_totals()
+        # self.update_referee_data_totals()
+        self.train_context_ras_model()
         # self.train_refined_sq_model()
         # self.train_post_shot_goal_model()
 
@@ -2560,18 +2561,18 @@ class Alg:
 
         match_df = DB.select("SELECT * FROM schedule_data WHERE schedule_id = %s", (self.schedule_id,))
 
-        self.home_team_id = match_df.iloc[0]['home_team_id']
-        self.away_team_id = match_df.iloc[0]['away_team_id']
-        self.home_players_init_data = match_df.iloc[0]['home_players_data']
-        self.away_players_init_data = match_df.iloc[0]['away_players_data']
-        self.league_id = match_df.iloc[0]['league_id']
-        self.home_elevation_dif = match_df.iloc[0]['home_elevation_dif']
-        self.away_elevation_dif = match_df.iloc[0]['away_elevation_dif']
-        self.away_travel = match_df.iloc[0]['away_travel']
-        self.home_rest_days = match_df.iloc[0]['home_rest_days']
-        self.away_rest_days = match_df.iloc[0]['away_rest_days']
-        self.temperature = match_df.iloc[0]['temperature']
-        self.is_raining = match_df.iloc[0]['is_raining']
+        self.home_team_id = int(match_df.iloc[0]['home_team_id'])
+        self.away_team_id = int(match_df.iloc[0]['away_team_id'])
+        self.home_players_init_data = json.loads(match_df.iloc[0]['home_players_data'])
+        self.away_players_init_data = json.loads(match_df.iloc[0]['away_players_data'])
+        self.league_id = int(match_df.iloc[0]['league_id'])
+        self.home_elevation_dif = int(match_df.iloc[0]['home_elevation_dif'])
+        self.away_elevation_dif = int(match_df.iloc[0]['away_elevation_dif'])
+        self.away_travel = int(match_df.iloc[0]['away_travel'])
+        self.home_rest_days = int(match_df.iloc[0]['home_rest_days'])
+        self.away_rest_days = int(match_df.iloc[0]['away_rest_days'])
+        self.temperature = int(match_df.iloc[0]['temperature'])
+        self.is_raining = int(match_df.iloc[0]['is_raining'])
         self.home_initial_goals = home_initial_goals
         self.away_initial_goals = away_initial_goals
         self.match_initial_time = match_initial_time
@@ -2580,9 +2581,7 @@ class Alg:
         self.away_n_subs_avail = away_n_subs_avail
         self.referee_name = match_df.iloc[0]['referee_name']
 
-        baseline_df = DB.select(
-            "SELECT sh_baseline_coef, hxg_baseline_coef, fxg_baseline_coef FROM league_data WHERE league_id = %s",
-            (self.league_id,)
+        baseline_df = DB.select("SELECT sh_baseline_coef, hxg_baseline_coef, fxg_baseline_coef FROM league_data WHERE league_id = %s", (self.league_id,)
         )
         self.sh_baseline_coef = float(baseline_df.iloc[0]['sh_baseline_coef']) if not baseline_df.empty and baseline_df.iloc[0]['sh_baseline_coef'] is not None else 0.0
         self.hxg_baseline_coef = float(baseline_df.iloc[0]['hxg_baseline_coef']) if not baseline_df.empty and baseline_df.iloc[0]['hxg_baseline_coef'] is not None else 0.0
@@ -3530,53 +3529,58 @@ class AutoLineups:
         away_team_id = int(result["away_team_id"].iloc[0])
         match_url = result['ss_url'].iloc[0]
 
-        s=Service('chromedriver.exe')
-        options = webdriver.ChromeOptions()
-        options.add_argument("--headless=new") 
-        options.add_argument("--disable-gpu")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--blink-settings=imagesEnabled=false")
-        options.add_argument("--ignore-certificate-errors")
-        driver = webdriver.Chrome(service=s, options=options)
-        driver.get(match_url)
-        driver.execute_script("window.scrollTo(0, 1000);")
+        match = re.search(r'id:(\d+)', match_url)
+        if not match:
+            raise ValueError("Match ID not found in URL.")
+        match_id = match.group(1)
 
-        referee_element = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//span[@class='gIcuCJ fdnFeu gnlqYH']/div/span")))
-        self.referee_name = referee_element.text
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/85.0.4183.121 Safari/537.36"
+            ),
+            "Accept": "application/json",
+        }
+        api_url = f"https://www.sofascore.com/api/v1/event/{match_id}"
+        gresponse = requests.get(api_url, headers=headers)
 
-        lineups_tab = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, "//a[@href='#tab:lineups']")))
-        lineups_tab.click()
+        if gresponse.status_code != 200:
+            raise RuntimeError(f"API request failed with status {gresponse.status_code}")
 
-        lineup_containers = WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.XPATH, "//div[contains(@class,'Box Flex ggRYVx cQgcrM sc-fPXMVe')]")))
+        event_gdata = gresponse.json()
+        self.referee_name = event_gdata["event"]["referee"]["name"]
+
+        api_lineups_url = f"https://www.sofascore.com/api/v1/event/{match_id}/lineups"
+        lresponse = requests.get(api_lineups_url, headers=headers)
+
+        if lresponse.status_code != 200:
+            raise RuntimeError(f"API request failed with status {lresponse.status_code}")
         
-        home_container = lineup_containers[0]
-        away_container = lineup_containers[1]
-    
-        home_elements = home_container.find_elements(By.XPATH, ".//span[contains(@class, 'efuQbl')]")
-        away_elements = away_container.find_elements(By.XPATH, ".//span[contains(@class, 'efuQbl')]")
+        event_ldata = lresponse.json()
 
-        self.home_starters = [element.text.lstrip("0123456789").replace("(c)", "").strip() for element in home_elements]
-        self.away_starters = [element.text.lstrip("0123456789").replace("(c)", "").strip() for element in away_elements]
+        if not event_ldata.get("confirmed", False):
+            print("Lineups are NOT confirmed. Exiting.")
+            return
 
-        def extract_subs(driver):
-            subs_container = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'Box DooVT')]")))
-            sub_elements = subs_container.find_elements(By.TAG_NAME, "a")
+        lineups = {
+            "home": {"starters": [], "bench": []},
+            "away": {"starters": [], "bench": []},
+        }
 
-            subs = []
-            for sub in sub_elements:
-                text = sub.text.strip()
-                first_line = text.split('\n', 1)[0]
-                name = re.sub(r"^\d+\s*", "", first_line)
-                subs.append(name)
-            return subs
+        for side in ["home", "away"]:
+            team_data = event_ldata.get(side, {})
+            for player_info in team_data.get("players", []):
+                player_name = player_info.get("player", {}).get("name", "Unknown")
+                if player_info.get("substitute", False):
+                    lineups[side]["bench"].append(player_name)
+                else:
+                    lineups[side]["starters"].append(player_name)
 
-        self.home_subs = extract_subs(driver)
-        away_team_icon = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, "//div[contains(@class, 'fPSBzf bYPztT bYPznK xMSSK hlUslA kFYoVQ jwJnX xYosm bZRhvx')]")))
-        driver.execute_script("arguments[0].click();", away_team_icon)
-        self.away_subs = extract_subs(driver)
-
-        driver.quit()
+        self.home_starters = lineups["home"]["starters"]
+        self.home_subs = lineups["home"]["bench"]
+        self.away_starters = lineups["away"]["starters"]
+        self.away_subs = lineups["away"]["bench"]
 
         home_ids_st, home_ids_bn = match_players(home_team_id, self.home_starters + self.home_subs)
         away_ids_st, away_ids_bn = match_players(away_team_id, self.away_starters + self.away_subs)
@@ -3586,18 +3590,18 @@ class AutoLineups:
             for pid in starters:
                 data.append(
                     dict(player_id=pid,
-                         yellow_card=False,
-                         red_card=False,
-                         on_field=True,
-                         bench=False)
+                        yellow_card=False,
+                        red_card=False,
+                        on_field=True,
+                        bench=False)
                 )
             for pid in bench:
                 data.append(
                     dict(player_id=pid,
-                         yellow_card=False,
-                         red_card=False,
-                         on_field=False,
-                         bench=True)
+                        yellow_card=False,
+                        red_card=False,
+                        on_field=False,
+                        bench=True)
                 )
             return data
         
@@ -3609,6 +3613,195 @@ class AutoLineups:
 
         sql_query = f"UPDATE schedule_data SET referee_name = %s WHERE schedule_id = %s"
         DB.execute(sql_query, (self.referee_name, schedule_id))
+
+class AutoMatchInfo:
+    def __init__(self, schedule_id):
+        self.schedule_id = schedule_id
+
+        sql_query = f"""
+            SELECT 
+                *
+            FROM schedule_data
+            WHERE schedule_id = '{self.schedule_id}';
+        """
+        result = DB.select(sql_query)
+        match_url = result['ss_url'].iloc[0]
+        home_players_data = result['home_players_data'].iloc[0]
+        away_players_data = result['away_players_data'].iloc[0]
+        last_minute_checked = int(result['last_minute_checked'].iloc[0] or 0)
+
+        match = re.search(r'id:(\d+)', match_url)
+        if not match:
+            raise ValueError("Match ID not found in URL.")
+        match_id = match.group(1)
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/85.0.4183.121 Safari/537.36"
+            ),
+            "Accept": "application/json",
+        }
+        api_url = f"https://www.sofascore.com/api/v1/event/{match_id}"
+        gresponse = requests.get(api_url, headers=headers)
+
+        if gresponse.status_code != 200:
+            raise RuntimeError(f"API request failed with status {gresponse.status_code}")
+
+        event_gdata = gresponse.json()
+        self.home_score = int(event_gdata["event"]["homeScore"]["current"])
+        self.away_score = int(event_gdata["event"]["awayScore"]["current"])
+
+        self.current_period_start_timestamp = int(event_gdata["event"]["time"]["currentPeriodStartTimestamp"])
+        self.period = event_gdata.get("event", {}).get("lastPeriod")
+        if self.period and self.period[-1].isdigit():
+            injury_key = f"injuryTime{self.period[-1]}"
+        else:
+            injury_key = None
+        self.period_injury_time = int(event_gdata["event"]["time"].get(injury_key)) if injury_key and event_gdata["event"]["time"].get(injury_key) is not None else None
+
+        def _clean(txt: str) -> str:
+            return unicodedata.normalize("NFKD", txt).encode("ascii", "ignore").decode().lower()
+
+        def _match_player_id(api_name: str, squad_names: dict[str, str]) -> str | None:
+            api_name = _clean(api_name)
+
+            if api_name in squad_names:
+                return squad_names[api_name]
+
+            best = process.extractOne(api_name, squad_names.keys(), score_cutoff=70)
+            return squad_names[best[0]] if best else None
+
+        def parse_incidents(
+            incidents: list[dict],
+            home_status: list[dict],
+            away_status: list[dict],
+            last_minute_checked: int = 0
+        ) -> tuple[dict, list[dict], list[dict], int, int, int]:
+            events = {
+                "home": {"substitutions": [], "yellow_cards": [], "red_cards": []},
+                "away": {"substitutions": [], "yellow_cards": [], "red_cards": []},
+            }
+
+            def _build_idx(players_status):
+                return {
+                    _clean(p["player_id"].split("_")[0]): p["player_id"]
+                    for p in players_status
+                }
+
+            idx_home, idx_away = _build_idx(home_status), _build_idx(away_status)
+
+            last_minute = last_minute_checked
+            cnt = {
+                "home": {"sub": 0, "yellow": 0, "red": 0},
+                "away": {"sub": 0, "yellow": 0, "red": 0},
+            }
+
+            # ------------------------------------------------------------------------    
+            for inc in incidents:
+                minute     = inc.get("time", 0)
+                if minute <= last_minute_checked:
+                    continue
+
+                side       = "home" if inc.get("isHome") else "away"
+                squad_idx  = idx_home if side == "home" else idx_away
+                squad_stat = home_status if side == "home" else away_status
+
+                inc_type   = inc.get("incidentType")
+                last_minute = max(last_minute, minute)
+
+                # substitutions -------------------------------------------------------
+                if inc_type == "substitution":
+                    cnt[side]["sub"] += 1
+                    pid_in  = _match_player_id(inc["playerIn"]["name"],  squad_idx)
+                    pid_out = _match_player_id(inc["playerOut"]["name"], squad_idx)
+
+                    for pl in squad_stat:
+                        if pl["player_id"] == pid_in:
+                            pl.update({"bench": False, "on_field": True})
+                        elif pl["player_id"] == pid_out:
+                            pl.update({"bench": False, "on_field": False})
+
+                    events[side]["substitutions"].append(
+                        {"minute": minute, "in": pid_in, "out": pid_out}
+                    )
+
+                # cards ----------------------------------------------------------------
+                elif inc_type == "card":
+                    pid = _match_player_id(inc["player"]["name"], squad_idx)
+
+                    if inc["incidentClass"] == "yellow":
+                        cnt[side]["yellow"] += 1
+                        events[side]["yellow_cards"].append({"minute": minute, "player": pid})
+                        for pl in squad_stat:
+                            if pl["player_id"] == pid:
+                                pl["yellow_card"] = True
+
+                    elif inc["incidentClass"] == "red":
+                        cnt[side]["red"] += 1
+                        events[side]["red_cards"].append({"minute": minute, "player": pid})
+                        for pl in squad_stat:
+                            if pl["player_id"] == pid:
+                                pl["red_card"] = True
+
+            # simulate flags ----------------------------------------------------------
+            simulate_home = int(
+                cnt["home"]["sub"] > 0 or cnt["home"]["red"] > 0 or cnt["home"]["yellow"] >= 2
+            )
+            simulate_away = int(
+                cnt["away"]["sub"] > 0 or cnt["away"]["red"] > 0 or cnt["away"]["yellow"] >= 2
+            )
+
+            return (
+                home_status,
+                away_status,
+                last_minute,
+                simulate_home,
+                simulate_away,
+            )
+
+        api_incidents_url = f"https://www.sofascore.com/api/v1/event/{match_id}/incidents"
+        iresponse = requests.get(api_incidents_url, headers=headers)
+
+        incidents_data = iresponse.json()["incidents"]
+
+        upd_home, upd_away, last_min, sim_home, sim_away = parse_incidents(
+            incidents_data,
+            json.loads(home_players_data),
+            json.loads(away_players_data),
+            last_minute_checked  
+        )
+
+        simulate = int(sim_home or sim_away)
+
+        DB.execute(
+            """
+            UPDATE schedule_data
+            SET home_players_data               = %s,
+                away_players_data              = %s,
+                last_minute_checked            = %s,
+                simulate                       = %s,
+                current_home_goals             = %s,
+                current_away_goals             = %s,
+                current_period_start_timestamp = %s,
+                period                         = %s,
+                period_injury_time             = %s
+            WHERE schedule_id = %s;
+            """,
+            (
+                json.dumps(upd_home),
+                json.dumps(upd_away),
+                last_min,
+                simulate,
+                self.home_score,
+                self.away_score,
+                self.current_period_start_timestamp,
+                self.period,
+                self.period_injury_time,
+                self.schedule_id
+            )
+        )
 
 # ------------------------------ Trading ------------------------------
 class MatchTrade:

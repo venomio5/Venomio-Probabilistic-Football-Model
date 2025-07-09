@@ -1,135 +1,158 @@
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchElementException
-from selenium.common.exceptions import TimeoutException
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
-import re
-import venosch
+import requests
+from rapidfuzz import process
+import core
+import unicodedata
+import json
 
-s = Service('chromedriver.exe')
-options = webdriver.ChromeOptions()
-options.add_argument("--headless=new")
-options.add_argument("--disable-gpu")
-options.add_argument("--no-sandbox")
-options.add_argument("--disable-dev-shm-usage")
-options.add_argument("--blink-settings=imagesEnabled=false")
-options.add_argument("--ignore-certificate-errors")
-driver = webdriver.Chrome(service=s, options=options)
-driver.get("https://www.sofascore.com/football/match/colorado-rapids-2-houston-dynamo-2/JUmdsuCod#id:13430529")
+def _clean(txt: str) -> str:
+    return unicodedata.normalize("NFKD", txt).encode("ascii", "ignore").decode().lower()
 
-# squad_container = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "xYoqG")))
+def _match_player_id(api_name: str, squad_names: dict[str, str]) -> str | None:
+    api_name = _clean(api_name)
 
-# teams = [el for el in squad_container.find_elements(By.CLASS_NAME, "hiWfit") if el.text.strip()]
+    if api_name in squad_names:
+        return squad_names[api_name]
 
-# home = teams[0].text
-# away = teams[2].text
+    best = process.extractOne(api_name, squad_names.keys(), score_cutoff=70)
+    return squad_names[best[0]] if best else None
 
-# minute_container = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "diKTsJ")))
-# inner_minute_element = minute_container.find_element(By.CSS_SELECTOR, ".fPSBzf.bYPznK")
-# print(f"Home {home} - {away} Away at {inner_minute_element.text}")
+def parse_incidents(
+    incidents: list[dict],
+    home_status: list[dict],
+    away_status: list[dict],
+    last_minute_checked: int = 0
+) -> tuple[dict, list[dict], list[dict], int, int, int]:
+    events = {
+        "home": {"substitutions": [], "yellow_cards": [], "red_cards": []},
+        "away": {"substitutions": [], "yellow_cards": [], "red_cards": []},
+    }
 
-details_cont = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".fPSBzf.gasSYy")))
-details_divs = driver.find_elements(By.CSS_SELECTOR, ".fRBCCw.dkmVnc")
-row_div = details_divs[2].find_element(By.CSS_SELECTOR, ".xYoiw") 
+    def _build_idx(players_status):
+        return {
+            _clean(p["player_id"].split("_")[0]): p["player_id"]
+            for p in players_status
+        }
 
-key_elements = row_div.find_elements(By.CSS_SELECTOR, ".ioWvhD")
+    idx_home, idx_away = _build_idx(home_status), _build_idx(away_status)
 
-events = {
-    "substitutions": [],
-    "yellow_cards": [],
-    "red_cards": [],
-    "goals": []
+    last_minute = last_minute_checked
+    cnt = {
+        "home": {"sub": 0, "yellow": 0, "red": 0},
+        "away": {"sub": 0, "yellow": 0, "red": 0},
+    }
+
+    # ------------------------------------------------------------------------    
+    for inc in incidents:
+        minute     = inc.get("time", 0)
+        if minute <= last_minute_checked:
+            continue
+
+        side       = "home" if inc.get("isHome") else "away"
+        squad_idx  = idx_home if side == "home" else idx_away
+        squad_stat = home_status if side == "home" else away_status
+
+        inc_type   = inc.get("incidentType")
+        last_minute = max(last_minute, minute)
+
+        # substitutions -------------------------------------------------------
+        if inc_type == "substitution":
+            cnt[side]["sub"] += 1
+            pid_in  = _match_player_id(inc["playerIn"]["name"],  squad_idx)
+            pid_out = _match_player_id(inc["playerOut"]["name"], squad_idx)
+
+            for pl in squad_stat:
+                if pl["player_id"] == pid_in:
+                    pl.update({"bench": False, "on_field": True})
+                elif pl["player_id"] == pid_out:
+                    pl.update({"bench": False, "on_field": False})
+
+            events[side]["substitutions"].append(
+                {"minute": minute, "in": pid_in, "out": pid_out}
+            )
+
+        # cards ----------------------------------------------------------------
+        elif inc_type == "card":
+            pid = _match_player_id(inc["player"]["name"], squad_idx)
+
+            if inc["incidentClass"] == "yellow":
+                cnt[side]["yellow"] += 1
+                events[side]["yellow_cards"].append({"minute": minute, "player": pid})
+                for pl in squad_stat:
+                    if pl["player_id"] == pid:
+                        pl["yellow_card"] = True
+
+            elif inc["incidentClass"] == "red":
+                cnt[side]["red"] += 1
+                events[side]["red_cards"].append({"minute": minute, "player": pid})
+                for pl in squad_stat:
+                    if pl["player_id"] == pid:
+                        pl["red_card"] = True
+
+    # simulate flags ----------------------------------------------------------
+    simulate_home = int(
+        cnt["home"]["sub"] > 0 or cnt["home"]["red"] > 0 or cnt["home"]["yellow"] >= 2
+    )
+    simulate_away = int(
+        cnt["away"]["sub"] > 0 or cnt["away"]["red"] > 0 or cnt["away"]["yellow"] >= 2
+    )
+
+    return (
+        events,
+        home_status,
+        away_status,
+        last_minute,
+        simulate_home,
+        simulate_away,
+    )
+
+sql_query = f"""
+    SELECT 
+        *
+    FROM schedule_data
+    WHERE schedule_id = '1336';
+"""
+result = core.DB.select(sql_query)
+home_players_data = result['home_players_data'].iloc[0]
+away_players_data = result['away_players_data'].iloc[0]
+last_minute_checked = int(result['last_minute_checked'].iloc[0]) or 0
+
+match_id = 10340773
+headers = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/85.0.4183.121 Safari/537.36"
+    ),
+    "Accept": "application/json",
 }
+api_incidents_url = f"https://www.sofascore.com/api/v1/event/{match_id}/incidents"
+iresponse = requests.get(api_incidents_url, headers=headers)
 
-minute_pattern = re.compile(r"^\d+'\s*(\+\d+)?$")
-score_pattern = re.compile(r"^\d+\s*-\s*\d+$")
+incidents_data = iresponse.json()["incidents"]
 
-def is_valid_name(text):
-    if minute_pattern.match(text):
-        return False
-    if score_pattern.match(text):
-        return False
-    return True
+upd_home, upd_away, last_min, sim_home, sim_away = parse_incidents(
+    incidents_data,
+    json.loads(home_players_data),
+    json.loads(away_players_data),
+    last_minute_checked  
+)
 
-def clean_part(text):
-    text = text.strip()
-    for prefix in ["yellow card", "red card", "goal"]:
-        if text.lower().startswith(prefix):
-            text = text[len(prefix):].strip()
-    return text
+simulate = int(sim_home or sim_away)
 
-for ke in key_elements:
-    try:
-        sub_elements = ke.find_elements(By.CSS_SELECTOR, '.fPSBzf.cMGtQw, .fPSBzf.etJpkR')
-        for se in sub_elements:
-            se_text = se.text.strip()
-            parts = se_text.split("\n")
-            cleaned_parts = [clean_part(p) for p in parts if p.strip() != ""]
-            names = [p for p in cleaned_parts if is_valid_name(p)]
-            
-            title_text = None
-            try:
-                svg = se.find_element(By.TAG_NAME, 'svg')
-                try:
-                    title_text = driver.execute_script("return arguments[0].querySelector('title')?.textContent;", svg)
-                except Exception:
-                    title_text = None
-            except Exception:
-                title_text = None
-
-            event_type = None
-            if title_text:
-                lower_title = title_text.lower()
-                if "yellow card" in lower_title:
-                    event_type = "yellow_cards"
-                elif "red card" in lower_title:
-                    event_type = "red_cards"
-                elif "goal" in lower_title:
-                    event_type = "goals"
-            if not event_type:
-                lower_text = se_text.lower()
-                if "yellow card" in lower_text:
-                    event_type = "yellow_cards"
-                elif "red card" in lower_text:
-                    event_type = "red_cards"
-                elif "goal" in lower_text:
-                    event_type = "goals"
-                else:
-                    event_type = "substitution"
-
-            if event_type == "substitution":
-                if len(names) >= 2:
-                    substitution = {"out": names[0], "in": names[1]}
-                    if substitution not in events["substitutions"]:
-                        events["substitutions"].append(substitution)
-            elif event_type == "yellow_cards":
-                if names:
-                    card_name = names[0]
-                    if card_name not in events["yellow_cards"]:
-                        events["yellow_cards"].append(card_name)
-            elif event_type == "red_cards":
-                if names:
-                    card_name = names[0]
-                    if card_name not in events["red_cards"]:
-                        events["red_cards"].append(card_name)
-            elif event_type == "goals":
-                if len(names) == 1:
-                    goal_name = names[0]
-                    if goal_name not in events["goals"]:
-                        events["goals"].append(goal_name)
-                elif len(names) >= 2:
-                    goal_event = {"scorer": names[0], "assist": names[1]}
-                    if goal_event not in events["goals"]:
-                        events["goals"].append(goal_event)
-    except Exception:
-        continue
-
-for type in events:
-    print(type)
-    print(events[type])
-
-driver.quit()
-
-input("hi")
+core.DB.execute(
+    """
+    UPDATE schedule_data
+    SET home_players_data = %s,
+        away_players_data = %s,
+        last_minute_checked = %s,
+        simulate        = %s
+    WHERE schedule_id    = %s;
+    """,
+    (
+        json.dumps(upd_home),
+        json.dumps(upd_away),
+        last_min,
+        simulate,
+        self.schedule_id
+    )
+)

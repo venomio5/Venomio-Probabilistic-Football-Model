@@ -1,4 +1,2 @@
 import core
-import venosch
-
-input("hi")
+core.AutoMatchInfo(1336)

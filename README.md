@@ -346,6 +346,13 @@ CREATE TABLE schedule_data (
     away_players_data JSON,
     ss_url VARCHAR(200),
     referee_name VARCHAR(100),
+    current_home_goals INT,
+    current_away_goals INT,   
+    current_period_start_timestamp INT,
+    period VARCHAR(100),
+    period_injury_time INT,
+    last_minute_checked INT,
+    simulate BOOLEAN,
     UNIQUE (home_team_id, away_team_id)
 );
 ```

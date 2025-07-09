@@ -2,11 +2,13 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.date import DateTrigger
 from datetime import datetime, timedelta
 import core
+import multiprocessing as mp
+import time
 
-scheduler = BackgroundScheduler()
+scheduler = None
 
 def schedule_autolineups():
-    now = datetime.now()
+    now = datetime.now() - timedelta(hours=2)
     future = now + timedelta(hours=12)
 
     matches_df = core.DB.select("""
@@ -70,9 +72,20 @@ def check_player_data_exist(schedule_id):
     away_players = row["away_players_data"]
     return (home_players is not None and home_players != '') and (away_players is not None and away_players != '')
 
-schedule_autolineups()
+def main():
+    global scheduler
+    scheduler = BackgroundScheduler()
 
-scheduler.start()
+    schedule_autolineups()            
+    scheduler.start()
 
-for job in scheduler.get_jobs():
-    print(job)
+    # keep the program alive (CTRL-C to exit)
+    try:
+        while True:
+            time.sleep(60)
+    except (KeyboardInterrupt, SystemExit):
+        scheduler.shutdown()
+
+if __name__ == "__main__":
+    mp.freeze_support()
+    main()
