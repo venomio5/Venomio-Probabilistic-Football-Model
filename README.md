@@ -342,8 +342,8 @@ CREATE TABLE schedule_data (
     away_rest_days INT,
     temperature INT,
     is_raining BOOLEAN,
-    home_players JSON,
-    away_players JSON,
+    home_players_data JSON,
+    away_players_data JSON,
     ss_url VARCHAR(200),
     referee_name VARCHAR(100),
     UNIQUE (home_team_id, away_team_id)

@@ -281,9 +281,16 @@ def get_league_name_by_id(league_id):
         return result.iloc[0]["league_name"]
     return None
 
-def match_players(team_id, raw_widget):
-    raw_text = raw_widget.toPlainText()
-    clean_list = [line.strip() for line in raw_text.split('\n') if line.strip() and not any(char.isdigit() for char in line)]
+def match_players(team_id, raw_source):
+    if hasattr(raw_source, "toPlainText"):
+        raw_text = raw_source.toPlainText()
+        raw_list = [line.strip() for line in raw_text.split("\n")]
+    elif isinstance(raw_source, (list, tuple)):
+        raw_list = [str(line).strip() for line in raw_source]
+    else:
+        raise TypeError("raw_source must be QTextEdit-like or list/tuple")
+
+    clean_list = [line for line in raw_list if line and not any(char.isdigit() for char in line)]
 
     unmatched_starters = clean_list[:11]
     unmatched_benchers = clean_list[11:]
@@ -347,12 +354,12 @@ def send_referee_name_to_db(referee_raw_name, schedule_id):
     DB.execute(sql, (best_match, schedule_id))
 
 def send_lineup_to_db(players_list, schedule_id, team):
-    column_name = f"{team}_players"
+    column_name = f"{team}_players_data"
     sql_query = f"UPDATE schedule_data SET {column_name} = %s WHERE schedule_id = %s"
     DB.execute(sql_query, (json.dumps(players_list, ensure_ascii=False), schedule_id))
 
 def get_saved_lineup(schedule_id, team):
-    column_name = f"{team}_players"
+    column_name = f"{team}_players_data"
     sql_query = f"SELECT {column_name} FROM schedule_data WHERE schedule_id = %s"
     result = DB.select(sql_query, (schedule_id,))
 
@@ -3472,16 +3479,18 @@ class AutoLineups:
 
         sql_query = f"""
             SELECT 
-                ss_url
+                *
             FROM schedule_data
             WHERE schedule_id = '{self.schedule_id}';
         """
         result = DB.select(sql_query)
+        home_team_id = int(result["home_team_id"].iloc[0])
+        away_team_id = int(result["away_team_id"].iloc[0])
         match_url = result['ss_url'].iloc[0]
 
         s=Service('chromedriver.exe')
         options = webdriver.ChromeOptions()
-        # options.add_argument("--headless=new") 
+        options.add_argument("--headless=new") 
         options.add_argument("--disable-gpu")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
@@ -3490,6 +3499,9 @@ class AutoLineups:
         driver = webdriver.Chrome(service=s, options=options)
         driver.get(match_url)
         driver.execute_script("window.scrollTo(0, 1000);")
+
+        referee_element = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//span[@class='gIcuCJ fdnFeu gnlqYH']/div/span")))
+        self.referee_name = referee_element.text
 
         lineups_tab = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, "//a[@href='#tab:lineups']")))
         lineups_tab.click()
@@ -3523,6 +3535,35 @@ class AutoLineups:
         self.away_subs = extract_subs(driver)
 
         driver.quit()
+
+        home_ids_st, home_ids_bn = match_players(home_team_id, self.home_starters + self.home_subs)
+        away_ids_st, away_ids_bn = match_players(away_team_id, self.away_starters + self.away_subs)
+
+        def _build_dicts(starters, bench):
+            data = []
+            for pid in starters:
+                data.append(
+                    dict(player_id=pid,
+                         yellow_card=False,
+                         red_card=False,
+                         on_field=True,
+                         bench=False)
+                )
+            for pid in bench:
+                data.append(
+                    dict(player_id=pid,
+                         yellow_card=False,
+                         red_card=False,
+                         on_field=False,
+                         bench=True)
+                )
+            return data
+        
+        self.home_players_data = _build_dicts(home_ids_st, home_ids_bn)
+        self.away_players_data = _build_dicts(away_ids_st, away_ids_bn)
+
+        send_lineup_to_db(self.home_players_data, schedule_id=self.schedule_id, team="home")
+        send_lineup_to_db(self.away_players_data, schedule_id=self.schedule_id, team="away")
 
 # ------------------------------ Trading ------------------------------
 class MatchTrade:
