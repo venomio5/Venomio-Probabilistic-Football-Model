@@ -394,6 +394,11 @@ def _bucket_time(ts):
         return 'evening'
     return 'night'
 
+def _save(name: str, booster: xgb.Booster, columns: list[str]) -> None:
+    booster.save_model(f'models/{name}_booster.json')
+    with open(f'models/{name}_columns.json', 'w') as fh:
+        json.dump(columns, fh)
+
 # ------------------------------ Fetch & Remove Data ------------------------------
 class UpdateSchedule:
     def __init__(self, from_date):
@@ -1846,6 +1851,9 @@ class Process_Data:
         self.update_players_xg_coef()
         self.update_match_info_referee_totals()
         self.update_referee_data_totals()
+        # self.train_context_ras_model()
+        # self.train_refined_sq_model()
+        # self.train_post_shot_goal_model()
 
     def insert_players_basics(self):
         """
@@ -2281,30 +2289,296 @@ class Process_Data:
         """
         DB.execute(sql)
 
+    def train_context_ras_model(self):
+        def flip(series: pd.Series) -> pd.Series:
+            flipped = -series
+            flipped[series == 0] = 0.0
+            return flipped
+
+        league_id_df = DB.select("SELECT league_id FROM league_data WHERE is_active = 1")
+
+        for league_id in league_id_df['league_id'].tolist():
+            sql_query = f"""
+                SELECT 
+                    mi.match_id,
+                    mi.home_team_id,
+                    mi.away_team_id,
+                    mi.home_elevation_dif,
+                    mi.away_elevation_dif,
+                    mi.away_travel,
+                    mi.home_rest_days,
+                    mi.away_rest_days,
+                    mi.temperature_c,
+                    mi.is_raining,
+                    mi.date,
+                    md.teamA_pdras,
+                    md.teamB_pdras,
+                    md.minutes_played,
+                    md.match_state,
+                    md.match_segment,
+                    md.player_dif,
+                    (md.teamA_headers + md.teamA_footers) AS home_shots,
+                    (md.teamB_headers + md.teamB_footers) AS away_shots
+                FROM match_info mi
+                JOIN match_detail md ON mi.match_id = md.match_id
+                WHERE mi.league_id = %s
+            """
+            context_df = DB.select(sql_query, (league_id,))
+            context_df['date'] = pd.to_datetime(context_df['date'])
+            context_df['match_state'] = pd.to_numeric(context_df['match_state'], errors='raise').astype(float)
+            context_df['player_dif']  = pd.to_numeric(context_df['player_dif'],  errors='raise').astype(float)
+
+            home_df = pd.DataFrame({
+                'shots'              : context_df['home_shots'],
+                'total_ras'          : context_df['teamA_pdras'],
+                'minutes_played'     : context_df['minutes_played'],
+                'team_is_home'       : 1,
+                'team_elevation_dif' : context_df['home_elevation_dif'],
+                'opp_elevation_dif'  : context_df['away_elevation_dif'],
+                'team_travel'        : 0,
+                'opp_travel'         : context_df['away_travel'],
+                'team_rest_days'     : context_df['home_rest_days'],
+                'opp_rest_days'      : context_df['away_rest_days'],
+                'match_state'        : context_df['match_state'],
+                'match_segment'      : context_df['match_segment'],
+                'player_dif'         : context_df['player_dif'],
+                'temperature_c'      : context_df['temperature_c'],
+                'is_raining'         : context_df['is_raining'],
+                'match_time'         : context_df['date'].apply(_bucket_time)
+            })
+
+            away_df = pd.DataFrame({
+                'shots'              : context_df['away_shots'],
+                'total_ras'          : context_df['teamB_pdras'],
+                'minutes_played'     : context_df['minutes_played'],
+                'team_is_home'       : 0,
+                'team_elevation_dif' : context_df['away_elevation_dif'],
+                'opp_elevation_dif'  : context_df['home_elevation_dif'],
+                'team_travel'        : context_df['away_travel'],
+                'opp_travel'         : 0,
+                'team_rest_days'     : context_df['away_rest_days'],
+                'opp_rest_days'      : context_df['home_rest_days'],
+                'match_state'        : flip(context_df['match_state']),
+                'match_segment'      : context_df['match_segment'],
+                'player_dif'         : flip(context_df['player_dif']),
+                'temperature_c'      : context_df['temperature_c'],
+                'is_raining'         : context_df['is_raining'],
+                'match_time'         : context_df['date'].apply(_bucket_time)
+            })
+            
+            df = pd.concat([home_df, away_df], ignore_index=True)
+
+            df['shots_per_min']     = df['shots']      / df['minutes_played']
+            df['ras_per_min']       = df['total_ras']  / df['minutes_played']
+
+            cat_cols  = ['match_state', 'match_segment', 'player_dif', 'match_time']
+            bool_cols = ['team_is_home', 'is_raining']
+            num_cols  = ['team_elevation_dif', 'opp_elevation_dif', 'team_travel', 'opp_travel', 'team_rest_days', 'opp_rest_days', 'temperature_c']
+            
+            required_cols = cat_cols + bool_cols + num_cols + ['shots', 'total_ras']
+            missing_cols  = [c for c in ['shots', 'total_ras'] if c not in df.columns]
+            if missing_cols:
+                raise ValueError(f'Missing expected columns: {missing_cols}')
+
+            df = df.dropna(subset=[c for c in required_cols if c in df.columns])
+
+            for c in cat_cols:
+                df[c] = df[c].astype(str).str.lower()
+
+            df[bool_cols] = df[bool_cols].astype(int)
+
+            X_cat = pd.get_dummies(df[cat_cols], prefix=cat_cols)
+            X     = pd.concat([df[num_cols], df[bool_cols], X_cat], axis=1)
+
+            y           = df['shots_per_min']
+            base_margin = np.log(df['ras_per_min'].clip(lower=1e-6))
+
+            dtrain = xgb.DMatrix(X, label=y, base_margin=base_margin)
+
+            params = dict(objective='count:poisson',
+                            tree_method='hist',
+                            max_depth=6,
+                            eta=0.05,
+                            subsample=0.8,
+                            colsample_bytree=0.8,
+                            min_child_weight=5)
+            
+            cv_results = xgb.cv(
+                params,
+                dtrain,
+                num_boost_round=500,
+                nfold=5,
+                early_stopping_rounds=100,
+                metrics='poisson-nloglik',
+                verbose_eval=False
+            )
+            
+            optimal_rounds = len(cv_results)
+            booster = xgb.train(params, dtrain, num_boost_round=optimal_rounds)
+
+            _save(f'ras_{league_id}', booster, X.columns.tolist())
+
+    def train_refined_sq_model(self) -> tuple[xgb.Booster, list[str]]:
+        sql = """
+            SELECT
+                total_plsqa,
+                shooter_sq,
+                assister_sq,
+                CASE WHEN match_state < 0 THEN 'Trailing'
+                     WHEN match_state = 0 THEN 'Level'
+                     ELSE 'Leading' END AS match_state,
+                CASE WHEN player_dif < 0 THEN 'Neg'
+                     WHEN player_dif = 0 THEN 'Neu'
+                     ELSE 'Pos' END      AS player_dif,
+                xg
+            FROM shots_data
+            WHERE total_plsqa IS NOT NULL
+        """
+        df = DB.select(sql)
+
+        cat_cols = ['match_state', 'player_dif']
+        num_cols = ['total_plsqa', 'shooter_sq', 'assister_sq']
+        df[num_cols] = df[num_cols].apply(pd.to_numeric, errors='coerce')
+        for c in cat_cols:
+            df[c] = df[c].astype(str)
+
+        X_cat = pd.get_dummies(df[cat_cols], prefix=cat_cols, dummy_na=True)
+        X     = pd.concat([df[num_cols], X_cat], axis=1).astype(float)
+        y     = df['xg'].astype(float)
+
+        dtrain = xgb.DMatrix(X, label=y)
+        params = dict(objective='reg:logistic',
+                      eval_metric='logloss',
+                      tree_method='hist',
+                      max_depth=6,
+                      eta=0.05,
+                      subsample=0.8,
+                      colsample_bytree=0.8,
+                      min_child_weight=2)
+
+        cv_results = xgb.cv(
+            params,
+            dtrain,
+            num_boost_round=500,
+            nfold=5,
+            early_stopping_rounds=100,
+            metrics='logloss',
+            verbose_eval=False
+        )
+        
+        optimal_rounds = len(cv_results)
+        booster = xgb.train(params, dtrain, num_boost_round=optimal_rounds)
+
+        _save('rsq', booster, X.columns.tolist())
+
+    def train_post_shot_goal_model(self) -> tuple[xgb.Booster, list[str]]:
+        sql = """
+            SELECT
+                sd.RSQ,
+                sd.shooter_A,
+                sd.GK_A,
+                CASE WHEN sd.team_id = mi.home_team_id
+                     THEN 1 ELSE 0 END                       AS team_is_home,
+                CASE WHEN sd.team_id = mi.home_team_id
+                     THEN mi.home_elevation_dif
+                     ELSE mi.away_elevation_dif END          AS team_elevation_dif,
+                CASE WHEN sd.team_id = mi.home_team_id
+                     THEN 0 ELSE mi.away_travel END          AS team_travel,
+                CASE WHEN sd.team_id = mi.home_team_id
+                     THEN mi.home_rest_days
+                     ELSE mi.away_rest_days END              AS team_rest_days,
+                mi.temperature_c,
+                mi.is_raining,
+                mi.date,
+                sd.outcome
+            FROM   shots_data sd
+            JOIN   match_info mi ON mi.match_id = sd.match_id
+        """
+        df = DB.select(sql)
+
+        df['date']       = pd.to_datetime(df['date'])
+        df['match_time'] = df['date'].apply(lambda t: 'aft' if 9 <= t.hour < 14
+                                                      else ('evening' if 14 <= t.hour < 19
+                                                            else 'night'))
+
+        cat_cols  = ['match_time']
+        bool_cols = ['team_is_home', 'is_raining']
+        num_cols  = ['RSQ', 'shooter_A', 'GK_A',
+                     'team_elevation_dif', 'team_travel',
+                     'team_rest_days', 'temperature_c']
+
+        df[num_cols] = df[num_cols].apply(pd.to_numeric, errors='coerce')
+
+        df[bool_cols] = (
+            df[bool_cols]
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0) 
+            .astype(int)           
+        )
+
+        df.replace([np.inf, -np.inf], np.nan, inplace=True)
+        df = df.dropna(subset=num_cols)
+
+        X_cat = pd.get_dummies(df[cat_cols], prefix=cat_cols, dummy_na=True)
+        X     = pd.concat([df[num_cols + bool_cols], X_cat], axis=1).astype(float)
+        y     = df['outcome'].astype(int)
+
+        pos_rate         = y.mean()
+        scale_pos_weight = (1 - pos_rate) / pos_rate if pos_rate > 0 else 1.0
+
+        dtrain = xgb.DMatrix(X, label=y)
+        params = dict(objective='binary:logistic',
+                      eval_metric='logloss',
+                      base_score = pos_rate,
+                      scale_pos_weight = scale_pos_weight,
+                      tree_method='hist',
+                      max_depth=6,
+                      eta=0.05,
+                      subsample=0.8,
+                      colsample_bytree=0.8,
+                      min_child_weight=2)
+        
+        cv_results = xgb.cv(
+            params,
+            dtrain,
+            num_boost_round=1500,
+            nfold=5,
+            stratified=True,
+            early_stopping_rounds=100,
+            verbose_eval=False
+        )
+
+        optimal_rounds = len(cv_results)
+        booster = xgb.train(params, dtrain, num_boost_round=optimal_rounds)
+
+        _save('psxg', booster, X.columns.tolist())
+
 # ------------------------------ Monte Carlo ------------------------------
 class Alg:
-    def __init__(self, schedule_id, home_team_id, away_team_id, home_players_data, away_players_data, league_id, match_time, home_elevation_dif, away_elevation_dif, away_travel, home_rest_days, away_rest_days, temperature, is_raining, home_initial_goals, away_initial_goals, match_initial_time, home_n_subs_avail, away_n_subs_avail, referee_name):
+    def __init__(self, schedule_id, home_initial_goals, away_initial_goals, match_initial_time, home_n_subs_avail, away_n_subs_avail):
         self.schedule_id = schedule_id
-        self.home_team_id = home_team_id
-        self.away_team_id = away_team_id
-        self.home_players_init_data = home_players_data
-        self.away_players_init_data = away_players_data
-        self.league_id = league_id
-        self.match_time = match_time
-        self.home_elevation_dif = home_elevation_dif
-        self.away_elevation_dif = away_elevation_dif
-        self.away_travel = away_travel
-        self.home_rest_days = home_rest_days
-        self.away_rest_days = away_rest_days
-        self.temperature = temperature
-        self.is_raining = is_raining
+
+        match_df = DB.select("SELECT * FROM schedule_data WHERE schedule_id = %s", (self.schedule_id,))
+
+        self.home_team_id = match_df.iloc[0]['home_team_id']
+        self.away_team_id = match_df.iloc[0]['away_team_id']
+        self.home_players_init_data = match_df.iloc[0]['home_players_data']
+        self.away_players_init_data = match_df.iloc[0]['away_players_data']
+        self.league_id = match_df.iloc[0]['league_id']
+        self.home_elevation_dif = match_df.iloc[0]['home_elevation_dif']
+        self.away_elevation_dif = match_df.iloc[0]['away_elevation_dif']
+        self.away_travel = match_df.iloc[0]['away_travel']
+        self.home_rest_days = match_df.iloc[0]['home_rest_days']
+        self.away_rest_days = match_df.iloc[0]['away_rest_days']
+        self.temperature = match_df.iloc[0]['temperature']
+        self.is_raining = match_df.iloc[0]['is_raining']
         self.home_initial_goals = home_initial_goals
         self.away_initial_goals = away_initial_goals
         self.match_initial_time = match_initial_time
         self.match_time_label = _bucket_time(self.match_initial_time)
         self.home_n_subs_avail = home_n_subs_avail
         self.away_n_subs_avail = away_n_subs_avail
-        self.referee_name = referee_name
+        self.referee_name = match_df.iloc[0]['referee_name']
 
         baseline_df = DB.select(
             "SELECT sh_baseline_coef, hxg_baseline_coef, fxg_baseline_coef FROM league_data WHERE league_id = %s",
@@ -2314,12 +2588,12 @@ class Alg:
         self.hxg_baseline_coef = float(baseline_df.iloc[0]['hxg_baseline_coef']) if not baseline_df.empty and baseline_df.iloc[0]['hxg_baseline_coef'] is not None else 0.0
         self.fxg_baseline_coef = float(baseline_df.iloc[0]['fxg_baseline_coef']) if not baseline_df.empty and baseline_df.iloc[0]['fxg_baseline_coef'] is not None else 0.0
 
-        self.ras_booster, self.ras_cr_columns = self.train_context_ras_model()
+        self.ras_booster, self.ras_cr_columns = self._load_model(f'ras_{self.league_id}')
         self.ctx_mult_home, self.ctx_mult_away = self.precompute_ctx_multipliers()
-        self.rsq_booster, self.rsq_columns = self.train_refined_sq_model()
+        self.rsq_booster, self.rsq_columns     = self._load_model('rsq')
         self.rsq_pred_cache = {}
         self.rsq_col_idx    = {c: i for i, c in enumerate(self.rsq_columns)}
-        self.psxg_booster, self.psxg_columns = self.train_post_shot_goal_model()
+        self.psxg_booster, self.psxg_columns   = self._load_model('psxg')
         self.psxg_pred_cache = {}
         self.psg_col_idx     = {c: i for i, c in enumerate(self.psxg_columns)}
         self.ref_stats = self.get_referee_stats()
@@ -2344,8 +2618,7 @@ class Alg:
         elif self.match_initial_time < 45:
             range_value = 6000
 
-        shot_rows, card_rows = self.run_simulations(range_value, 4)
-        self.insert_sim_data(shot_rows, self.schedule_id)
+        self.run_simulations(range_value, 4)
 
     def _simulate_single(self, i):
         self.home_players_data = copy.deepcopy(self._base_home_players_data)
@@ -2501,152 +2774,45 @@ class Alg:
                         context_ras_change = True
         return shot_rows, card_rows
 
-    def run_simulations(self, n_sims, n_workers):
+    def run_simulations(self, n_sims, n_workers, flush_every: int = 1000):
         if n_workers is None:
             n_workers = os.cpu_count() or 1
 
-        shot_rows = []
-        card_rows = []
+        shot_buf, card_buf = [], []
+        first_flush_done = False
+
+        def _flush():
+            nonlocal first_flush_done
+            if not shot_buf:
+                return
+            self.insert_sim_data(
+                shot_buf,
+                self.schedule_id,
+                initial_delete=not first_flush_done
+            )
+            first_flush_done = True
+            shot_buf.clear()
+            card_buf.clear()
 
         if n_workers > 1:
             with multiprocessing.Pool(processes=n_workers) as pool:
-                for s, c in tqdm(pool.imap_unordered(self._simulate_single, range(n_sims)),
-                                 total=n_sims,
-                                 desc=f'Simulations ({n_workers} workers)'):
-                    shot_rows.extend(s)
-                    card_rows.extend(c)
-        else: 
-            for i in tqdm(range(n_sims), desc='Simulations (1 worker)'):
-                s, c = self._simulate_single(i)
-                shot_rows.extend(s)
-                card_rows.extend(c)
+                for idx, (s, c) in enumerate(
+                        tqdm(pool.imap_unordered(self._simulate_single, range(n_sims)),
+                            total=n_sims,
+                            desc=f'Simulations ({n_workers} workers)')):
+                    shot_buf.extend(s)
+                    card_buf.extend(c)
+                    if (idx + 1) % flush_every == 0:
+                        _flush()
+        else:
+            for idx in tqdm(range(n_sims), desc='Simulations (1 worker)'):
+                s, c = self._simulate_single(idx)
+                shot_buf.extend(s)
+                card_buf.extend(c)
+                if (idx + 1) % flush_every == 0:
+                    _flush()
 
-        return shot_rows, card_rows
-
-    def train_context_ras_model(self):
-        def flip(series: pd.Series) -> pd.Series:
-            flipped = -series
-            flipped[series == 0] = 0.0
-            return flipped
-        
-        sql_query = f"""
-            SELECT 
-                mi.match_id,
-                mi.home_team_id,
-                mi.away_team_id,
-                mi.home_elevation_dif,
-                mi.away_elevation_dif,
-                mi.away_travel,
-                mi.home_rest_days,
-                mi.away_rest_days,
-                mi.temperature_c,
-                mi.is_raining,
-                mi.date,
-                md.teamA_pdras,
-                md.teamB_pdras,
-                md.minutes_played,
-                md.match_state,
-                md.match_segment,
-                md.player_dif,
-                (md.teamA_headers + md.teamA_footers) AS home_shots,
-                (md.teamB_headers + md.teamB_footers) AS away_shots
-            FROM match_info mi
-            JOIN match_detail md ON mi.match_id = md.match_id
-            WHERE mi.league_id = %s
-        """
-        context_df = DB.select(sql_query, (self.league_id,))
-        context_df['date'] = pd.to_datetime(context_df['date'])
-        context_df['match_state'] = pd.to_numeric(context_df['match_state'], errors='raise').astype(float)
-        context_df['player_dif']  = pd.to_numeric(context_df['player_dif'],  errors='raise').astype(float)
-
-        home_df = pd.DataFrame({
-            'shots'              : context_df['home_shots'],
-            'total_ras'          : context_df['teamA_pdras'],
-            'minutes_played'     : context_df['minutes_played'],
-            'team_is_home'       : 1,
-            'team_elevation_dif' : context_df['home_elevation_dif'],
-            'opp_elevation_dif'  : context_df['away_elevation_dif'],
-            'team_travel'        : 0,
-            'opp_travel'         : context_df['away_travel'],
-            'team_rest_days'     : context_df['home_rest_days'],
-            'opp_rest_days'      : context_df['away_rest_days'],
-            'match_state'        : context_df['match_state'],
-            'match_segment'      : context_df['match_segment'],
-            'player_dif'         : context_df['player_dif'],
-            'temperature_c'      : context_df['temperature_c'],
-            'is_raining'         : context_df['is_raining'],
-            'match_time'         : context_df['date'].apply(_bucket_time)
-        })
-
-        away_df = pd.DataFrame({
-            'shots'              : context_df['away_shots'],
-            'total_ras'          : context_df['teamB_pdras'],
-            'minutes_played'     : context_df['minutes_played'],
-            'team_is_home'       : 0,
-            'team_elevation_dif' : context_df['away_elevation_dif'],
-            'opp_elevation_dif'  : context_df['home_elevation_dif'],
-            'team_travel'        : context_df['away_travel'],
-            'opp_travel'         : 0,
-            'team_rest_days'     : context_df['away_rest_days'],
-            'opp_rest_days'      : context_df['home_rest_days'],
-            'match_state'        : flip(context_df['match_state']),
-            'match_segment'      : context_df['match_segment'],
-            'player_dif'         : flip(context_df['player_dif']),
-            'temperature_c'      : context_df['temperature_c'],
-            'is_raining'         : context_df['is_raining'],
-            'match_time'         : context_df['date'].apply(_bucket_time)
-        })
-        
-        df = pd.concat([home_df, away_df], ignore_index=True)
-
-        df['shots_per_min']     = df['shots']      / df['minutes_played']
-        df['ras_per_min']       = df['total_ras']  / df['minutes_played']
-
-        cat_cols  = ['match_state', 'match_segment', 'player_dif', 'match_time']
-        bool_cols = ['team_is_home', 'is_raining']
-        num_cols  = ['team_elevation_dif', 'opp_elevation_dif', 'team_travel', 'opp_travel', 'team_rest_days', 'opp_rest_days', 'temperature_c']
-        
-        required_cols = cat_cols + bool_cols + num_cols + ['shots', 'total_ras']
-        missing_cols  = [c for c in ['shots', 'total_ras'] if c not in df.columns]
-        if missing_cols:
-            raise ValueError(f'Missing expected columns: {missing_cols}')
-
-        df = df.dropna(subset=[c for c in required_cols if c in df.columns])
-
-        for c in cat_cols:
-            df[c] = df[c].astype(str).str.lower()
-
-        df[bool_cols] = df[bool_cols].astype(int)
-
-        X_cat = pd.get_dummies(df[cat_cols], prefix=cat_cols)
-        X     = pd.concat([df[num_cols], df[bool_cols], X_cat], axis=1)
-
-        y           = df['shots_per_min']
-        base_margin = np.log(df['ras_per_min'].clip(lower=1e-6))
-
-        dtrain = xgb.DMatrix(X, label=y, base_margin=base_margin)
-
-        params = dict(objective='count:poisson',
-                        tree_method='hist',
-                        max_depth=6,
-                        eta=0.05,
-                        subsample=0.8,
-                        colsample_bytree=0.8,
-                        min_child_weight=5)
-        
-        cv_results = xgb.cv(
-            params,
-            dtrain,
-            num_boost_round=500,
-            nfold=5,
-            early_stopping_rounds=100,
-            metrics='poisson-nloglik',
-            verbose_eval=False
-        )
-        
-        optimal_rounds = len(cv_results)
-        booster = xgb.train(params, dtrain, num_boost_round=optimal_rounds)
-        return booster, X.columns
+        _flush()
 
     def predict_context_ras(self, booster, feature_columns, new_match, *, raw=False):
         categorical_cols = ['match_state', 'match_segment', 'player_dif', 'match_time']
@@ -2708,59 +2874,6 @@ class Alg:
                 cache[(st, sg, pdif)] = np.exp(raw_margin)
         return home_cache, away_cache
 
-    def train_refined_sq_model(self) -> tuple[xgb.Booster, list[str]]:
-        sql = """
-            SELECT
-                total_plsqa,
-                shooter_sq,
-                assister_sq,
-                CASE WHEN match_state < 0 THEN 'Trailing'
-                     WHEN match_state = 0 THEN 'Level'
-                     ELSE 'Leading' END AS match_state,
-                CASE WHEN player_dif < 0 THEN 'Neg'
-                     WHEN player_dif = 0 THEN 'Neu'
-                     ELSE 'Pos' END      AS player_dif,
-                xg
-            FROM shots_data
-            WHERE total_plsqa IS NOT NULL
-        """
-        df = DB.select(sql)
-
-        cat_cols = ['match_state', 'player_dif']
-        num_cols = ['total_plsqa', 'shooter_sq', 'assister_sq']
-        df[num_cols] = df[num_cols].apply(pd.to_numeric, errors='coerce')
-        for c in cat_cols:
-            df[c] = df[c].astype(str)
-
-        X_cat = pd.get_dummies(df[cat_cols], prefix=cat_cols, dummy_na=True)
-        X     = pd.concat([df[num_cols], X_cat], axis=1).astype(float)
-        y     = df['xg'].astype(float)
-
-        dtrain = xgb.DMatrix(X, label=y)
-        params = dict(objective='reg:logistic',
-                      eval_metric='logloss',
-                      tree_method='hist',
-                      max_depth=6,
-                      eta=0.05,
-                      subsample=0.8,
-                      colsample_bytree=0.8,
-                      min_child_weight=2)
-
-        cv_results = xgb.cv(
-            params,
-            dtrain,
-            num_boost_round=500,
-            nfold=5,
-            early_stopping_rounds=100,
-            metrics='logloss',
-            verbose_eval=False
-        )
-        
-        optimal_rounds = len(cv_results)
-        booster = xgb.train(params, dtrain, num_boost_round=optimal_rounds)
-
-        return booster, X.columns.tolist()
-
     def _predict_refined_sq_bulk(self, df: pd.DataFrame) -> np.ndarray:
         cat_cols = ['match_state', 'player_dif']
         num_cols = ['total_plsqa', 'shooter_sq', 'assister_sq']
@@ -2787,87 +2900,6 @@ class Alg:
                     X[i, idx] = 1.0
 
         return self.rsq_booster.inplace_predict(X)
-
-    def train_post_shot_goal_model(self) -> tuple[xgb.Booster, list[str]]:
-        sql = """
-            SELECT
-                sd.RSQ,
-                sd.shooter_A,
-                sd.GK_A,
-                CASE WHEN sd.team_id = mi.home_team_id
-                     THEN 1 ELSE 0 END                       AS team_is_home,
-                CASE WHEN sd.team_id = mi.home_team_id
-                     THEN mi.home_elevation_dif
-                     ELSE mi.away_elevation_dif END          AS team_elevation_dif,
-                CASE WHEN sd.team_id = mi.home_team_id
-                     THEN 0 ELSE mi.away_travel END          AS team_travel,
-                CASE WHEN sd.team_id = mi.home_team_id
-                     THEN mi.home_rest_days
-                     ELSE mi.away_rest_days END              AS team_rest_days,
-                mi.temperature_c,
-                mi.is_raining,
-                mi.date,
-                sd.outcome
-            FROM   shots_data sd
-            JOIN   match_info mi ON mi.match_id = sd.match_id
-        """
-        df = DB.select(sql)
-
-        df['date']       = pd.to_datetime(df['date'])
-        df['match_time'] = df['date'].apply(lambda t: 'aft' if 9 <= t.hour < 14
-                                                      else ('evening' if 14 <= t.hour < 19
-                                                            else 'night'))
-
-        cat_cols  = ['match_time']
-        bool_cols = ['team_is_home', 'is_raining']
-        num_cols  = ['RSQ', 'shooter_A', 'GK_A',
-                     'team_elevation_dif', 'team_travel',
-                     'team_rest_days', 'temperature_c']
-
-        df[num_cols] = df[num_cols].apply(pd.to_numeric, errors='coerce')
-
-        df[bool_cols] = (
-            df[bool_cols]
-            .replace([np.inf, -np.inf], np.nan)
-            .fillna(0) 
-            .astype(int)           
-        )
-
-        df.replace([np.inf, -np.inf], np.nan, inplace=True)
-        df = df.dropna(subset=num_cols)
-
-        X_cat = pd.get_dummies(df[cat_cols], prefix=cat_cols, dummy_na=True)
-        X     = pd.concat([df[num_cols + bool_cols], X_cat], axis=1).astype(float)
-        y     = df['outcome'].astype(int)
-
-        pos_rate         = y.mean()
-        scale_pos_weight = (1 - pos_rate) / pos_rate if pos_rate > 0 else 1.0
-
-        dtrain = xgb.DMatrix(X, label=y)
-        params = dict(objective='binary:logistic',
-                      eval_metric='logloss',
-                      base_score = pos_rate,
-                      scale_pos_weight = scale_pos_weight,
-                      tree_method='hist',
-                      max_depth=6,
-                      eta=0.05,
-                      subsample=0.8,
-                      colsample_bytree=0.8,
-                      min_child_weight=2)
-        
-        cv_results = xgb.cv(
-            params,
-            dtrain,
-            num_boost_round=1500,
-            nfold=5,
-            stratified=True,
-            early_stopping_rounds=100,
-            verbose_eval=False
-        )
-
-        optimal_rounds = len(cv_results)
-        booster = xgb.train(params, dtrain, num_boost_round=optimal_rounds)
-        return booster, X.columns.tolist()
 
     def _predict_post_shot_bulk(self, df: pd.DataFrame) -> np.ndarray:
         cat_cols  = ['match_time']
@@ -3340,13 +3372,10 @@ class Alg:
         p_vals   = list(probs.values())
         return np.random.choice(ass, p=p_vals)
 
-    def insert_sim_data(self, rows, schedule_id):
-        delete_query  = """
-        DELETE FROM simulation_data 
-        WHERE schedule_id = %s
-        """
-
-        DB.execute(delete_query, (schedule_id,))
+    def insert_sim_data(self, rows, schedule_id, *, initial_delete: bool = False):
+        if initial_delete:
+            DB.execute("DELETE FROM simulation_data WHERE schedule_id = %s",
+                    (schedule_id,))
 
         batch_size = 200
         for i in range(0, len(rows), batch_size):
@@ -3472,6 +3501,19 @@ class Alg:
         outcome = np.random.choice(['YC', 'RC', 'NONE'], p=probs)
         return outcome
 
+    @staticmethod
+    def _load_model(name: str) -> tuple[xgb.Booster, list[str]]:
+        booster_path  = f'models/{name}_booster.json'
+        columns_path  = f'models/{name}_columns.json'
+
+        booster = xgb.Booster()
+        booster.load_model(booster_path)
+
+        with open(columns_path, 'r') as fh:
+            columns = json.load(fh)
+
+        return booster, columns
+
 # ------------------------------ Automatization ------------------------------
 class AutoLineups:
     def __init__(self, schedule_id):
@@ -3564,6 +3606,9 @@ class AutoLineups:
 
         send_lineup_to_db(self.home_players_data, schedule_id=self.schedule_id, team="home")
         send_lineup_to_db(self.away_players_data, schedule_id=self.schedule_id, team="away")
+
+        sql_query = f"UPDATE schedule_data SET referee_name = %s WHERE schedule_id = %s"
+        DB.execute(sql_query, (self.referee_name, schedule_id))
 
 # ------------------------------ Trading ------------------------------
 class MatchTrade:

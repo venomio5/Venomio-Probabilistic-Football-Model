@@ -1661,8 +1661,8 @@ class MainWindow(QMainWindow):
             list_item = self.add_task_to_queue(f"Extract & Process up to {upto_date}")
 
             def task():
-                core.Extract_Data(upto_date)
-                # core.Process_Data()
+                # core.Extract_Data(upto_date)
+                core.Process_Data()
 
             worker = UpdateWorker(task)
             worker.signals.finished.connect(lambda li=list_item: (self.remove_task_from_queue(li), self.load_leagues()))
@@ -1705,7 +1705,7 @@ class MainWindow(QMainWindow):
 
     def open_league_window(self, league_id, ln):
         ld_row = self.vpfm_db.select(
-            "SELECT is_active, league_sg_url, fbref_fixtures_url FROM league_data WHERE league_id = %s",
+            "SELECT is_active, ss_url, fbref_fixtures_url FROM league_data WHERE league_id = %s",
             (league_id,)
         ).iloc[0]
 
@@ -1722,11 +1722,11 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(active_chk)
 
-        sg_edit = QLineEdit(ld_row["league_sg_url"] or "")
+        sg_edit = QLineEdit(ld_row["ss_url"] or "")
         sg_edit.setPlaceholderText("Statsbomb / SG url")
         sg_edit.setStyleSheet("background-color:#1a1a1a; color:white;")
         sg_edit.editingFinished.connect(
-            partial(self.update_url_text, league_id, "league_sg_url", sg_edit)
+            partial(self.update_url_text, league_id, "ss_url", sg_edit)
         )
         layout.addWidget(sg_edit)
 
@@ -1787,7 +1787,7 @@ class MainWindow(QMainWindow):
             if not ln:
                 return
             self.vpfm_db.execute(
-                "INSERT INTO league_data (league_name, is_active, league_sg_url, fbref_fixtures_url, last_updated_date) "
+                "INSERT INTO league_data (league_name, is_active, ss_url, fbref_fixtures_url, last_updated_date) "
                 "VALUES (%s, %s, %s, %s, NOW())",
                 (ln, active_chk.isChecked(), sg_edit.text().strip(), fb_edit.text().strip())
             )
