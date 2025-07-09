@@ -349,7 +349,7 @@ def send_referee_name_to_db(referee_raw_name, schedule_id):
     referee_rows = DB.select(sql_get_names)
     all_names = referee_rows["referee_name"].dropna().tolist()
 
-    best_match, _ = process.extractOne(referee_raw_name, all_names, scorer=fuzz.WRatio)
+    best_match, score, _ = process.extractOne(referee_raw_name, all_names, scorer=fuzz.WRatio)
 
     sql = "UPDATE schedule_data SET referee_name = %s WHERE schedule_id = %s"
     DB.execute(sql, (best_match, schedule_id))

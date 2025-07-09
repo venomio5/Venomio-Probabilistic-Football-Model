@@ -397,10 +397,12 @@ class MainWindow(QMainWindow):
         away_saved_players = core.get_saved_lineup(match['schedule_id'], "away")
 
         if home_saved_players:
-            home_players_input.setPlainText("\n".join(home_saved_players))
-
+            home_players_text = "\n".join(player["player_id"] for player in home_saved_players)
+            home_players_input.setPlainText(home_players_text)
+        
         if away_saved_players:
-            away_players_input.setPlainText("\n".join(away_saved_players))
+            away_players_text = "\n".join(player["player_id"] for player in away_saved_players)
+            away_players_input.setPlainText(away_players_text)
         
         button_layout = QHBoxLayout()
         button_layout.addStretch()
@@ -433,25 +435,36 @@ class MainWindow(QMainWindow):
 
             table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
 
-            for row, name in enumerate(players):
-                name_item = QTableWidgetItem(name)
+            for row, player in enumerate(players):
+                if isinstance(player, dict):
+                    name_text        = player.get("player_id", "")
+                    yc_checked       = player.get("yellow_card", False)
+                    rc_checked       = player.get("red_card",   False)
+                    on_field_checked = player.get("on_field",   False)
+                    bench_checked    = player.get("bench",      False)
+                else:  
+                    name_text        = str(player)
+                    yc_checked = rc_checked = False
+                    on_field_checked = row < 11         
+                    bench_checked    = not on_field_checked
+
+                name_item = QTableWidgetItem(name_text)
                 name_item.setFlags(Qt.ItemIsEnabled)
                 table.setItem(row, 0, name_item)
 
                 yc_cb = QCheckBox()
+                yc_cb.setChecked(yc_checked)
                 rc_cb = QCheckBox()
+                rc_cb.setChecked(rc_checked)
                 table.setCellWidget(row, 1, yc_cb)
                 table.setCellWidget(row, 2, rc_cb)
 
                 on_field_cb = QCheckBox()
-                bench_cb = QCheckBox()
+                bench_cb    = QCheckBox()
                 on_field_cb.setFixedWidth(55)
                 bench_cb.setFixedWidth(55)
-
-                if row < 11:
-                    on_field_cb.setChecked(True)
-                else:
-                    bench_cb.setChecked(True)
+                on_field_cb.setChecked(on_field_checked)
+                bench_cb.setChecked(bench_checked)
 
                 table.setCellWidget(row, 3, on_field_cb)
                 table.setCellWidget(row, 4, bench_cb)
@@ -489,9 +502,6 @@ class MainWindow(QMainWindow):
             tables_layout.addWidget(self.home_players_table)
             tables_layout.addWidget(self.away_players_table)
 
-            core.send_lineup_to_db(home_final_players, match['schedule_id'], "home")
-            core.send_lineup_to_db(away_final_players, match['schedule_id'], "away")
-
             build_layout.insertLayout(1, tables_layout)
             self.submit_button.setEnabled(True)
 
@@ -528,31 +538,20 @@ class MainWindow(QMainWindow):
             home_players_data = extract_players_data(self.home_players_table)
             away_players_data = extract_players_data(self.away_players_table)
 
+            core.send_lineup_to_db(home_players_data, match['schedule_id'], "home")
+            core.send_lineup_to_db(away_players_data, match['schedule_id'], "away")
+
             task_description = f"Simulating: {match['home_team']} vs {match['away_team']}"
             list_item = self.add_task_to_queue(task_description)
         
             worker = UpdateWorker(
                 core.Alg,
                 schedule_id=int(match['schedule_id']),
-                home_team_id=match['home_team_id'],
-                away_team_id=match['away_team_id'],
-                home_players_data=home_players_data,
-                away_players_data=away_players_data,
-                league_id=match['league_id'],
-                match_time=(datetime.min + match['venue_time']).time(), 
-                home_elevation_dif=match['home_elevation_dif'],
-                away_elevation_dif=match['away_elevation_dif'],
-                away_travel=match['away_travel'],
-                home_rest_days=match['home_rest_days'],
-                away_rest_days=match['away_rest_days'],
-                temperature=match['temperature'],
-                is_raining=match['is_raining'],
                 home_initial_goals=home_initial_goals,
                 away_initial_goals=away_initial_goals,
                 match_initial_time=match_initial_time,
                 home_n_subs_avail=home_initial_n_subs,
-                away_n_subs_avail=away_initial_n_subs,
-                referee_name=referee_name
+                away_n_subs_avail=away_initial_n_subs
             )
             worker.signals.finished.connect(lambda: self.remove_task_from_queue(list_item))
             worker.signals.error.connect(lambda err: print("Simulation error:", err))
