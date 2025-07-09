@@ -3629,6 +3629,8 @@ class AutoMatchInfo:
         home_players_data = result['home_players_data'].iloc[0]
         away_players_data = result['away_players_data'].iloc[0]
         last_minute_checked = int(result['last_minute_checked'].iloc[0] or 0)
+        home_subs_avail = int(result['home_n_subs_avail'].iloc[0])
+        away_subs_avail = int(result['away_n_subs_avail'].iloc[0])
 
         match = re.search(r'id:(\d+)', match_url)
         if not match:
@@ -3677,6 +3679,8 @@ class AutoMatchInfo:
             incidents: list[dict],
             home_status: list[dict],
             away_status: list[dict],
+            home_subs_avail: int,
+            away_subs_avail: int,
             last_minute_checked: int = 0
         ) -> tuple[dict, list[dict], list[dict], int, int, int]:
             events = {
@@ -3753,12 +3757,17 @@ class AutoMatchInfo:
                 cnt["away"]["sub"] > 0 or cnt["away"]["red"] > 0 or cnt["away"]["yellow"] >= 2
             )
 
+            home_subs_avail = max(home_subs_avail - cnt["home"]["sub"], 0)
+            away_subs_avail = max(away_subs_avail - cnt["away"]["sub"], 0)
+
             return (
                 home_status,
                 away_status,
                 last_minute,
                 simulate_home,
                 simulate_away,
+                home_subs_avail,
+                away_subs_avail 
             )
 
         api_incidents_url = f"https://www.sofascore.com/api/v1/event/{match_id}/incidents"
@@ -3766,11 +3775,13 @@ class AutoMatchInfo:
 
         incidents_data = iresponse.json()["incidents"]
 
-        upd_home, upd_away, last_min, sim_home, sim_away = parse_incidents(
+        upd_home, upd_away, last_min, sim_home, sim_away, home_subs_avail, away_subs_avail = parse_incidents(
             incidents_data,
             json.loads(home_players_data),
             json.loads(away_players_data),
-            last_minute_checked  
+            last_minute_checked,
+            home_subs_avail,
+            away_subs_avail
         )
 
         simulate = int(sim_home or sim_away)
@@ -3786,7 +3797,9 @@ class AutoMatchInfo:
                 current_away_goals             = %s,
                 current_period_start_timestamp = %s,
                 period                         = %s,
-                period_injury_time             = %s
+                period_injury_time             = %s,
+                home_n_subs_avail              = %s,
+                away_n_subs_avail              = %s
             WHERE schedule_id = %s;
             """,
             (
@@ -3799,6 +3812,8 @@ class AutoMatchInfo:
                 self.current_period_start_timestamp,
                 self.period,
                 self.period_injury_time,
+                home_subs_avail,
+                away_subs_avail,
                 self.schedule_id
             )
         )

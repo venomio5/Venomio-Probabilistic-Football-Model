@@ -353,6 +353,8 @@ CREATE TABLE schedule_data (
     period_injury_time INT,
     last_minute_checked INT,
     simulate BOOLEAN,
+    home_n_subs_avail INT DEFAULT 5,
+    away_n_subs_avail INT DEFAULT 5,
     UNIQUE (home_team_id, away_team_id)
 );
 ```
