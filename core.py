@@ -16,6 +16,7 @@ import requests
 import math
 from rapidfuzz import process, fuzz
 import re
+import numpy as np
 from sklearn.model_selection import GridSearchCV
 from sklearn.linear_model import Ridge
 import scipy.sparse as sp
@@ -28,6 +29,7 @@ import os
 import itertools 
 import copy
 import unicodedata
+import cloudscraper
 
 # --------------- Useful Classes, Functions & Variables ---------------
 class DatabaseManager:
@@ -419,9 +421,8 @@ class UpdateSchedule:
         active_leagues_df = DB.select("SELECT * FROM league_data WHERE is_active = 1")
         
         for league_id in tqdm(active_leagues_df["league_id"].tolist(), desc="Processing leagues"):
-            print(league_id)
             fbref_url = active_leagues_df[active_leagues_df['league_id'] == league_id]['fbref_fixtures_url'].values[0]
-            ss_url = active_leagues_df[active_leagues_df['league_id'] == league_id]['ss_url'].values[0]
+            # ss_url = active_leagues_df[active_leagues_df['league_id'] == league_id]['ss_url'].values[0]
             upto_date = self.from_date + timedelta(days=5)
 
             games_dates, games_local_time, games_venue_time, home_teams, away_teams = self.get_games_basic_info(fbref_url, upto_date)
@@ -1623,12 +1624,12 @@ class Process_Data:
         # self.update_players_shots_coef()
         # self.update_players_totals()
         # self.update_players_xg_coef()
-        self.update_shots()
+        # self.update_shots()
         # self.update_match_info_referee_totals()
         # self.update_referee_data_totals()
         # self.train_context_ras_model()
-        self.train_refined_sq_model()
-        self.train_post_shot_goal_model()
+        # self.train_refined_sq_model()
+        # self.train_post_shot_goal_model()
 
     def insert_players_basics(self):
         """
@@ -1786,11 +1787,12 @@ class Process_Data:
 
     def update_players_totals(self):
         """
-        Function to sum all information from all players (& referee) into players_data (referee_data) from match breakdown (match_info).
+        Function to sum all information from all players into players_data (referee_data) from match breakdown (match_info).
         """
         players_id_df = DB.select("SELECT DISTINCT player_id FROM players_data")
+        print("Updating players totals")
         
-        for player_id in players_id_df["player_id"].tolist():
+        for player_id in tqdm(players_id_df["player_id"].tolist()):
             pagg_query = """
             SELECT
                 COALESCE(SUM(headers), 0) AS headers,
@@ -1875,23 +1877,23 @@ class Process_Data:
             WHERE player_id = %s
             """
             DB.execute(pupdate_query, (
-                row["headers"],
-                row["footers"],
-                row["key_passes"],
-                row["non_assisted_footers"],
-                row["minutes_played"],
-                row["hxg"],
-                row["fxg"],
-                row["kp_hxg"],
-                row["kp_fxg"],
-                row["hpsxg"],
-                row["fpsxg"],
-                row["gk_psxg"],
-                row["gk_ga"],
-                row["fouls_committed"],
-                row["fouls_drawn"],
-                row["yellow_cards"],
-                row["red_cards"],
+                int(row["headers"]),
+                int(row["footers"]),
+                int(row["key_passes"]),
+                int(row["non_assisted_footers"]),
+                int(row["minutes_played"]),
+                float(row["hxg"]),
+                float(row["fxg"]),
+                float(row["kp_hxg"]),
+                float(row["kp_fxg"]),
+                float(row["hpsxg"]),
+                float(row["fpsxg"]),
+                float(row["gk_psxg"]),
+                int(row["gk_ga"]),
+                int(row["fouls_committed"]),
+                int(row["fouls_drawn"]),
+                int(row["yellow_cards"]),
+                int(row["red_cards"]),
                 json.dumps(in_status_dict),
                 json.dumps(out_status_dict),
                 json.dumps(subs_in_list, allow_nan=False),
@@ -1905,7 +1907,7 @@ class Process_Data:
         """
         league_id_df = DB.select("SELECT league_id FROM league_data WHERE is_active = 1")
         
-        for league_id in league_id_df['league_id'].tolist():
+        for league_id in tqdm(league_id_df['league_id'].tolist()):
             baseline_per_type = {"headers": 0.0, "footers": 0.0}
             for shot_type in ["headers", "footers"]:
                 prefix = "h" if shot_type == "headers" else "f"
@@ -2001,7 +2003,7 @@ class Process_Data:
                 offensive_ratings = dict(zip(players, best_model.coef_[:num_players]))
                 defensive_ratings = dict(zip(players, best_model.coef_[num_players:]))
                 
-                for player in players:
+                for player in tqdm(players):
                     off_coef = offensive_ratings[player]
                     def_coef = defensive_ratings[player]
                     
@@ -2017,13 +2019,12 @@ class Process_Data:
                         SET off_fxg_coef = %s, def_fxg_coef = %s
                         WHERE player_id = %s
                         """
-                    
-                    DB.execute(update_coef_query, (off_coef, def_coef, player))
+                    DB.execute(update_coef_query, (float(off_coef), float(def_coef), player))
             DB.execute("""
                 UPDATE league_data
                 SET hxg_baseline_coef = %s, fxg_baseline_coef = %s
                 WHERE league_id = %s
-            """, (baseline_per_type["headers"], baseline_per_type["footers"], league_id))
+            """, (float(baseline_per_type["headers"]), float(baseline_per_type["footers"]), league_id))
 
     def update_shots(self):
         """
@@ -2563,9 +2564,9 @@ class Alg:
         if self.match_initial_time >= 45:
             range_value = 2000
         elif self.match_initial_time < 1:
-            range_value = 8000
-        elif self.match_initial_time < 45:
             range_value = 6000
+        elif self.match_initial_time < 45:
+            range_value = 4000
 
         self.run_simulations(range_value, 4)
 
@@ -3322,6 +3323,11 @@ class Alg:
         return np.random.choice(ass, p=p_vals)
 
     def insert_sim_data(self, rows, schedule_id, *, initial_delete: bool = False):
+        def to_builtin(x):
+            if isinstance(x, (np.generic,)):
+                return x.item()
+            return x
+        
         if initial_delete:
             DB.execute("DELETE FROM simulation_data WHERE schedule_id = %s",
                     (schedule_id,))
@@ -3337,7 +3343,7 @@ class Alg:
             """
             params = []
             for row in chunk:
-                params.extend([row[0], schedule_id] + list(row[1:]))
+                params.extend([to_builtin(row[0]), to_builtin(schedule_id)] + [to_builtin(x) for x in row[1:]])
 
             DB.execute(insert_sql, params)
 
@@ -3471,16 +3477,26 @@ class AutoLineups:
             raise ValueError("Match ID not found in URL.")
         match_id = match.group(1)
 
+        api_url = f"https://api.sofascore.com/api/v1/event/{match_id}"
+
         headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/85.0.4183.121 Safari/537.36"
-            ),
-            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/125.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": f"https://www.sofascore.com/event/{match_id}",
+            "Origin": "https://www.sofascore.com",
         }
-        api_url = f"https://www.sofascore.com/api/v1/event/{match_id}"
-        gresponse = requests.get(api_url, headers=headers)
+
+        scraper = cloudscraper.create_scraper(
+            browser={
+                "browser": "chrome",
+                "mobile": False,
+                "platform": "windows",
+            }
+        )
+        gresponse = scraper.get(api_url, headers=headers, timeout=10)
 
         if gresponse.status_code != 200:
             raise RuntimeError(f"API request failed with status {gresponse.status_code}")
