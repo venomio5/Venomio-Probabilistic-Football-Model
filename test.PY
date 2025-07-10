@@ -1,2 +1,2 @@
 import core
-core.AutoMatchInfo(1336)
+core.AutoLineups(2790)
