@@ -3622,23 +3622,14 @@ class AutoLineups:
         api_url = f"https://api.sofascore.com/api/v1/event/{match_id}"
 
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/125.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": f"https://www.sofascore.com/event/{match_id}",
-            "Origin": "https://www.sofascore.com",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/85.0.4183.121 Safari/537.36"
+            ),
+            "Accept": "application/json",
         }
-
-        scraper = cloudscraper.create_scraper(
-            browser={
-                "browser": "chrome",
-                "mobile": False,
-                "platform": "windows",
-            }
-        )
-        gresponse = scraper.get(api_url, headers=headers, timeout=10)
+        gresponse = requests.get(api_url, headers=headers)
 
         if gresponse.status_code != 200:
             raise RuntimeError(f"API request failed with status {gresponse.status_code}")
