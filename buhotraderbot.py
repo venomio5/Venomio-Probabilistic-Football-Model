@@ -80,42 +80,48 @@ def load_simulation_df(schedule_id: int):
 
     return shots_df, home_id, away_id
 
-def get_aggregated_goals(shots_df, home_team_id):
+def get_aggregated_goals(shots_df, home_team_id, start_minute, start_home_goals, start_away_goals):
     if shots_df is None or shots_df.empty:
-        return pd.DataFrame(columns=["sim_id", "minute", "home_goals", "away_goals"])
-
-    df = shots_df.copy().sort_values(["sim_id", "minute"]).reset_index(drop=True)
-    df["squad"]   = pd.to_numeric(df["squad"],   errors="coerce").astype("Int64")
-    df["outcome"] = pd.to_numeric(df["outcome"], errors="coerce").fillna(0).astype(int)
-
-    df["is_home"]   = df["squad"] == int(home_team_id)
-    df["home_goal"] = ((df["outcome"] == 1) &  df["is_home"]).astype(int)
-    df["away_goal"] = ((df["outcome"] == 1) & ~df["is_home"]).astype(int)
-
-    df["home_goal_cum"] = df.groupby("sim_id")["home_goal"].cumsum()
-    df["away_goal_cum"] = df.groupby("sim_id")["away_goal"].cumsum()
-
+        return pd.DataFrame(columns=['sim_id', 'minute', 'home_goals', 'away_goals'])
+    
+    df = shots_df.copy()
+    df = df[df['minute'] >= start_minute]
+    
+    df = df.sort_values(['sim_id', 'minute']).reset_index(drop=True)
+    
+    df['squad']   = pd.to_numeric(df['squad'],   errors='coerce').astype('Int64')
+    df['outcome'] = pd.to_numeric(df['outcome'], errors='coerce').fillna(0).astype(int)
+    
+    df['is_home']   = df['squad'] == int(home_team_id)
+    df['home_goal'] = ((df['outcome'] == 1) &  df['is_home']).astype(int)
+    df['away_goal'] = ((df['outcome'] == 1) & ~df['is_home']).astype(int)
+    
+    df['home_goal_cum'] = df.groupby('sim_id')['home_goal'].cumsum() + start_home_goals
+    df['away_goal_cum'] = df.groupby('sim_id')['away_goal'].cumsum() + start_away_goals
+    
     agg = (
-        df.groupby(["sim_id", "minute"])
-          .agg(home_goals=("home_goal_cum", "last"),
-               away_goals=("away_goal_cum", "last"))
-          .reset_index()
+        df.groupby(['sim_id', 'minute'])
+        .agg(home_goals=('home_goal_cum', 'last'),
+            away_goals=('away_goal_cum', 'last'))
+        .reset_index()
     )
-
-    max_minute = int(df["minute"].max())
-    full_idx   = pd.MultiIndex.from_product(
-        [agg["sim_id"].unique(), range(max_minute + 1)],
-        names=["sim_id", "minute"]
+    
+    max_minute = int(df['minute'].max())
+    full_index = pd.MultiIndex.from_product(
+        [agg['sim_id'].unique(), range(max_minute + 1)],
+        names=['sim_id', 'minute']
     )
-
-    return (
-        agg.set_index(["sim_id", "minute"])
-           .reindex(full_idx)
-           .groupby(level=0)
-           .ffill()
-           .fillna(0)
-           .reset_index()
+    
+    agg = (
+        agg.set_index(['sim_id', 'minute'])
+        .reindex(full_index)
+        .groupby(level=0)
+        .ffill()
+        .fillna({'home_goals': start_home_goals, 'away_goals': start_away_goals})
+        .reset_index()
     )
+    
+    return agg
 
 # DB & STRIPE
 def init_db():
@@ -655,7 +661,7 @@ def get_odds(schedule_id: int, market_key: str) -> dict:
     if shots_df is None or shots_df.empty or home_id is None or away_id is None:
         return {}
 
-    agg = get_aggregated_goals(shots_df, home_id)
+    agg = get_aggregated_goals(shots_df, home_id, minute, homegoals, awaygoals)
     final_minute = agg["minute"].max()
     final_df = agg[agg["minute"] == final_minute]
     total = len(final_df)

@@ -29,7 +29,6 @@ import os
 import itertools 
 import copy
 import unicodedata
-import cloudscraper
 
 # --------------- Useful Classes, Functions & Variables ---------------
 class DatabaseManager:
@@ -285,60 +284,64 @@ def get_league_name_by_id(league_id):
     return None
 
 def match_players(team_id, raw_source):
-    if hasattr(raw_source, "toPlainText"):
+    def _normalize(text: str) -> str:
+        """
+        1. Quita acentos.
+        2. Elimina todo lo que no sea letra o espacio.
+        3. Convierte a minúsculas y colapsa espacios.
+        """
+        text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+        text = re.sub(r"[^a-zA-Z\s]", " ", text)
+        return " ".join(text.lower().split())
+
+    if hasattr(raw_source, "toPlainText"):               
         raw_text = raw_source.toPlainText()
         raw_list = [line.strip() for line in raw_text.split("\n")]
-    elif isinstance(raw_source, (list, tuple)):
+    elif isinstance(raw_source, (list, tuple)):         
         raw_list = [str(line).strip() for line in raw_source]
     else:
         raise TypeError("raw_source must be QTextEdit-like or list/tuple")
 
-    clean_list = [line for line in raw_list if line and not any(char.isdigit() for char in line)]
+    clean_list = [l for l in raw_list if l and not any(c.isdigit() for c in l)]
 
     unmatched_starters = clean_list[:11]
     unmatched_benchers = clean_list[11:]
 
     player_sql_query = """
-        SELECT DISTINCT player_id
-        FROM players_data
-        WHERE current_team = %s;
+        SELECT  player_id,
+                SUBSTRING_INDEX(player_id, '_', 1) AS player_name
+        FROM    players_data
+        WHERE   current_team = %s;
     """
-    players_df = DB.select(player_sql_query, (team_id, ))
+    players_df = DB.select(player_sql_query, (team_id,))
 
-    db_players = players_df['player_id'].tolist()
+    id_to_name = {row.player_id: _normalize(row.player_name)
+                  for row in players_df.itertuples(index=False)}
+    remaining_ids, remaining_names = list(id_to_name.keys()), list(id_to_name.values())
 
-    matched_starters = []
-    matched_benchers = []
+    def _pick_id(raw_name: str, thr: int):
+        norm = _normalize(raw_name)
+        match = process.extractOne(norm, remaining_names,
+                                   scorer=fuzz.token_set_ratio,
+                                   score_cutoff=thr)
+        if not match:
+            return None
+        idx = remaining_names.index(match[0])
+        remaining_names.pop(idx) 
+        return remaining_ids.pop(idx)
 
-    threshold = 80
-    while unmatched_starters:
-        remaining_players = []
-        for player in unmatched_starters:
-            closest_match = process.extractOne(player, db_players, score_cutoff=threshold)
-            if closest_match:
-                matched_starters.append(closest_match[0])
-                db_players.remove(closest_match[0])
-            else:
-                remaining_players.append(player)
-        if not remaining_players:
-            break
-        unmatched_starters = remaining_players
-        threshold -= 20
-    threshold = 80
-    while unmatched_benchers:
-        remaining_players = []
-        for player in unmatched_benchers:
-            closest_match = process.extractOne(player, db_players, score_cutoff=threshold)
-            if closest_match:
-                matched_benchers.append(closest_match[0])
-                db_players.remove(closest_match[0])
-            else:
-                remaining_players.append(player)
-        if not remaining_players:
-            break
-        unmatched_benchers = remaining_players
-        threshold -= 20
+    def _resolve(names):
+        out, pending, thr = [], names, 85
+        while pending and thr >= 60: 
+            still = []
+            for n in pending:
+                pid = _pick_id(n, thr)
+                (out if pid else still).append(pid or n)
+            pending, thr = still, thr - 10
+        return out
 
+    matched_starters = _resolve(unmatched_starters)
+    matched_benchers = _resolve(unmatched_benchers)
     return matched_starters, matched_benchers
 
 def get_referee_name(schedule_id):
@@ -414,6 +417,7 @@ def _load_model(name: str) -> tuple[xgb.Booster, list[str]]:
 
     return booster, columns
 
+_ID_RE = re.compile(r"(?P<name>.+?)_\d+_[A-Z]{1,2}$")
 # ------------------------------ Fetch & Remove Data ------------------------------
 class UpdateSchedule:
     def __init__(self, from_date):
@@ -1031,7 +1035,7 @@ class Extract_Data:
 
         missing_matches_df = match_info[~match_info['match_id'].isin(existing_in_both)]
 
-        for _, mi_row in tqdm(missing_matches_df.iterrows(), total=len(missing_matches_df)):
+        for _, mi_row in tqdm(missing_matches_df.iterrows(), total=len(missing_matches_df), desc="Missing Matches"):
             # Match detail
             s = Service('chromedriver.exe')
             options = webdriver.ChromeOptions()
@@ -1620,6 +1624,8 @@ class Process_Data:
         # DB.execute("TRUNCATE TABLE players_data;")
         # DB.execute("TRUNCATE TABLE referee_data;")
 
+        # self._unify_duplicate_players()
+
         # self.insert_players_basics()
         # self.update_players_shots_coef()
         # self.update_players_totals()
@@ -1661,13 +1667,146 @@ class Process_Data:
         insert_sql = "INSERT IGNORE INTO players_data (player_id, current_team) VALUES (%s, %s)"
         DB.execute(insert_sql, list(players_set), many=True)
 
+        self._unify_duplicate_players()
+
+    def _unify_duplicate_players(self):
+        """
+        1. Agrupa ids por (equipo, nombre) ignorando el dorsal.
+        2. Si un grupo nunca aparece junto en el mismo partido,
+           considera que es el mismo jugador:
+              • Escoge el id más reciente.
+              • Re-escribe el resto de las tablas con ese id.
+              • Borra los ids obsoletos de players_data.
+        """
+        df = DB.select("SELECT player_id, current_team FROM players_data")
+        groups = {}
+        for pid, team in df[["player_id", "current_team"]].itertuples(index=False):
+            m = _ID_RE.match(pid)
+            if not m:
+                continue
+            key = (team, m.group("name").strip().lower())
+            groups.setdefault(key, []).append(pid)
+        
+        for (team, _), ids in tqdm(groups.items(), desc="Grupo de jugadores por unificar"):
+            if len(ids) < 2:
+                continue
+            
+            if self._appear_together(ids):
+                continue
+
+            keep_id  = self._most_recent_id(ids)
+
+            obsolete = [i for i in ids if i != keep_id]
+
+            self._rewrite_ids(obsolete, keep_id)
+
+            if obsolete:
+                ph = ",".join(["%s"] * len(obsolete))
+                DB.execute(
+                    f"DELETE FROM players_data WHERE player_id IN ({ph})",
+                    tuple(obsolete),
+                )
+
+    def _appear_together(self, ids):
+        """
+        Devuelve True si cualquier par de ids aparece simultáneamente
+        en la misma lista de jugadores de match_detail.
+        """
+        ors = []
+        for i, a in enumerate(ids):
+            for b in ids[i + 1 :]:
+                ors.append(
+                    "( (JSON_CONTAINS(teamA_players, '\"%s\"') AND "
+                    "   JSON_CONTAINS(teamA_players, '\"%s\"')) OR "
+                    "  (JSON_CONTAINS(teamB_players, '\"%s\"') AND "
+                    "   JSON_CONTAINS(teamB_players, '\"%s\"')) )" % (a, b, a, b)
+                )
+        sql = "SELECT 1 FROM match_detail WHERE " + " OR ".join(ors) + " LIMIT 1"
+        return not DB.select(sql, ()).empty
+
+    def _most_recent_id(self, ids):
+        """
+        Devuelve el id con el match_id más alto (último partido jugado).
+        """
+        most_recent   = None
+        latest_game   = -1
+
+        for pid in ids:
+            sql = """
+            SELECT MAX(match_id) AS last_game
+            FROM   match_detail
+            WHERE  JSON_CONTAINS(teamA_players, JSON_QUOTE(%s), '$')
+               OR  JSON_CONTAINS(teamB_players, JSON_QUOTE(%s), '$')
+            """
+            res = DB.select(sql, (pid, pid))
+            last = res.iloc[0]["last_game"] if not res.empty else None
+            if last is not None and last > latest_game:
+                latest_game = last
+                most_recent = pid
+
+        return most_recent or sorted(ids)[-1]
+
+    def _rewrite_ids(self, olds, new):
+        """
+        Sustituye cada id de `olds` por `new` en:
+            • match_detail.teamA_players / teamB_players
+            • match_breakdown.player_id
+            • shots_data.off_players / def_players
+        """
+        # ---------- match_detail ----------
+        cond = " OR ".join(
+            ["JSON_CONTAINS(teamA_players,'\"%s\"') OR JSON_CONTAINS(teamB_players,'\"%s\"')" % (o, o)
+             for o in olds]
+        )
+        rows = DB.select(
+            f"SELECT match_id, teamA_players, teamB_players FROM match_detail WHERE {cond}", ()
+        )
+
+        for _, r in rows.iterrows():
+            a = json.dumps([new if p in olds else p for p in json.loads(r["teamA_players"])])
+            b = json.dumps([new if p in olds else p for p in json.loads(r["teamB_players"])])
+            DB.execute(
+                "UPDATE match_detail SET teamA_players=%s, teamB_players=%s WHERE match_id=%s",
+                (a, b, r["match_id"]),
+            )
+
+        # ---------- match_breakdown ----------
+        for o in olds:
+            DB.execute(
+                "UPDATE IGNORE match_breakdown "
+                "SET    player_id = %s "
+                "WHERE  player_id = %s",
+                (new, o),
+            )
+
+            DB.execute(
+                "DELETE FROM match_breakdown WHERE player_id = %s",
+                (o,),
+            )
+
+        # ---------- shots_data ----------
+        cond_sd = " OR ".join(
+            ["JSON_CONTAINS(off_players,'\"%s\"') OR JSON_CONTAINS(def_players,'\"%s\"')" % (o, o)
+             for o in olds]
+        )
+        rows_sd = DB.select(
+            f"SELECT shot_id, off_players, def_players FROM shots_data WHERE {cond_sd}", ()
+        )
+        for _, r in rows_sd.iterrows():
+            off = json.dumps([new if p in olds else p for p in json.loads(r["off_players"])])
+            dfn = json.dumps([new if p in olds else p for p in json.loads(r["def_players"])])
+            DB.execute(
+                "UPDATE shots_data SET off_players=%s, def_players=%s WHERE shot_id=%s",
+                (off, dfn, r["shot_id"]),
+            )
+
     def update_players_shots_coef(self):
         """
         Function to update players shot types coefficients per league
         """
         league_id_df = DB.select("SELECT league_id FROM league_data WHERE is_active = 1")
 
-        for league_id in league_id_df['league_id'].tolist():
+        for league_id in tqdm(league_id_df['league_id'].tolist(), desc="League sh Coeff"):
             baseline_total = 0.0  
             for shot_type in ["headers", "footers"]:
                 league_matches_df = DB.select(f"SELECT match_id FROM match_info WHERE league_id = {league_id}")
@@ -1792,7 +1931,7 @@ class Process_Data:
         players_id_df = DB.select("SELECT DISTINCT player_id FROM players_data")
         print("Updating players totals")
         
-        for player_id in tqdm(players_id_df["player_id"].tolist()):
+        for player_id in tqdm(players_id_df["player_id"].tolist(), desc="Total de juugadores (Totales)"):
             pagg_query = """
             SELECT
                 COALESCE(SUM(headers), 0) AS headers,
@@ -1907,7 +2046,7 @@ class Process_Data:
         """
         league_id_df = DB.select("SELECT league_id FROM league_data WHERE is_active = 1")
         
-        for league_id in tqdm(league_id_df['league_id'].tolist()):
+        for league_id in tqdm(league_id_df['league_id'].tolist(), desc="League xG Coeff"):
             baseline_per_type = {"headers": 0.0, "footers": 0.0}
             for shot_type in ["headers", "footers"]:
                 prefix = "h" if shot_type == "headers" else "f"
@@ -2136,7 +2275,7 @@ class Process_Data:
         else:
             p_dict = {}
 
-        for _, row in tqdm(non_updated_shots_df.iterrows(), total=len(non_updated_shots_df)):
+        for _, row in tqdm(non_updated_shots_df.iterrows(), total=len(non_updated_shots_df), desc="Updating shots"):
             league_id   = row["league_id"]
             hxg_base    = baseline_dict.get(league_id, {}).get("hxg", 0.0)
             fxg_base    = baseline_dict.get(league_id, {}).get("fxg", 0.0)
@@ -2242,6 +2381,7 @@ class Process_Data:
         DB.execute(sql)
 
     def train_context_ras_model(self):
+        print("Training RAS")
         def flip(series: pd.Series) -> pd.Series:
             flipped = -series
             flipped[series == 0] = 0.0
@@ -2371,6 +2511,7 @@ class Process_Data:
             _save(f'ras_{league_id}', booster, X.columns.tolist())
 
     def train_refined_sq_model(self) -> tuple[xgb.Booster, list[str]]:
+        print("Training RSQ")
         sql = """
             SELECT
                 total_plsqa,
@@ -2424,6 +2565,7 @@ class Process_Data:
         _save('rsq', booster, X.columns.tolist())
 
     def train_post_shot_goal_model(self) -> tuple[xgb.Booster, list[str]]:
+        print("Training PSXG")
         sql = """
             SELECT
                 sd.RSQ,

@@ -734,11 +734,12 @@ class MainWindow(QMainWindow):
 
         odds_layout.addWidget(team_totals_group)
 
-        def get_aggregated_goals(shots_df, home_team_id, away_team_id):
+        def get_aggregated_goals(shots_df, home_team_id, start_minute, start_home_goals, start_away_goals):
             if shots_df is None or shots_df.empty:
                 return pd.DataFrame(columns=['sim_id', 'minute', 'home_goals', 'away_goals'])
             
             df = shots_df.copy()
+            df = df[df['minute'] >= start_minute]
             
             df = df.sort_values(['sim_id', 'minute']).reset_index(drop=True)
             
@@ -749,8 +750,8 @@ class MainWindow(QMainWindow):
             df['home_goal'] = ((df['outcome'] == 1) &  df['is_home']).astype(int)
             df['away_goal'] = ((df['outcome'] == 1) & ~df['is_home']).astype(int)
             
-            df['home_goal_cum'] = df.groupby('sim_id')['home_goal'].cumsum()
-            df['away_goal_cum'] = df.groupby('sim_id')['away_goal'].cumsum()
+            df['home_goal_cum'] = df.groupby('sim_id')['home_goal'].cumsum() + start_home_goals
+            df['away_goal_cum'] = df.groupby('sim_id')['away_goal'].cumsum() + start_away_goals
             
             agg = (
                 df.groupby(['sim_id', 'minute'])
@@ -770,7 +771,7 @@ class MainWindow(QMainWindow):
                 .reindex(full_index)
                 .groupby(level=0)
                 .ffill()
-                .fillna(0)
+                .fillna({'home_goals': start_home_goals, 'away_goals': start_away_goals})
                 .reset_index()
             )
             
@@ -787,7 +788,9 @@ class MainWindow(QMainWindow):
             aggregated_df = get_aggregated_goals(
                 simulation_data,
                 int(match['home_team_id']),
-                int(match['away_team_id'])
+                int(current_minute_spin.value()),
+                int(home_goals_spin.value()),
+                int(away_goals_spin.value())
             )
         load_simulation_data()
 
@@ -799,8 +802,10 @@ class MainWindow(QMainWindow):
             aggregated_df = get_aggregated_goals(
                 simulation_data,
                 int(match['home_team_id']),
-                int(match['away_team_id'])
-            )         
+                int(current_minute_spin.value()),
+                int(home_goals_spin.value()),
+                int(away_goals_spin.value())
+            ) 
 
             current_minute = current_minute_spin.value()
             max_minute = max_minute_spin.value()
