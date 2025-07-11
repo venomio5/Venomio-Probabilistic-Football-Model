@@ -1580,8 +1580,9 @@ class Extract_Data:
         else:
             off_sh_coef_dict, def_sh_coef_dict = {}, {}
 
-        baseline_df = DB.select("SELECT league_id, sh_baseline_coef FROM league_data;")
-        baseline_dict = baseline_df.set_index("league_id")["sh_baseline_coef"].fillna(0).to_dict()
+        baseline_df = DB.select("SELECT league_id, hsh_baseline_coef, fsh_baseline_coef FROM league_data;")
+        baseline_df["sh_baseline_coef"] = baseline_df[["hsh_baseline_coef", "fsh_baseline_coef"]].fillna(0).sum(axis=1)
+        baseline_dict = baseline_df.set_index("league_id")["sh_baseline_coef"].to_dict()
 
         for _, row in non_pdras_matches_df.iterrows():
             minutes = row['minutes_played']
@@ -1621,13 +1622,13 @@ class Process_Data:
         Class to reset the players_data table and fill it with new data.
         """
 
-        # DB.execute("TRUNCATE TABLE players_data;")
+        DB.execute("TRUNCATE TABLE players_data;")
         # DB.execute("TRUNCATE TABLE referee_data;")
 
         # self._unify_duplicate_players()
 
-        # self.insert_players_basics()
-        # self.update_players_shots_coef()
+        self.insert_players_basics()
+        self.update_players_shots_coef()
         # self.update_players_totals()
         # self.update_players_xg_coef()
         # self.update_shots()

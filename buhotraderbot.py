@@ -444,11 +444,11 @@ async def section_scanner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text)
 
 async def section_tutorials(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "Sección Tutoriales"
+    text="*Texto en negrita* _cursiva_ `monoespaciado` [enlace](https://example.com)"
     if update.callback_query:
         await update.callback_query.edit_message_text(text)
     else:
-        await update.message.reply_text(text)
+        await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 async def section_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "Sección Perfil"
