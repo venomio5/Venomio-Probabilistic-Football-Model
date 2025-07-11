@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 import core
 import locale
 import pandas as pd
+from telegram.error import BadRequest  
 
 locale.setlocale(locale.LC_TIME, 'es_ES.UTF-8')
 
@@ -314,7 +315,7 @@ ITEMS_PER_PAGE = 10
 EVENTS_MENU = [
     ("📺Hoy", "hoy"),
     ("📅Próximos", "prox"),
-    ("🔙Regresar", "eventos"),
+    ("🔙", "eventos"),
 ]
 
 MARKETS = [
@@ -448,7 +449,7 @@ async def section_tutorials(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.edit_message_text(text)
     else:
-        await update.message.reply_text(text, parse_mode="MarkdownV2")
+        await update.message.reply_text(text, parse_mode="HTML")
 
 async def section_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "Sección Perfil"
@@ -492,7 +493,7 @@ async def section_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if nav_buttons:
             btn_rows.append(nav_buttons)
 
-    btn_rows.append([InlineKeyboardButton("🔙Regresar", callback_data="eventos")])
+    btn_rows.append([InlineKeyboardButton("🔙", callback_data="eventos")])
     markup = InlineKeyboardMarkup(btn_rows)
 
     if update.callback_query:
@@ -531,7 +532,7 @@ async def section_upcoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if nav_buttons:
             btn_rows.append(nav_buttons)
 
-    btn_rows.append([InlineKeyboardButton("🔙Regresar", callback_data="eventos")])
+    btn_rows.append([InlineKeyboardButton("🔙", callback_data="eventos")])
     markup = InlineKeyboardMarkup(btn_rows)
 
     if update.callback_query:
@@ -560,8 +561,8 @@ def build_match_header(schedule_id: int) -> str:
         time_display = "🗓 " + kickoff.strftime("%A %d de %B")
 
     return (
-        f"🏆 {league}\n"
-        f"{home} vs {away}\n"
+        f"<i>{league}</i>\n"
+        f"<b>{home}</b> vs <b>{away}</b>\n"
         f"{time_display}\n\n"
     )
 
@@ -578,16 +579,17 @@ async def match_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
                               callback_data=f"market_{schedule_id}_{key}")]
         for name, key in MARKETS
     ]
-    rows.append([InlineKeyboardButton("🔙Regresar", callback_data="eventos")])
+    rows.append([InlineKeyboardButton("🔙", callback_data="eventos")])
     markup = build_markup(rows, cols=2)
 
-    await query.edit_message_text(text, reply_markup=markup)
+    await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
 
-async def market_odds(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def market_odds(update: Update, context: ContextTypes.DEFAULT_TYPE, callback_data: str = None):
     query = update.callback_query
     await query.answer()
 
-    _, sid, market_key = query.data.split("_", 2)
+    data = callback_data if callback_data is not None else query.data
+    _, sid, market_key = data.split("_", 2)
     schedule_id = int(sid)
 
     header = build_match_header(schedule_id)
@@ -595,80 +597,106 @@ async def market_odds(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = header + odds_text
 
-    back_markup = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🔙Regresar", callback_data=f"match_{schedule_id}")]]
-    )
+    menu = [
+        [InlineKeyboardButton("🔙", callback_data=f"match_{schedule_id}")],
+        [InlineKeyboardButton("🔄", callback_data=f"reload_{schedule_id}_{market_key}")]
+    ]
+    markup = build_markup(menu, cols=2)
 
-    await query.edit_message_text(text, reply_markup=back_markup)
+    try:
+        await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            return
+        raise
 
 def build_market_text(schedule_id: int, market_key: str) -> str:
     odds = get_odds(schedule_id, market_key)
 
+    def fmt(val):
+        return f"<code>{'N/A' if val == 10**30 else val}</code>"
+
     if market_key == "ft_result":
         return (
-            "📊 Resultado Final\n"
-            f"Local: {odds.get('home',  'N/A')}\n"
-            f"Visitante: {odds.get('away', 'N/A')}\n"
-            f"Empate: {odds.get('draw',  'N/A')}"
+            "📊 <b>Resultado Final</b>\n"
+            f"<b>Local</b>:      {fmt(odds.get('home'))}\n"
+            f"<b>Visitante</b>:  {fmt(odds.get('away'))}\n"
+            f"<b>Empate</b>:     {fmt(odds.get('draw'))}"
         )
 
     if market_key == "asian_handicap":
-        return "📊 Handicap Asiático\n" + \
-            "\n".join(
-                f"Local {hcap}: {vals['home']}   |   Visitante {('-' if hcap.startswith('+') else '+') + hcap[1:]}: {vals['away']}"
-                for hcap, vals in odds.items()
-            )
+        lines = ["📊 <b>Handicap Asiático</b>"]
+        for hcap, v in odds.items():
+            inv = "-" if hcap.startswith("+") else "+"
+            vis_hcap = f"{inv}{hcap[1:]}" if len(hcap) > 1 else hcap
+            lines.append(f"<b>Local {hcap}</b>:      {fmt(v['home'])}")
+            lines.append(f"<b>Visitante {vis_hcap}</b>: {fmt(v['away'])}")
+            lines.append("")
+        return "\n".join(lines).rstrip()
+
 
     if market_key == "total_goals":
-        return "📊 Total de Goles (Ambos Equipos)\n" + \
-               "\n".join(
-                   f"Más de {ln}: {p['over']}   |   Menos de {ln}: {p['under']}"
-                   for ln, p in odds.items()
-               )
+        lines = ["📊 <b>Total Goles</b>"]
+        for ln, p in odds.items():
+            lines.append(f"<b>{ln}</b>")
+            lines.append(f"⬆️ {fmt(p['over'])}")
+            lines.append(f"⬇️ {fmt(p['under'])}")
+            lines.append("")
+        return "\n".join(lines).rstrip()
+
 
     if market_key == "correct_score":
-        text_lines = ["📊 Marcador Correcto"]
+        lines = ["📊 <b>Marcador Correcto</b>"]
         for score, odd in odds.items():
-            odd_str = f"{odd}" if odd != 10**30 else "N/A"
-            text_lines.append(f"{score}: {odd_str}")
-        return "\n".join(text_lines)
-    
-    if market_key == "team_totals":
-        lines = ["📊 Total de Goles por Equipo"]
-        for team in ["home", "away"]:
-            team_name = "Local" if team == "home" else "Visitante"
-            for ln, p in odds[team].items():
-                lines.append(f"{team_name} Más de {ln}: {p['over']}   |   Menos de {ln}: {p['under']}")
-        return "\n".join(lines)
-    
-    if market_key == "btts":
-        return (
-            "📊 Ambos Equipos Anotan\n"
-            f"Sí: {odds.get('yes', 'N/A')}\n"
-            f"No: {odds.get('no',  'N/A')}"
-        )
-    
-    if market_key == "player_goals":
-        lines = ["📊 Jugador - Goles"]
-        for player, odd in odds.items():
-            lines.append(f"{player}: {odd}")
-        return "\n".join(lines)
-    
-    if market_key == "player_assists":
-        lines = ["📊 Jugador - Asistencias"]
-        for player, odd in odds.items():
-            lines.append(f"{player}: {odd}")
-        return "\n".join(lines)
-    
-    if market_key == "player_shots":
-        lines = ["📊 Jugador - Tiros"]
-        for threshold, players_odds in odds.items():
-            lines.append(f"Más de {threshold} tiros:")
-            for player, odd in players_odds.items():
-                lines.append(f"{player}: {odd}")
+            lines.append(f"<b>{score}</b>: {fmt(odd)}")
         return "\n".join(lines)
 
-    return "Mercado no disponible"
+
+    if market_key == "team_totals":
+        lines = ["📊 <b>Total por Equipo</b>"]
+        for team in ("home", "away"):
+            label = "Local" if team == "home" else "Visitante"
+            lines.append(f"<b>{label}</b>")
+            for ln, p in odds[team].items():
+                lines.append(f"  <b>{ln}</b>")
+                lines.append(f"  ⬆️ {fmt(p['over'])}")
+                lines.append(f"  ⬇️ {fmt(p['under'])}")
+                lines.append("")
+            lines.append("")
+        return "\n".join(lines).rstrip()
+
+
+    if market_key == "btts":
+        return (
+            "📊 <b>¿Ambos Anotan?</b>\n"
+            f"<b>Sí</b>: {fmt(odds.get('yes'))}\n"
+            f"<b>No</b>: {fmt(odds.get('no'))}"
+        )
+
+    if market_key == "player_goals":
+        lines = ["📊 <b>Goles por Jugador</b>"]
+        for player, odd in odds.items():
+            name = player.split("_")[0]
+            lines.append(f"<b>{name}</b>: {fmt(odd)}")
+        return "\n".join(lines)
+
+    if market_key == "player_assists":
+        lines = ["📊 <b>Asistencias por Jugador</b>"]
+        for player, odd in odds.items():
+            name = player.split("_")[0]
+            lines.append(f"<b>{name}</b>: {fmt(odd)}")
+        return "\n".join(lines)
+
+
+    if market_key == "player_shots":
+        lines = ["📊 <b>Tiros por Jugador</b>"]
+        for th, plist in odds.items():
+            lines.append(f"<b>+{th} tiros</b>")
+            for player, odd in plist.items():
+                name = player.split("_")[0]
+                lines.append(f" • <b>{name}</b>: {fmt(odd)}")
+            lines.append("")
+        return "\n".join(lines).rstrip()
 
 def get_odds(schedule_id: int, market_key: str) -> dict:
     shots_df, metadata = load_simulation_df(schedule_id)
@@ -876,6 +904,14 @@ def get_odds(schedule_id: int, market_key: str) -> dict:
 
     return {}
 
+async def reload_odds(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    _, sid, market_key = query.data.split("_", 2)
+    new_data = f"market_{sid}_{market_key}"
+    await market_odds(update, context, callback_data=new_data)
+
 async def section_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "Preguntas frecuentes\n\n"
@@ -889,7 +925,7 @@ async def section_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     rows = [
         ("📘 Ir a tutoriales", "tutorials"),
-        ("🔙Regresar", "start"),
+        ("🔙", "start"),
     ]
     markup = build_markup(rows, cols=2)
 
@@ -959,6 +995,7 @@ def main():
     app.add_handler(CommandHandler(["eventos", "escaner", "tutoriales", "perfil"], route))
     app.add_handler(CallbackQueryHandler(match_details,  pattern=r"^match_\d+$"))
     app.add_handler(CallbackQueryHandler(market_odds,   pattern=r"^market_\d+_.+$"))
+    app.add_handler(CallbackQueryHandler(reload_odds, pattern=r"^reload_\d+_.+"))
     app.add_handler(CallbackQueryHandler(route))
     app.add_error_handler(error_handler)  
 
