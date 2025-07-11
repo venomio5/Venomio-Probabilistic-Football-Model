@@ -860,8 +860,8 @@ class UpdateSchedule:
 class Extract_Data:
     def __init__(self, upto_date):
         self.upto_date = upto_date
-        self.get_recent_games_match_info()
-        self.update_matches_info()
+        # self.get_recent_games_match_info()
+        # self.update_matches_info() 
         self.update_pdras()
         self.remove_old_data()
 
@@ -1541,7 +1541,7 @@ class Extract_Data:
         """
         Before processing new data, update the pre defined RAS for old matches.
         """
-        non_pdras_matches_df = DB.select("""
+        non_pdras_matches_df = DB.select(f"""
             SELECT 
                 md.detail_id,
                 md.match_id,
@@ -1551,8 +1551,8 @@ class Extract_Data:
                 md.minutes_played
             FROM match_detail md
             JOIN match_info mi ON mi.match_id = md.match_id
-            WHERE md.teamA_pdras IS NULL 
-               OR md.teamB_pdras IS NULL;
+            WHERE (md.teamA_pdras IS NULL OR md.teamB_pdras IS NULL)
+            AND mi.date <= '{self.upto_date}';
         """)
 
         non_pdras_matches_df['teamA_players'] = non_pdras_matches_df['teamA_players'].apply(
@@ -1617,26 +1617,26 @@ class Extract_Data:
 
 # ------------------------------ Process data ------------------------------
 class Process_Data:
-    def __init__(self):
+    def __init__(self, upto_date):
         """
         Class to reset the players_data table and fill it with new data.
         """
 
         DB.execute("TRUNCATE TABLE players_data;")
-        DB.execute("TRUNCATE TABLE referee_data;")
+        # DB.execute("TRUNCATE TABLE referee_data;")
 
         self._unify_duplicate_players()
 
         self.insert_players_basics()
-        self.update_players_shots_coef()
-        self.update_players_totals()
-        self.update_players_xg_coef()
-        self.update_shots()
-        self.update_match_info_referee_totals()
-        self.update_referee_data_totals()
-        self.train_context_ras_model()
-        self.train_refined_sq_model()
-        self.train_post_shot_goal_model()
+        self.update_players_shots_coef(upto_date)
+        # self.update_players_totals()
+        # self.update_players_xg_coef()
+        # self.update_shots()
+        # self.update_match_info_referee_totals()
+        # self.update_referee_data_totals()
+        # self.train_context_ras_model()
+        # self.train_refined_sq_model()
+        # self.train_post_shot_goal_model()
 
     def insert_players_basics(self):
         """
@@ -1801,7 +1801,7 @@ class Process_Data:
                 (off, dfn, r["shot_id"]),
             )
 
-    def update_players_shots_coef(self):
+    def update_players_shots_coef(self, upto_date):
         """
         Function to update players shot types coefficients per league
         """
@@ -1810,7 +1810,7 @@ class Process_Data:
         for league_id in tqdm(league_id_df['league_id'].tolist(), desc="League sh Coeff"):
             baseline_per_type = {"headers": 0.0, "footers": 0.0}
             for shot_type in ["headers", "footers"]:
-                league_matches_df = DB.select(f"SELECT match_id FROM match_info WHERE league_id = {league_id}")
+                league_matches_df = DB.select(f"SELECT match_id FROM match_info WHERE league_id = {league_id} AND date <= '{upto_date}'")
                 matches_ids = league_matches_df['match_id'].tolist()
 
                 if not matches_ids:
@@ -2139,9 +2139,13 @@ class Process_Data:
                     cv=5,
                     n_jobs=-1
                 )
-                grid.fit(X, y_array, sample_weight=sample_weights_array)
+                y_mean = np.average(y_array, weights=sample_weights_array)
+                y_centered = y_array - y_mean
+                grid.fit(X, y_centered, sample_weight=sample_weights_array)
+
                 best_model = grid.best_estimator_
-                baseline_per_type[shot_type] += float(best_model.intercept_)
+                intercept_adjusted = best_model.intercept_ + y_mean
+                baseline_per_type[shot_type] += float(intercept_adjusted)
                 
                 offensive_ratings = dict(zip(players, best_model.coef_[:num_players]))
                 defensive_ratings = dict(zip(players, best_model.coef_[num_players:]))

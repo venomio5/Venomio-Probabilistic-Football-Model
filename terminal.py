@@ -1665,8 +1665,8 @@ class MainWindow(QMainWindow):
             list_item = self.add_task_to_queue(f"Extract & Process up to {upto_date}")
 
             def task():
-                # core.Extract_Data(upto_date)
-                core.Process_Data()
+                core.Extract_Data(upto_date)
+                core.Process_Data(upto_date)
 
             worker = UpdateWorker(task)
             worker.signals.finished.connect(lambda li=list_item: (self.remove_task_from_queue(li), self.load_leagues()))

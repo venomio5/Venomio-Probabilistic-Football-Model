@@ -309,6 +309,31 @@ async def ask_to_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=markup,
         )
 
+def create_billing_portal_session(user_id: int) -> str:
+    """
+    Devuelve un enlace temporal al portal de facturación de Stripe
+    para que el usuario pueda cancelar el plan, cambiar tarjeta, etc.
+    """
+    conn = sqlite3.connect("users.db")
+    cur  = conn.cursor()
+    cur.execute("SELECT stripe_customer_id FROM subscriptions WHERE telegram_id=?",
+                (user_id,))
+    row = cur.fetchone()
+    conn.close()
+
+    if not row or not row[0]:
+        return ""
+
+    try:
+        session = stripe.billing_portal.Session.create(
+            customer=row[0],
+            return_url=f"https://t.me/{BOT_USERNAME}?start=perfil",
+        )
+        return session.url
+    except stripe.error.StripeError as err:
+        logger.error(f"[Stripe] error creando portal de facturación → {err}")
+        return ""
+
 # Telegram Front End
 ITEMS_PER_PAGE = 10
 
@@ -359,7 +384,7 @@ async def set_command_list(application):
     commands = [
         BotCommand("eventos",     "🔘Eventos"),
         BotCommand("escaner",    "📈Escáner"),
-        BotCommand("tutoriales",  "📘Tutoriales"),
+        BotCommand("faq",          "❓FAQs"),
         BotCommand("perfil",    "👤Perfil"),
     ]
 
@@ -433,9 +458,9 @@ async def section_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     markup = InlineKeyboardMarkup(rows)
 
     if update.callback_query:
-        await update.callback_query.edit_message_text("🔘Eventos:", reply_markup=markup)
+        await update.callback_query.edit_message_text("🔘Eventos", reply_markup=markup)
     else:
-        await update.message.reply_text("🔘Eventos:", reply_markup=markup)
+        await update.message.reply_text("🔘Eventos", reply_markup=markup)
 
 async def section_scanner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "Sección Escáner"
@@ -444,19 +469,63 @@ async def section_scanner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(text)
 
-async def section_tutorials(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text="*Texto en negrita* _cursiva_ `monoespaciado` [enlace](https://example.com)"
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text)
-    else:
-        await update.message.reply_text(text, parse_mode="HTML")
-
 async def section_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "Sección Perfil"
+    user_id = update.effective_user.id
+
+    # datos locales ----------------------------------------------------------
+    conn = sqlite3.connect("users.db")
+    cur  = conn.cursor()
+    cur.execute(
+        "SELECT stripe_subscription_id, period_end "
+        "FROM subscriptions WHERE telegram_id=?",
+        (user_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+
+    subscription_id, period_end = (row or (None, None))
+    active        = bool(period_end and period_end > int(time.time()))
+    period_end_s  = time.strftime("%d/%m/%Y", time.localtime(period_end)) if period_end else "—"
+
+    # datos desde Stripe -----------------------------------------------------
+    plan_name      = "—"
+    auto_renew_txt = "—"
+    if subscription_id:
+        try:
+            sub        = stripe.Subscription.retrieve(subscription_id)
+            price_data = sub["items"]["data"][0]["price"]
+            plan_name  = price_data.get("nickname") or price_data.get("id")
+            auto_renew_txt = "Sí" if not sub.get("cancel_at_period_end") else "No (cancelada)"
+        except Exception as err:
+            logger.warning(f"[Stripe] no se pudo recuperar la sub {subscription_id} → {err}")
+
+    # texto de perfil --------------------------------------------------------
+    status_txt = "Activa ✅" if active else "Inactiva ❌"
+    text = (
+        "👤 *Tu perfil*\n\n"
+        f"• Detalles de tu plan: *{plan_name}*\n"
+        f"• Estado de tu suscripción: *{status_txt}*\n"
+        f"• Válida hasta: *{period_end_s}*\n"
+        f"• Renovación automática: *{auto_renew_txt}*"
+    )
+
+    # botones (gestión / cancelación) ---------------------------------------
+    buttons = []
+    portal_url = create_billing_portal_session(user_id)
+    if portal_url:
+        buttons.append([InlineKeyboardButton("⚙️ Gestionar / cancelar plan", url=portal_url)])
+
+    markup = InlineKeyboardMarkup(buttons) if buttons else None
+
+    # envío / edición --------------------------------------------------------
     if update.callback_query:
-        await update.callback_query.edit_message_text(text)
+        await update.callback_query.edit_message_text(
+            text, reply_markup=markup, parse_mode="Markdown"
+        )
     else:
-        await update.message.reply_text(text)
+        await update.message.reply_text(
+            text, reply_markup=markup, parse_mode="Markdown"
+        )
 
 async def section_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     matches = get_all_matches()
@@ -913,32 +982,38 @@ async def reload_odds(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await market_odds(update, context, callback_data=new_data)
 
 async def section_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "Preguntas frecuentes\n\n"
-        "• ¿Necesito pagar para usar el bot?\n"
-        "  Solo para acceder a Eventos y Escáner.\n\n"
-        "• ¿Cómo me suscribo?\n"
-        "  Pulsa en «Suscribirme» y sigue el proceso de pago.\n\n"
-        "• ¿Puedo cancelar cuando quiera?\n"
-        "  Sí, desde tu perfil en cualquier momento."
-    )
-
-    rows = [
-        ("📘 Ir a tutoriales", "tutorials"),
-        ("🔙", "start"),
+    questions = [
+        ("¿Necesito pagar para usar el bot?", "faq_answer_1"),
+        ("¿Cómo me suscribo?", "faq_answer_2"),
+        ("¿Puedo cancelar cuando quieras?", "faq_answer_3")
     ]
-    markup = build_markup(rows, cols=2)
-
+    markup = build_markup(questions, cols=2)
+    text = "❓FAQs"
     if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=markup)
+        await update.callback_query.edit_message_text(text=text, reply_markup=markup)
     else:
-        await update.message.reply_text(text, reply_markup=markup)
+        await update.message.reply_text(text=text, reply_markup=markup)
+
+async def section_faq_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+
+    faq_answers = {
+        "faq_answer_1": "Solo para acceder a Eventos y Escáner.",
+        "faq_answer_2": "Pulsa en «Suscribirme» y sigue el proceso de pago.",
+        "faq_answer_3": "Sí, desde tu perfil en cualquier momento."
+    }
+    answer_text = faq_answers.get(data, "Respuesta no encontrada.")
+
+    rows = [("🔙", "faq")]
+    markup = build_markup(rows, cols=1)
+    await query.edit_message_text(text=answer_text, reply_markup=markup)
 
 SECTIONS = {
     "start":      start,
     "eventos":     section_events,
     "escaner":    section_scanner,
-    "tutoriales": section_tutorials,
+    "faq":      section_faq,
     "perfil":     section_profile,
     "hoy":       section_today,
     "prox":   section_upcoming,
@@ -992,10 +1067,12 @@ def main():
     BOT_APP = app                                             
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler(["eventos", "escaner", "tutoriales", "perfil"], route))
+    app.add_handler(CommandHandler(["eventos", "escaner", "faq", "perfil"], route))
     app.add_handler(CallbackQueryHandler(match_details,  pattern=r"^match_\d+$"))
     app.add_handler(CallbackQueryHandler(market_odds,   pattern=r"^market_\d+_.+$"))
     app.add_handler(CallbackQueryHandler(reload_odds, pattern=r"^reload_\d+_.+"))
+    app.add_handler(CallbackQueryHandler(section_faq, pattern=r"^faq$"))
+    app.add_handler(CallbackQueryHandler(section_faq_answer, pattern=r"^faq_answer_\d+$"))
     app.add_handler(CallbackQueryHandler(route))
     app.add_error_handler(error_handler)  
 
