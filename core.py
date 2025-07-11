@@ -1807,7 +1807,7 @@ class Process_Data:
         league_id_df = DB.select("SELECT league_id FROM league_data WHERE is_active = 1")
 
         for league_id in tqdm(league_id_df['league_id'].tolist(), desc="League sh Coeff"):
-            baseline_total = 0.0  
+            baseline_per_type = {"headers": 0.0, "footers": 0.0}
             for shot_type in ["headers", "footers"]:
                 league_matches_df = DB.select(f"SELECT match_id FROM match_info WHERE league_id = {league_id}")
                 matches_ids = league_matches_df['match_id'].tolist()
@@ -1898,7 +1898,7 @@ class Process_Data:
                 grid.fit(X, y_array, sample_weight=sample_weights_array)
 
                 best_model = grid.best_estimator_
-                baseline_total += float(best_model.intercept_)
+                baseline_per_type[shot_type] += float(best_model.intercept_)
 
                 offensive_ratings = dict(zip(players, best_model.coef_[:num_players]))
                 defensive_ratings = dict(zip(players, best_model.coef_[num_players:]))
@@ -1914,9 +1914,9 @@ class Process_Data:
                     DB.execute(update_coef_query, (float(off_sh), float(def_sh), player))
             DB.execute("""
                 UPDATE league_data
-                SET sh_baseline_coef = %s
+                SET hsh_baseline_coef = %s, fsh_baseline_coef = %s
                 WHERE league_id = %s
-            """, (baseline_total, league_id))
+            """, (float(baseline_per_type["headers"]), float(baseline_per_type["footers"]), league_id))
         sum_coef_sql = """
         UPDATE players_data
         SET off_sh_coef = COALESCE(off_headers_coef, 0) + COALESCE(off_footers_coef, 0),
@@ -2674,9 +2674,11 @@ class Alg:
         self.away_n_subs_avail = away_n_subs_avail
         self.referee_name = match_df.iloc[0]['referee_name']
 
-        baseline_df = DB.select("SELECT sh_baseline_coef, hxg_baseline_coef, fxg_baseline_coef FROM league_data WHERE league_id = %s", (self.league_id,)
+        baseline_df = DB.select("SELECT hsh_baseline_coef, fsh_baseline_coef, hxg_baseline_coef, fxg_baseline_coef FROM league_data WHERE league_id = %s", (self.league_id,)
         )
-        self.sh_baseline_coef = float(baseline_df.iloc[0]['sh_baseline_coef']) if not baseline_df.empty and baseline_df.iloc[0]['sh_baseline_coef'] is not None else 0.0
+        self.hsh_baseline_coef = float(baseline_df.iloc[0]['hsh_baseline_coef']) if not baseline_df.empty and baseline_df.iloc[0]['hsh_baseline_coef'] is not None else 0.0        
+        self.fsh_baseline_coef = float(baseline_df.iloc[0]['fsh_baseline_coef']) if not baseline_df.empty and baseline_df.iloc[0]['fsh_baseline_coef'] is not None else 0.0
+        self.sh_baseline_coef = self.hsh_baseline_coef + self.fsh_baseline_coef
         self.hxg_baseline_coef = float(baseline_df.iloc[0]['hxg_baseline_coef']) if not baseline_df.empty and baseline_df.iloc[0]['hxg_baseline_coef'] is not None else 0.0
         self.fxg_baseline_coef = float(baseline_df.iloc[0]['fxg_baseline_coef']) if not baseline_df.empty and baseline_df.iloc[0]['fxg_baseline_coef'] is not None else 0.0
 
@@ -2706,9 +2708,9 @@ class Alg:
         if self.match_initial_time >= 45:
             range_value = 2000
         elif self.match_initial_time < 1:
-            range_value = 6000
+            range_value = 5000
         elif self.match_initial_time < 45:
-            range_value = 4000
+            range_value = 3000
 
         self.run_simulations(range_value, 4)
 
@@ -3336,12 +3338,12 @@ class Alg:
         # team_rahs
         team_off_rahs = sum(offensive_data[p]['off_headers_coef'] for p in offensive_players)
         opp_def_rahs  = sum(defensive_data[p]['def_headers_coef'] for p in defensive_players)
-        team_rahs = team_off_rahs - opp_def_rahs
+        team_rahs = self.hsh_baseline_coef + team_off_rahs - opp_def_rahs
 
         # team_rafs
         team_off_rafs = sum(offensive_data[p]['off_footers_coef'] for p in offensive_players)
         opp_def_rafs  = sum(defensive_data[p]['def_footers_coef'] for p in defensive_players)
-        team_rafs = team_off_rafs - opp_def_rafs
+        team_rafs = self.fsh_baseline_coef + team_off_rafs - opp_def_rafs
 
         # team_plhsq
         team_off_plhsq = sum(offensive_data[p]['off_hxg_coef'] for p in offensive_players)
@@ -3383,20 +3385,14 @@ class Alg:
             return 6
         
     def get_shot_type(self, rahs, rafs):
-        sharpness = 50
-        delta = rafs - rahs
-        foot_prob = 1 / (1 + np.exp(-sharpness * delta))
-        head_prob = 1 - foot_prob
-
-        probs = [head_prob, foot_prob]
+        total = rahs + rafs
+        if total == 0:
+            probs = [0.2, 0.8]
+        else:
+            probs = [rahs / total, rafs / total]
 
         selected_index = np.random.choice([0, 1], p=probs)
-
-        if selected_index == 0:
-            body_part = "Head"
-        else:
-            body_part = "Foot"
-        return body_part
+        return "Head" if selected_index == 0 else "Foot"
     
     def build_player_probs(self, active_players, players_data):
         def _normalise(rate_dict):
@@ -3454,6 +3450,8 @@ class Alg:
         probs    = prob_dicts['shooter'][key]
         players  = list(probs.keys())
         p_vals   = list(probs.values())
+        # for player, prob in probs.items():
+        #     print(f"Shooter: {player}: {prob * 100:.2f}%")
         return np.random.choice(players, p=p_vals)
     
     def get_assister(self, prob_dicts, body_part, shooter):
@@ -3462,6 +3460,8 @@ class Alg:
         probs    = prob_dicts['assist'][key][shooter]
         ass      = list(probs.keys())
         p_vals   = list(probs.values())
+        # for player, prob in probs.items():
+        #     print(f"Assister: {player}: {prob * 100:.2f}%")
         return np.random.choice(ass, p=p_vals)
 
     def insert_sim_data(self, rows, schedule_id, *, initial_delete: bool = False):

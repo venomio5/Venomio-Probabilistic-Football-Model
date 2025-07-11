@@ -124,7 +124,6 @@ def main():
     schedule_auto_lineups_info()            
     scheduler.start()
 
-    # keep the program alive (CTRL-C to exit)
     try:
         while True:
             time.sleep(60)

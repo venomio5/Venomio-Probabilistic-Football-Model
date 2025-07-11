@@ -60,25 +60,39 @@ def get_all_matches():
     return matches
 
 def load_simulation_df(schedule_id: int):
-    sql = "SELECT * FROM simulation_data WHERE schedule_id = %s"
-    shots_df = core.DB.select(sql, (schedule_id,))
+    shots_df = core.DB.select("SELECT * FROM simulation_data WHERE schedule_id = %s", (schedule_id,))
 
-    home_id = away_id = None
+    meta_sql = """
+        SELECT 
+            home_team_id,
+            away_team_id,
+            current_home_goals,
+            current_away_goals,
+            current_period_start_timestamp,
+            period,
+            period_injury_time
+        FROM schedule_data
+        WHERE schedule_id = %s
+    """
 
-    if not shots_df.empty and {"home_team_id", "away_team_id"}.issubset(shots_df.columns):
-        home_id = int(shots_df.iloc[0]["home_team_id"])
-        away_id = int(shots_df.iloc[0]["away_team_id"])
+    match_df = core.DB.select(meta_sql, (schedule_id,))
 
-    if home_id is None or away_id is None:
-        match_df = core.DB.select(
-            "SELECT home_team_id, away_team_id FROM schedule_data WHERE schedule_id = %s",
-            (schedule_id,)
-        )
-        if not match_df.empty:
-            home_id = int(match_df.iloc[0]["home_team_id"])
-            away_id = int(match_df.iloc[0]["away_team_id"])
+    if match_df.empty:
+        raise ValueError(f"schedule_id {schedule_id} not found in schedule_data.")
 
-    return shots_df, home_id, away_id
+    row = match_df.iloc[0]
+
+    metadata = {
+        "home_id": int(row["home_team_id"]),
+        "away_id": int(row["away_team_id"]),
+        "home_goals": int(row["current_home_goals"]),
+        "away_goals": int(row["current_away_goals"]),
+        "period_start": row["current_period_start_timestamp"],
+        "period": int(row["period"]),
+        "injury_time": int(row["period_injury_time"])
+    }
+
+    return shots_df, metadata
 
 def get_aggregated_goals(shots_df, home_team_id, start_minute, start_home_goals, start_away_goals):
     if shots_df is None or shots_df.empty:
@@ -657,11 +671,11 @@ def build_market_text(schedule_id: int, market_key: str) -> str:
     return "Mercado no disponible"
 
 def get_odds(schedule_id: int, market_key: str) -> dict:
-    shots_df, home_id, away_id = load_simulation_df(schedule_id)
-    if shots_df is None or shots_df.empty or home_id is None or away_id is None:
+    shots_df, metadata = load_simulation_df(schedule_id)
+    if shots_df is None or shots_df.empty or metadata.get("home_id") is None or metadata.get("away_id") is None:
         return {}
 
-    agg = get_aggregated_goals(shots_df, home_id, minute, homegoals, awaygoals)
+    agg = get_aggregated_goals(shots_df, metadata.get("home_id"), 0, metadata.get("home_goals"), metadata.get("away_goals"))
     final_minute = agg["minute"].max()
     final_df = agg[agg["minute"] == final_minute]
     total = len(final_df)
