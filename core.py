@@ -862,8 +862,8 @@ class Extract_Data:
         self.upto_date = upto_date
         # self.get_recent_games_match_info()
         # self.update_matches_info() 
-        self.update_pdras()
-        self.remove_old_data()
+        # self.update_pdras()
+        # self.remove_old_data()
 
     def get_recent_games_match_info(self):
         def get_games_basic_info(url, lud):
@@ -1622,12 +1622,12 @@ class Process_Data:
         Class to reset the players_data table and fill it with new data.
         """
 
-        DB.execute("TRUNCATE TABLE players_data;")
+        # DB.execute("TRUNCATE TABLE players_data;")
         # DB.execute("TRUNCATE TABLE referee_data;")
 
-        self._unify_duplicate_players()
+        # self._unify_duplicate_players()
 
-        self.insert_players_basics()
+        # self.insert_players_basics()
         self.update_players_shots_coef(upto_date)
         # self.update_players_totals()
         # self.update_players_xg_coef()
