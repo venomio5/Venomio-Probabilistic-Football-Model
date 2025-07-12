@@ -8,7 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-ras_booster, ras_cr_columns = core._load_model(f'psxg')
+ras_booster, ras_cr_columns = core._load_model(f'cras')
 
 importance = ras_booster.get_score(importance_type='gain') 
 keys = list(importance.keys())

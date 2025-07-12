@@ -2494,11 +2494,11 @@ class Process_Data:
 
         params = dict(objective='count:poisson',
                         tree_method='hist',
-                        max_depth=5,
+                        max_depth=6,
                         eta=0.03,
                         subsample=0.8,
-                        colsample_bytree=0.8,
-                        min_child_weight=10,
+                        colsample_bytree=0.7,
+                        min_child_weight=20,
                         gamma=3,
                         reg_alpha=1,
                         reg_lambda=2)  
@@ -2506,7 +2506,7 @@ class Process_Data:
         cv_results = xgb.cv(
             params,
             dtrain,
-            num_boost_round=1500,
+            num_boost_round=500,
             nfold=5,
             early_stopping_rounds=100,
             metrics='poisson-nloglik',
@@ -2551,11 +2551,11 @@ class Process_Data:
         params = dict(objective='reg:logistic',
                       eval_metric='logloss',
                       tree_method='hist',
-                      max_depth=5,
-                      eta=0.03,
+                      max_depth=4,
+                      eta=0.05,
                       subsample=0.8,
-                      colsample_bytree=0.8,
-                      min_child_weight=8,
+                      colsample_bytree=1.0,
+                      min_child_weight=2,
                       gamma=2,           
                       reg_alpha=0.5,        
                       reg_lambda=2) 
@@ -2563,7 +2563,7 @@ class Process_Data:
         cv_results = xgb.cv(
             params,
             dtrain,
-            num_boost_round=1500,
+            num_boost_round=1000,
             nfold=5,
             early_stopping_rounds=100,
             metrics='logloss',
@@ -2633,7 +2633,7 @@ class Process_Data:
 
         dtrain = xgb.DMatrix(X, label=y)
         params = dict(objective='binary:logistic',
-                      eval_metric=['logloss', 'auc'],
+                      eval_metric='logloss',
                       base_score = pos_rate,
                       scale_pos_weight = scale_pos_weight,
                       tree_method='hist',
@@ -2641,15 +2641,15 @@ class Process_Data:
                       eta=0.03,
                       subsample=0.8,
                       colsample_bytree=0.8,
-                      min_child_weight=10,
+                      min_child_weight=6,
                       gamma=2,
-                      reg_alpha=0.5,
+                      reg_alpha=1,
                       reg_lambda=2)
         
         cv_results = xgb.cv(
             params,
             dtrain,
-            num_boost_round=1500,
+            num_boost_round=1000,
             nfold=5,
             stratified=True,
             early_stopping_rounds=100,
