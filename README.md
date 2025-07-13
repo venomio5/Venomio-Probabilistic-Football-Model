@@ -356,6 +356,7 @@ CREATE TABLE schedule_data (
     simulate BOOLEAN,
     home_n_subs_avail INT DEFAULT 5,
     away_n_subs_avail INT DEFAULT 5,
+    game_strength FLOAT,
     UNIQUE (home_team_id, away_team_id)
 );
 ```

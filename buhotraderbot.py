@@ -624,6 +624,10 @@ def build_match_header(schedule_id: int) -> str:
     current_period_start_timestamp = int(match["current_period_start_timestamp"])
     period = match["period"]
     period_injury_time = int(match["period_injury_time"]) if match["period_injury_time"] and not math.isnan(match["period_injury_time"]) else 0
+    game_strength = match["game_strength"]
+
+    blocks_count = int(round(game_strength * 5))
+    blocks = "■" * blocks_count + "□" * (5 - blocks_count)
     
     now = datetime.now()
 
@@ -651,7 +655,7 @@ def build_match_header(schedule_id: int) -> str:
         time_display = "🗓 " + kickoff.strftime("%A %d de %B")
 
     return (
-        f"<i>{league}</i>\n"
+        f"<i>{league} {blocks}</i>\n"
         f"<b>{home}</b> vs <b>{away}</b>\n"
         f"{time_display}\n\n"
     )

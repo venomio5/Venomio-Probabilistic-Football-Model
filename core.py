@@ -3309,7 +3309,7 @@ class Alg:
                 normalized_active_p[key] = probabilities[i]
 
         active_weights = list(normalized_active_p.values())     
-
+        
         picked_out_players = np.random.choice(active_players, p=active_weights, replace=False, size=subs)
 
         total_passive_minutes = 0
@@ -3693,6 +3693,36 @@ class AutoLineups:
         home_ids_st, home_ids_bn = match_players(home_team_id, self.home_starters + self.home_subs)
         away_ids_st, away_ids_bn = match_players(away_team_id, self.away_starters + self.away_subs)
 
+        home_total_extracted = len(self.home_starters) + len(self.home_subs)
+        away_total_extracted = len(self.away_starters) + len(self.away_subs)
+
+        def _fetch_minutes(pids: list[int]) -> dict[int, int]:
+            if not pids:
+                return {}
+
+            placeholders = ",".join(["%s"] * len(pids))
+            sql = f"""
+                SELECT player_id, minutes_played
+                FROM   players_data
+                WHERE  player_id IN ({placeholders})
+            """
+            df = DB.select(sql, tuple(pids))
+            return dict(zip(df["player_id"], df["minutes_played"]))
+
+        def _calc_strength(matched_ids: list[int], total_extracted: int) -> float:
+            if total_extracted == 0:
+                return 0.0
+
+            minutes = _fetch_minutes(matched_ids)
+            total_pct = 0
+            for pid in matched_ids:
+                total_pct += min(minutes.get(pid, 0) / 500, 1)
+            return total_pct / total_extracted
+
+        home_all_ids = home_ids_st + home_ids_bn
+        away_all_ids = away_ids_st + away_ids_bn
+        self.game_strength = _calc_strength(home_all_ids, home_total_extracted) * _calc_strength(away_all_ids, away_total_extracted)
+
         def _build_dicts(starters, bench):
             data = []
             for pid in starters:
@@ -3719,8 +3749,15 @@ class AutoLineups:
         send_lineup_to_db(self.home_players_data, schedule_id=self.schedule_id, team="home")
         send_lineup_to_db(self.away_players_data, schedule_id=self.schedule_id, team="away")
 
-        sql_query = f"UPDATE schedule_data SET referee_name = %s WHERE schedule_id = %s"
-        DB.execute(sql_query, (self.referee_name, schedule_id))
+        sql_query = """
+            UPDATE schedule_data
+               SET referee_name = %s,
+                   game_strength = %s
+             WHERE schedule_id = %s
+        """
+        DB.execute(sql_query, (self.referee_name,
+                               self.game_strength,
+                               schedule_id))
 
     def _fetch_json_wsel(self, url):
         s = Service('chromedriver.exe')
