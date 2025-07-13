@@ -25,6 +25,7 @@ import core
 import locale
 import pandas as pd
 from telegram.error import BadRequest  
+import math
 
 locale.setlocale(locale.LC_TIME, 'es_ES.UTF-8')
 
@@ -65,6 +66,7 @@ def load_simulation_df(schedule_id: int):
 
     meta_sql = """
         SELECT 
+            date,
             home_team_id,
             away_team_id,
             current_home_goals,
@@ -84,13 +86,14 @@ def load_simulation_df(schedule_id: int):
     row = match_df.iloc[0]
 
     metadata = {
+        "datetime": pd.to_datetime(row["date"]),
         "home_id": int(row["home_team_id"]),
         "away_id": int(row["away_team_id"]),
         "home_goals": int(row["current_home_goals"]),
         "away_goals": int(row["current_away_goals"]),
         "period_start": row["current_period_start_timestamp"],
-        "period": int(row["period"]),
-        "injury_time": int(row["period_injury_time"])
+        "period": row["period"],
+        "injury_time": int(row["period_injury_time"]) if row["period_injury_time"] and not math.isnan(row["period_injury_time"]) else 0
     }
 
     return shots_df, metadata
@@ -616,14 +619,32 @@ def build_match_header(schedule_id: int) -> str:
     home    = match["home_team"]
     away    = match["away_team"]
     kickoff = match["datetime"]
+    current_home_goals = int(match["current_home_goals"])
+    current_away_goals = int(match["current_away_goals"])
+    current_period_start_timestamp = int(match["current_period_start_timestamp"])
+    period = match["period"]
+    period_injury_time = int(match["period_injury_time"]) if match["period_injury_time"] and not math.isnan(match["period_injury_time"]) else 0
     
     now = datetime.now()
-    elapsed = now - kickoff
 
-    if timedelta(hours=0) <= elapsed <= timedelta(hours=2.1):
-        current_minute = min(int(elapsed.total_seconds() // 60), 125)
-        current_score = "0 - 0"  
-        time_display = f"⏱ {current_minute}'  |  {current_score}"
+    if timedelta(hours=0) <= now - kickoff <= timedelta(hours=2.1):
+        current_period_start = datetime.fromtimestamp(current_period_start_timestamp)
+        elapsed_minutes = int((now - current_period_start).total_seconds() // 60)
+
+        base_minute = 0
+        if period == "period2":
+            base_minute = 45
+
+        current_minute = base_minute + elapsed_minutes
+        max_minute = 45 if period == "period1" else 90
+        capped_minute = min(current_minute, max_minute)
+
+        if current_minute > max_minute and period_injury_time > 0:
+            minute_display = f"{max_minute}+{period_injury_time}"
+        else:
+            minute_display = f"{capped_minute}"
+
+        time_display = f"⏱ {minute_display}'  |  {current_home_goals} - {current_away_goals}"
     elif kickoff > now:
         time_display = "🗓 " + kickoff.strftime("%A %d de %B").capitalize()
     else:
@@ -772,9 +793,50 @@ def get_odds(schedule_id: int, market_key: str) -> dict:
     if shots_df is None or shots_df.empty or metadata.get("home_id") is None or metadata.get("away_id") is None:
         return {}
 
-    agg = get_aggregated_goals(shots_df, metadata.get("home_id"), 0, metadata.get("home_goals"), metadata.get("away_goals"))
+    kickoff = metadata["datetime"]
+    current_period_start_timestamp = metadata["period_start"]
+    period = metadata["period"]
+    injury_time = metadata["injury_time"]
+
+    now = datetime.now()
+
+    if not (timedelta(hours=0) <= now - kickoff <= timedelta(hours=2.1)):
+        current_minute = 0
+
+    current_period_start = datetime.fromtimestamp(current_period_start_timestamp)
+    elapsed_minutes = int((now - current_period_start).total_seconds() // 60)
+
+    base_minute = 0
+    if period == "period2":
+        base_minute = 45
+
+    current_minute = base_minute + elapsed_minutes
+
+    if injury_time is not None:
+        current_minute = current_minute - injury_time
+
+    if period == "period1":
+        extra_time = 2
+        if current_minute >= 30:
+            estimated = (extra_time / 15) * (current_minute - 30)
+            current_minute = int(current_minute - estimated)
+    elif period == "period2":
+        extra_time = 5
+        if current_minute >= 60:
+            estimated = (extra_time / 15) * (current_minute - 60)
+            current_minute = int(current_minute - estimated)
+
+    agg = get_aggregated_goals(shots_df, metadata.get("home_id"), current_minute, metadata.get("home_goals"), metadata.get("away_goals"))
+    filtered_data = agg[
+        (agg["minute"] == current_minute) &
+        (agg["home_goals"] == metadata.get("home_goals")) &
+        (agg["away_goals"] == metadata.get("away_goals"))
+    ]
+    relevant_sim_ids = filtered_data["sim_id"].unique()
+    if len(relevant_sim_ids) == 0:
+        return {}
     final_minute = agg["minute"].max()
-    final_df = agg[agg["minute"] == final_minute]
+    final_df = agg[(agg["minute"] == final_minute) & (agg["sim_id"].isin(relevant_sim_ids))]
     total = len(final_df)
     if total == 0:
         return {}

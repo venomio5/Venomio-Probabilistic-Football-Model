@@ -166,9 +166,14 @@ class Fill_Teams_Data:
             )
 
     def get_teams(self, url):
-        s=Service('chromedriver.exe')
+        s = Service('chromedriver.exe')
         options = webdriver.ChromeOptions()
         options.add_argument("--headless=new")  
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--blink-settings=imagesEnabled=false")
+        options.add_argument("--ignore-certificate-errors")
         driver = webdriver.Chrome(service=s, options=options)
         driver.get(url)
         driver.execute_script("window.scrollTo(0, 1000);")
@@ -3646,18 +3651,21 @@ class AutoLineups:
         gresponse = requests.get(api_url, headers=headers)
 
         if gresponse.status_code != 200:
-            raise RuntimeError(f"API request failed with status {gresponse.status_code}")
+            print(f"[ERROR] API request failed with status {gresponse.status_code}. Usando Selenium como fallback.")
+            event_gdata = self._fetch_json_wsel(api_url)
+        else:
+            event_gdata = gresponse.json()
 
-        event_gdata = gresponse.json()
         self.referee_name = event_gdata["event"]["referee"]["name"]
 
         api_lineups_url = f"https://www.sofascore.com/api/v1/event/{match_id}/lineups"
         lresponse = requests.get(api_lineups_url, headers=headers)
 
         if lresponse.status_code != 200:
-            raise RuntimeError(f"API request failed with status {lresponse.status_code}")
-        
-        event_ldata = lresponse.json()
+            print(f"[ERROR] API request failed with status {gresponse.status_code}. Usando Selenium como fallback.")
+            event_ldata = self._fetch_json_wsel(api_lineups_url)
+        else:
+            event_ldata = lresponse.json()
 
         if not event_ldata.get("confirmed", False):
             print("Lineups are NOT confirmed. Exiting.")
@@ -3714,6 +3722,26 @@ class AutoLineups:
         sql_query = f"UPDATE schedule_data SET referee_name = %s WHERE schedule_id = %s"
         DB.execute(sql_query, (self.referee_name, schedule_id))
 
+    def _fetch_json_wsel(self, url):
+        s = Service('chromedriver.exe')
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless=new")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--blink-settings=imagesEnabled=false")
+        options.add_argument("--ignore-certificate-errors")
+        driver = webdriver.Chrome(service=s, options=options)
+        driver.get(url)
+
+        pre_element = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "pre")))
+
+        pre_content = pre_element.text
+        json_data = json.loads(pre_content)
+
+        driver.quit()
+        return json_data
+
 class AutoMatchInfo:
     def __init__(self, schedule_id):
         self.schedule_id = schedule_id
@@ -3749,9 +3777,10 @@ class AutoMatchInfo:
         gresponse = requests.get(api_url, headers=headers)
 
         if gresponse.status_code != 200:
-            raise RuntimeError(f"API request failed with status {gresponse.status_code}")
-
-        event_gdata = gresponse.json()
+            print(f"[ERROR] API request failed with status {gresponse.status_code}. Usando Selenium como fallback.")
+            event_gdata = self._fetch_json_wsel(api_url)
+        else:
+            event_gdata = gresponse.json()
         self.home_score = int(event_gdata["event"]["homeScore"]["current"])
         self.away_score = int(event_gdata["event"]["awayScore"]["current"])
 
@@ -3917,6 +3946,26 @@ class AutoMatchInfo:
                 self.schedule_id
             )
         )
+
+    def _fetch_json_wsel(self, url):
+        s = Service('chromedriver.exe')
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless=new")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--blink-settings=imagesEnabled=false")
+        options.add_argument("--ignore-certificate-errors")
+        driver = webdriver.Chrome(service=s, options=options)
+        driver.get(url)
+
+        pre_element = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "pre")))
+
+        pre_content = pre_element.text
+        json_data = json.loads(pre_content)
+
+        driver.quit()
+        return json_data
 
 # ------------------------------ Trading ------------------------------
 class MatchTrade:

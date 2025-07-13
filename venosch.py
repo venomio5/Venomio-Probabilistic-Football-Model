@@ -25,7 +25,15 @@ def schedule_auto_lineups_info():
         if trigger_time < datetime.now():
             if not check_player_data_exist(int(row["schedule_id"])):
                 execute_autolineup_once(int(row["schedule_id"]))
-            continue
+        else:
+            job_id = f'autolineup_{int(row["schedule_id"])}'
+            if not scheduler.get_job(job_id):
+                scheduler.add_job(
+                func=execute_autolineup_once,
+                trigger=DateTrigger(run_date=trigger_time),
+                args=[int(row["schedule_id"])],
+                id=job_id
+            )
 
         job_id = f'autolineup_{int(row["schedule_id"])}'
 
@@ -37,17 +45,18 @@ def schedule_auto_lineups_info():
                 id=job_id
             )
 
+        start = max(datetime.now(), game_time)
+        end = game_time + timedelta(hours=2.1)
         matchinfo_job_id = f"matchinfo_{int(row['schedule_id'])}"
-        if not scheduler.get_job(matchinfo_job_id):
-            scheduler.add_job(
-                func=process_match_info,
-                trigger='interval',
-                seconds=120,
-                start_date=game_time,
-                end_date=game_time + timedelta(hours=2.1),
-                args=[int(row["schedule_id"])],
-                id=matchinfo_job_id
-            )
+        scheduler.add_job(
+            func=process_match_info,
+            trigger='interval',
+            seconds=120,
+            start_date=start,
+            end_date=end,
+            args=[int(row["schedule_id"])],
+            id=matchinfo_job_id
+        )
 
 def execute_autolineup_once(schedule_id):
     core.AutoLineups(schedule_id)
@@ -63,8 +72,8 @@ def execute_autolineup_once(schedule_id):
             replace_existing=True
         )
 
-def retry_autolineup_until_players(schedule_id, league_id, title):
-    core.AutoLineups(league_id, title) 
+def retry_autolineup_until_players(schedule_id):
+    core.AutoLineups(schedule_id) 
     if check_player_data_exist(schedule_id):
         scheduler.remove_job(f"retry_{schedule_id}")
         core.Alg(schedule_id, 0, 0, 0, 5, 5)
