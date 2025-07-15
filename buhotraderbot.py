@@ -35,8 +35,8 @@ STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
 STRIPE_WEBHOOK_PORT   = 8000
 
 BOT_USERNAME          = "BuhoTraderBot"
-STRIPE_SECRET_KEY     = "sk_test_51RgEHJQUVDoUbhrhynRb8O7wDF3G2eZGKasWW7C64ryfFYwSz7E2eVSGUdRa3u40JkgolD3vf5OuL16AMXB3cEbM00P9CoIizG"
-STRIPE_PRICE_ID       = "price_1RgewoQUVDoUbhrh7K2EYz3d"
+STRIPE_SECRET_KEY     = "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"
+STRIPE_PRICE_ID       = "price_1RksVrHWQA4B7gi0fD3Lijed"
 
 stripe.api_key = STRIPE_SECRET_KEY
 
@@ -167,13 +167,10 @@ async def stripe_webhook(request):
         try:
             event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
         except (ValueError, stripe.error.SignatureVerificationError):
-            print("[DEBUG] stripe_webhook  signature verification FAILED")
             return web.Response(status=400)
     else:
-        print("[WARN] STRIPE_WEBHOOK_SECRET vacío → se omite la verificación (solo DEV)")
         event = stripe.Event.construct_from(json.loads(payload), stripe.api_key)
 
-    print("[DEBUG] stripe_webhook  event type →", event["type"])
 
     if event["type"] == "checkout.session.completed":
         data = event["data"]["object"]
@@ -232,8 +229,6 @@ def user_subscription_active(user_id: int) -> bool:
 
     active = bool(row and row[0] and row[0] > int(time.time()))
 
-    print(f"[DEBUG] user_subscription_active({user_id}) -> {active}  row={row}") # db
-
     return active
 
 def activate_subscription(user_id: int, subscription_id: str):
@@ -265,8 +260,6 @@ def activate_subscription(user_id: int, subscription_id: str):
     conn.commit()
     conn.close()
 
-    print(f"[DEBUG] DB updated for user {user_id}  period_end={period_end}")
-
 async def create_checkout_session(user_id: int) -> str:
     try:
         session = stripe.checkout.Session.create(
@@ -279,44 +272,16 @@ async def create_checkout_session(user_id: int) -> str:
             },
 
             line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
+            discounts=[{"coupon": "4Noe7bX7"}],
             success_url=f"https://t.me/{BOT_USERNAME}?start=paid_{{CHECKOUT_SESSION_ID}}",
             cancel_url=f"https://t.me/{BOT_USERNAME}?start=cancel",
         )
-        print(f"[DEBUG] create_checkout_session()  user={user_id}  id={session.id}  url={session.url}") # db
         return session.url
     except stripe.error.InvalidRequestError as err:
         logger.error(f"Stripe price id '{STRIPE_PRICE_ID}' invalid → {err}")
         return ""
 
-async def ask_to_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = await create_checkout_session(update.effective_user.id)
-
-    if not url:
-        await (update.callback_query or update.message).reply_text(
-            "⚠️ Ocurrió un problema al generar el enlace de pago. Intenta más tarde."
-        )
-        return
-
-    markup = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("💳 Pagar suscripción", url=url)]]
-    )
-
-    if update.callback_query:
-        await update.callback_query.edit_message_text(
-            "Necesitas una suscripción activa para usar el bot.",
-            reply_markup=markup,
-        )
-    else:
-        await update.message.reply_text(
-            "Necesitas una suscripción activa para usar el bot.",
-            reply_markup=markup,
-        )
-
 def create_billing_portal_session(user_id: int) -> str:
-    """
-    Devuelve un enlace temporal al portal de facturación de Stripe
-    para que el usuario pueda cancelar el plan, cambiar tarjeta, etc.
-    """
     conn = sqlite3.connect("users.db")
     cur  = conn.cursor()
     cur.execute("SELECT stripe_customer_id FROM subscriptions WHERE telegram_id=?",
@@ -386,7 +351,7 @@ def build_markup(menu, cols: int = 1):
 async def set_command_list(application):
     commands = [
         BotCommand("eventos",     "🔘Eventos"),
-        BotCommand("escaner",    "📈Escáner"),
+        # BotCommand("escaner",    "📈Escáner"),
         BotCommand("faq",          "❓FAQs"),
         BotCommand("perfil",    "👤Perfil"),
     ]
@@ -397,14 +362,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     payload = context.args[0] if context.args else ""
 
-    print(f"[DEBUG] /start  user={user_id}  payload='{payload}'") # db
-
     if payload.startswith("paid_"):
         session_id = payload[5:]
-        print(f"[DEBUG] Verifying Stripe session {session_id}") # db
         try:
             session = stripe.checkout.Session.retrieve(session_id)
-            print(f"[DEBUG] Stripe session retrieve → {session}") # db
             if session and session.get("subscription"):
                 activate_subscription(user_id, session["subscription"])
                 await update.message.reply_text(
@@ -424,20 +385,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ El proceso de pago fue cancelado.")
 
     if user_subscription_active(user_id):
-        print(f"[DEBUG] user {user_id} already has active subscription – skip paywall") # db
         return
 
     description = """
-    🚨 Acceso exclusivo con suscripción activa.
+    🚨 Acceso exclusivo con *suscripción activa*.
 
-    🔘 Eventos – Obtén cuotas en tiempo real generadas por un modelo de IA avanzado que simula miles de escenarios por evento.
-    📈 Escáner – Recibe alertas precisas basadas en movimientos de cuotas impulsadas por el Smart Money.
+    🔘 *Eventos* – Obtén cuotas en tiempo real generadas por un modelo de IA avanzado que simula miles de escenarios por evento.
+    📈 *Escáner* _Funcionalidad en desarrollo_ - Recibe alertas precisas basadas en movimientos de cuotas impulsadas por el Smart Money.
 
-    📘 Visita la sección de Preguntas Frecuentes y comprende a fondo cómo funciona este sistema.
+    🕒 *Horarios* – El bot opera en horarios no oficiales por ahora, generalmente activo durante eventos deportivos. Zona horaria de referencia: GMT-6 (Monterrey, México).    
 
-    💼 Suscripción mensual requerida para desbloquear el acceso completo.
+    📘 Visita la sección de *Preguntas Frecuentes* y comprende a fondo cómo funciona este sistema.
 
-    ⚠️ Aviso legal: Toda decisión que tomes es bajo tu propio criterio y responsabilidad. Este bot no garantiza resultados, solo proporciona herramientas de análisis avanzadas.
+    ⚠️ *Aviso legal*: Toda decisión que tomes es bajo tu propio criterio y responsabilidad. Este bot no garantiza resultados, solo proporciona herramientas de análisis avanzadas.
     """
 
     rows = [
@@ -451,9 +411,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     markup = build_markup(rows, cols=2)
 
     if update.callback_query:
-        await update.callback_query.edit_message_text(description, reply_markup=markup)
+        await update.callback_query.edit_message_text(description, reply_markup=markup, parse_mode="Markdown")
     else:
-        await update.message.reply_text(description, reply_markup=markup)
+        await update.message.reply_text(description, reply_markup=markup, parse_mode="Markdown")
 
 async def section_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rows = list(build_markup(EVENTS_MENU[:-1], cols=2).inline_keyboard)
@@ -461,12 +421,12 @@ async def section_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     markup = InlineKeyboardMarkup(rows)
 
     if update.callback_query:
-        await update.callback_query.edit_message_text("🔘Eventos", reply_markup=markup)
+        await update.callback_query.edit_message_text("🔘*Eventos*", reply_markup=markup, parse_mode="Markdown")
     else:
-        await update.message.reply_text("🔘Eventos", reply_markup=markup)
+        await update.message.reply_text("🔘*Eventos*", reply_markup=markup, parse_mode="Markdown")
 
 async def section_scanner(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "Sección Escáner"
+    text = "Estamos trabajando en la sección de escáner."
     if update.callback_query:
         await update.callback_query.edit_message_text(text)
     else:
@@ -475,7 +435,6 @@ async def section_scanner(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def section_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    # datos locales ----------------------------------------------------------
     conn = sqlite3.connect("users.db")
     cur  = conn.cursor()
     cur.execute(
@@ -487,27 +446,23 @@ async def section_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     subscription_id, period_end = (row or (None, None))
-    active        = bool(period_end and period_end > int(time.time()))
-    period_end_s  = time.strftime("%d/%m/%Y", time.localtime(period_end)) if period_end else "—"
+    period_end_s = (
+        f"{time.strftime('%A', time.localtime(period_end)).capitalize()}, "
+        f"{time.strftime('%d', time.localtime(period_end))} de "
+        f"{time.strftime('%B', time.localtime(period_end)).capitalize()}"
+        if period_end else "—"
+    )
 
-    # datos desde Stripe -----------------------------------------------------
-    plan_name      = "—"
     auto_renew_txt = "—"
     if subscription_id:
         try:
             sub        = stripe.Subscription.retrieve(subscription_id)
-            price_data = sub["items"]["data"][0]["price"]
-            plan_name  = price_data.get("nickname") or price_data.get("id")
             auto_renew_txt = "Sí" if not sub.get("cancel_at_period_end") else "No (cancelada)"
         except Exception as err:
             logger.warning(f"[Stripe] no se pudo recuperar la sub {subscription_id} → {err}")
 
-    # texto de perfil --------------------------------------------------------
-    status_txt = "Activa ✅" if active else "Inactiva ❌"
     text = (
         "👤 *Tu perfil*\n\n"
-        f"• Detalles de tu plan: *{plan_name}*\n"
-        f"• Estado de tu suscripción: *{status_txt}*\n"
         f"• Válida hasta: *{period_end_s}*\n"
         f"• Renovación automática: *{auto_renew_txt}*"
     )
@@ -523,12 +478,10 @@ async def section_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # envío / edición --------------------------------------------------------
     if update.callback_query:
         await update.callback_query.edit_message_text(
-            text, reply_markup=markup, parse_mode="Markdown"
-        )
+            text, reply_markup=markup, parse_mode="Markdown")
     else:
         await update.message.reply_text(
-            text, reply_markup=markup, parse_mode="Markdown"
-        )
+            text, reply_markup=markup, parse_mode="Markdown")
 
 async def section_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     matches = get_all_matches()
@@ -569,9 +522,9 @@ async def section_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     markup = InlineKeyboardMarkup(btn_rows)
 
     if update.callback_query:
-        await update.callback_query.edit_message_text("Eventos de Hoy", reply_markup=markup)
+        await update.callback_query.edit_message_text("*Eventos de Hoy*", reply_markup=markup, parse_mode="Markdown")
     else:
-        await update.message.reply_text("Eventos de Hoy", reply_markup=markup)
+        await update.message.reply_text("*Eventos de Hoy*", reply_markup=markup, parse_mode="Markdown")
 
 async def section_upcoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     matches = get_all_matches()
@@ -608,9 +561,9 @@ async def section_upcoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     markup = InlineKeyboardMarkup(btn_rows)
 
     if update.callback_query:
-        await update.callback_query.edit_message_text("📅Próximos Eventos", reply_markup=markup)
+        await update.callback_query.edit_message_text("📅*Próximos Eventos*", reply_markup=markup, parse_mode="Markdown")
     else:
-        await update.message.reply_text("📅Próximos Eventos", reply_markup=markup)
+        await update.message.reply_text("📅*Próximos Eventos*", reply_markup=markup, parse_mode="Markdown")
 
 def build_match_header(schedule_id: int) -> str:
     match = get_all_matches().loc[lambda df: df["schedule_id"] == schedule_id].iloc[0]
@@ -768,14 +721,14 @@ def build_market_text(schedule_id: int, market_key: str) -> str:
         )
 
     if market_key == "player_goals":
-        lines = ["📊 <b>Goles por Jugador</b>"]
+        lines = ["📊 <b>Jugador Anota</b>"]
         for player, odd in odds.items():
             name = player.split("_")[0]
             lines.append(f"<b>{name}</b>: {fmt(odd)}")
         return "\n".join(lines)
 
     if market_key == "player_assists":
-        lines = ["📊 <b>Asistencias por Jugador</b>"]
+        lines = ["📊 <b>Jugador Asiste</b>"]
         for player, odd in odds.items():
             name = player.split("_")[0]
             lines.append(f"<b>{name}</b>: {fmt(odd)}")
@@ -783,7 +736,7 @@ def build_market_text(schedule_id: int, market_key: str) -> str:
 
 
     if market_key == "player_shots":
-        lines = ["📊 <b>Tiros por Jugador</b>"]
+        lines = ["📊 <b>Tiros del Jugador</b>"]
         for th, plist in odds.items():
             lines.append(f"<b>+{th} tiros</b>")
             for player, odd in plist.items():
@@ -1054,11 +1007,11 @@ async def section_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ("¿Puedo cancelar cuando quieras?", "faq_answer_3")
     ]
     markup = build_markup(questions, cols=2)
-    text = "❓FAQs"
+    text = "❓*FAQs*"
     if update.callback_query:
-        await update.callback_query.edit_message_text(text=text, reply_markup=markup)
+        await update.callback_query.edit_message_text(text=text, reply_markup=markup, parse_mode="Markdown")
     else:
-        await update.message.reply_text(text=text, reply_markup=markup)
+        await update.message.reply_text(text=text, reply_markup=markup, parse_mode="Markdown")
 
 async def section_faq_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1078,7 +1031,7 @@ async def section_faq_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
 SECTIONS = {
     "start":      start,
     "eventos":     section_events,
-    "escaner":    section_scanner,
+    # "escaner":    section_scanner,
     "faq":      section_faq,
     "perfil":     section_profile,
     "hoy":       section_today,
@@ -1095,7 +1048,7 @@ async def route(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     restricted = {"eventos", "escaner", "envivo", "prox"}
     if action in restricted and not user_subscription_active(update.effective_user.id):
-        await ask_to_subscribe(update, context)
+        await start(update, context)
         return
 
     handler = SECTIONS.get(action)
@@ -1133,7 +1086,7 @@ def main():
     BOT_APP = app                                             
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler(["eventos", "escaner", "faq", "perfil"], route))
+    app.add_handler(CommandHandler(["eventos", "faq", "perfil"], route))
     app.add_handler(CallbackQueryHandler(match_details,  pattern=r"^match_\d+$"))
     app.add_handler(CallbackQueryHandler(market_odds,   pattern=r"^market_\d+_.+$"))
     app.add_handler(CallbackQueryHandler(reload_odds, pattern=r"^reload_\d+_.+"))
