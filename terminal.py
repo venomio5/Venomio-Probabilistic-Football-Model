@@ -760,7 +760,7 @@ class MainWindow(QMainWindow):
                 .reset_index()
             )
             
-            max_minute = int(df['minute'].max())
+            max_minute = 90
             full_index = pd.MultiIndex.from_product(
                 [agg['sim_id'].unique(), range(max_minute + 1)],
                 names=['sim_id', 'minute']
@@ -1665,7 +1665,7 @@ class MainWindow(QMainWindow):
             list_item = self.add_task_to_queue(f"Extract & Process up to {upto_date}")
 
             def task():
-                core.Extract_Data(upto_date)
+                # core.Extract_Data(upto_date)
                 core.Process_Data(upto_date)
 
             worker = UpdateWorker(task)

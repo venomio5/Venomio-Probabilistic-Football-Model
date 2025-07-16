@@ -46,4 +46,4 @@ def update_customer_id(telegram_id: int, new_customer_id: str):
 yesterday = int(time.time()) - 86400
 one_more_year = int(time.time()) + 365 * 24 * 3600
 
-change_period_end(6796842653, yesterday)
+change_period_end(6796842653, one_more_year)

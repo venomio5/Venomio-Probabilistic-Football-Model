@@ -124,7 +124,7 @@ def get_aggregated_goals(shots_df, home_team_id, start_minute, start_home_goals,
         .reset_index()
     )
     
-    max_minute = int(df['minute'].max())
+    max_minute = 90
     full_index = pd.MultiIndex.from_product(
         [agg['sim_id'].unique(), range(max_minute + 1)],
         names=['sim_id', 'minute']
@@ -138,7 +138,6 @@ def get_aggregated_goals(shots_df, home_team_id, start_minute, start_home_goals,
         .fillna({'home_goals': start_home_goals, 'away_goals': start_away_goals})
         .reset_index()
     )
-    
     return agg
 
 # DB & STRIPE
@@ -388,16 +387,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     description = """
-    🚨 Acceso exclusivo con *suscripción activa*.
+🚨 Acceso exclusivo con *suscripción activa*.
 
-    🔘 *Eventos* – Obtén cuotas en tiempo real generadas por un modelo de IA avanzado que simula miles de escenarios por evento.
-    📈 *Escáner* _Funcionalidad en desarrollo_ - Recibe alertas precisas basadas en movimientos de cuotas impulsadas por el Smart Money.
+🔘 *Eventos* – Obtén cuotas en tiempo real generadas por un modelo de IA avanzado que simula miles de escenarios por evento.
+📈 *Escáner* _Funcionalidad en desarrollo_ - Recibe alertas precisas basadas en movimientos de cuotas impulsadas por el Smart Money.
 
-    🕒 *Horarios* – El bot opera en horarios no oficiales por ahora, generalmente activo durante eventos deportivos. Zona horaria de referencia: GMT-6 (Monterrey, México).    
+🕒 *Horarios* – El bot opera en horarios no oficiales por ahora, generalmente activo durante eventos deportivos. Zona horaria de referencia: GMT-6 (Monterrey, México).    
 
-    📘 Visita la sección de *Preguntas Frecuentes* y comprende a fondo cómo funciona este sistema.
+📘 Visita la sección de *Preguntas Frecuentes* y comprende a fondo cómo funciona este sistema.
 
-    ⚠️ *Aviso legal*: Toda decisión que tomes es bajo tu propio criterio y responsabilidad. Este bot no garantiza resultados, solo proporciona herramientas de análisis avanzadas.
+⚠️ *Aviso legal*: Toda decisión que tomes es bajo tu propio criterio y responsabilidad. Este bot no garantiza resultados, solo proporciona herramientas de análisis avanzadas.
     """
 
     rows = [
@@ -783,6 +782,8 @@ def get_odds(schedule_id: int, market_key: str) -> dict:
             estimated = (extra_time / 15) * (current_minute - 60)
             current_minute = int(current_minute - estimated)
 
+    current_minute = max(current_minute, 0)
+
     agg = get_aggregated_goals(shots_df, metadata.get("home_id"), current_minute, metadata.get("home_goals"), metadata.get("away_goals"))
     filtered_data = agg[
         (agg["minute"] == current_minute) &
@@ -1002,11 +1003,10 @@ async def reload_odds(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def section_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
     questions = [
-        ("¿Necesito pagar para usar el bot?", "faq_answer_1"),
-        ("¿Cómo me suscribo?", "faq_answer_2"),
-        ("¿Puedo cancelar cuando quieras?", "faq_answer_3")
+        ("📦 Suscripción y Acceso", "faq_answer_1"),
+        ("⚙️ Funcionamiento del Bot", "faq_answer_2")
     ]
-    markup = build_markup(questions, cols=2)
+    markup = build_markup(questions, cols=1)
     text = "❓*FAQs*"
     if update.callback_query:
         await update.callback_query.edit_message_text(text=text, reply_markup=markup, parse_mode="Markdown")
@@ -1018,15 +1018,95 @@ async def section_faq_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
     data = query.data
 
     faq_answers = {
-        "faq_answer_1": "Solo para acceder a Eventos y Escáner.",
-        "faq_answer_2": "Pulsa en «Suscribirme» y sigue el proceso de pago.",
-        "faq_answer_3": "Sí, desde tu perfil en cualquier momento."
+        "faq_answer_1":
+            """
+📦 *Suscripción y Acceso*
+*¿Cuánto dura la suscripción?*  
+1 mes
+
+*¿Puedo cancelar en cualquier momento?*  
+Sí, desde tu perfil puedes cancelar cuando quieras. Seguirás teniendo acceso hasta el final del periodo que ya pagaste.
+
+*¿Puedo obtener un reembolso si cancelo antes de tiempo?*  
+No. Si cancelas, simplemente detienes la renovación para el próximo periodo. El mes actual seguirá activo hasta su fecha de vencimiento.
+
+*¿Cuáles son los métodos de pago aceptados?*  
+Se aceptan tarjetas de crédito y débito, además de otros métodos compatibles con Stripe como Apple Pay, Google Pay, y cuentas bancarias.
+También puedes usar tarjetas recargables como Saldazo, Mercado Pago, Stori, Nu, Klar, etc., que se pueden recargar en OXXO o 7-Eleven y funcionan como débito.
+
+*¿Puedo pausar mi suscripción temporalmente?*  
+No es posible pausar la suscripción.
+
+*¿La suscripción incluye acceso a futuras funciones?*
+Sí. Solo ten en cuenta que el precio mensual puede incrementarse a medida que añadimos nuevas funciones.
+
+*¿Puedo usarlo desde mi celular, laptop/PC o en la web?* 
+Sí, puedes usarlo desde tu celular, computadora o directamente en la versión web de Telegram.
+
+*¿La suscripción es válida para varios dispositivos o cuentas?*
+La suscripción solo es válida para el número de teléfono con el que usas Telegram. No se puede compartir entre varias cuentas.
+
+*¿Cómo afecta la zona horaria GMT-6 si estoy en otro país?*
+Debes considerar la diferencia horaria respecto a GMT-6.
+
+*¿Hay soporte técnico si tengo dudas?*
+No hay soporte técnico oficial, pero si tienes dudas puedes escribirme en [X](https://x.com/BuhoTrader).
+            """,
+        "faq_answer_2": 
+            """
+⚙️ *Funcionamiento y Uso del Bot*
+*¿El bot me dice en qué apostar o cómo debo usar las cuotas que ofrece?*
+No se te dirá directamente en qué apostar. Lo que obtienes con la suscripción son cuotas estimadas por Buhotrader, que sirven como herramienta para complementar tu análisis.
+- Si la cuota de Buhotrader es más baja que la del mercado (ya sea en casas de apuestas o intercambios), significa que Buhotrader predice que ese resultado es más probable de lo que el mercado refleja. En ese caso, se recomienda apostar a favor.
+- Si la cuota de Buhotrader es más alta que la del mercado, entonces el bot estima que ese resultado es menos probable, por lo que convendría apostar en contra.
+
+Nota: Los términos "a favor" y "en contra" son propios del trading deportivo. Si no estás familiarizado, puedes consultar un PDF explicativo que está disponible en el canal de [X](https://x.com/BuhoTrader).
+
+*¿Voy a recibir alertas automáticas de las cuotas o tengo que estar revisando?*
+No recibirás alertas automáticas de cambios en las cuotas. La recomendación es usar apps como Sofascore para configurar notificaciones de eventos clave (inicio del partido, alineaciones, goles, etc.). Con esa información, puedes revisar manualmente las cuotas en el bot en el momento más oportuno.
+
+*¿Cómo se generan las cuotas en tiempo real?*
+El modelo utiliza inteligencia artificial para simular miles de veces el desarrollo del juego con los jugadores activos. A partir de estas simulaciones, calcula las cuotas y analiza el contexto del partido en tiempo real.
+
+*¿Cuál es la diferencia entre este bot y un tipster?*
+La diferencia es que el bot es un modelo matemático. Recoge miles de datos, realiza miles de simulaciones y está entrenado con inteligencia artificial. Como resultado, ofrece probabilidades expresadas en forma de cuotas. Es más una herramienta que te permite identificar dónde puede haber valor, ya que todo depende de las cuotas del mercado.
+Es imposible predecir con exactitud qué va a pasar, pero sí se puede tener una mejor idea de qué tan probable es un determinado resultado. Para obtener valor, depende de lo que el mercado ofrezca.
+
+*¿Qué deportes/ligas cubre el bot?*
+Por el momento, solo cubre fútbol y las siguientes ligas:
+- Liga MX
+- Campeonato Brasileiro Série A
+- Major League Soccer
+- Liga Profesional Argentina
+- Ligue 1
+- Serie A
+- Premier League
+- La Liga
+- Bundesliga
+- Primeira Liga
+- Eredivisie
+- Liga Belga
+
+En el futuro se agregarán más competiciones como la NBA, la Champions League, torneos internacionales y ligas con formato de playoffs incluidos (Por el momento el modelo está entrenado únicamente para partidos de temporada regular).
+
+*¿Cuánto dinero necesito para empezar?*
+No hay un monto mínimo. Esta herramienta está pensada para apoyar tu análisis de apuestas, no para indicarte exactamente qué hacer. Tú decides cuánto arriesgar, siempre bajo tu propia responsabilidad.
+
+*¿Hay riesgo de perder dinero?*
+Sí. Como en cualquier actividad con elementos de azar, existe el riesgo de pérdida. Incluso con un buen sistema, las malas rachas son inevitables. Usa solo dinero que estés dispuesto a perder.
+
+*¿Cómo sé que los datos son confiables?*
+Cada apuesta incluye un indicador de confianza basado en el análisis del modelo. En algunos casos puede haber pocos datos disponibles (lo que reduce la fiabilidad), normalmente el modelo trabaja con datos históricos de los últimos años.
+
+*¿Puedo ver resultados históricos del bot?*
+Sí, está en desarrollo. Para evaluar el rendimiento se utilizarán métricas como el MSE (error cuadrático medio) en goles esperados, ya que simplemente contar apuestas ganadas o perdidas no refleja el verdadero rendimiento del modelo.
+            """
     }
     answer_text = faq_answers.get(data, "Respuesta no encontrada.")
 
     rows = [("🔙", "faq")]
     markup = build_markup(rows, cols=1)
-    await query.edit_message_text(text=answer_text, reply_markup=markup)
+    await query.edit_message_text(text=answer_text, reply_markup=markup, parse_mode="Markdown")
 
 SECTIONS = {
     "start":      start,

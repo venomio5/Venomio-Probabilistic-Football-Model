@@ -640,30 +640,33 @@ class UpdateSchedule:
                 return None
 
         for row in rows:
-            date_element = row.find_element(By.CSS_SELECTOR, "[data-stat='date']")
-            date_text = date_element.text.strip()
-            cleaned_date_text = re.sub(r"[^0-9-]", "", date_text)
-            if not cleaned_date_text:
+            try:
+                date_element = row.find_element(By.CSS_SELECTOR, "[data-stat='date']")
+                date_text = date_element.text.strip()
+                cleaned_date_text = re.sub(r"[^0-9-]", "", date_text)
+                if not cleaned_date_text:
+                    continue
+
+                game_date = datetime.strptime(cleaned_date_text, "%Y-%m-%d").date()
+                if not (self.from_date <= game_date < upto_date):
+                    continue
+
+                venue_time_el = row.find_element(By.CSS_SELECTOR, ".venuetime")
+                local_time_el = row.find_element(By.CSS_SELECTOR, ".localtime")
+
+                venue_time_obj = _parse_time(venue_time_el.text)
+                local_time_obj = _parse_time(local_time_el.text)
+
+                home_name = row.find_element(By.CSS_SELECTOR, "[data-stat='home_team']").text
+                away_name = row.find_element(By.CSS_SELECTOR, "[data-stat='away_team']").text
+
+                games_dates.append(game_date)
+                games_local_time.append(local_time_obj)
+                games_venue_time.append(venue_time_obj)
+                home_teams.append(home_name)
+                away_teams.append(away_name)
+            except Exception:
                 continue
-
-            game_date = datetime.strptime(cleaned_date_text, "%Y-%m-%d").date()
-            if not (self.from_date <= game_date < upto_date):
-                continue
-
-            venue_time_el = row.find_element(By.CSS_SELECTOR, ".venuetime")
-            local_time_el = row.find_element(By.CSS_SELECTOR, ".localtime")
-
-            venue_time_obj = _parse_time(venue_time_el.text)
-            local_time_obj = _parse_time(local_time_el.text)
-
-            home_name = row.find_element(By.CSS_SELECTOR, "[data-stat='home_team']").text
-            away_name = row.find_element(By.CSS_SELECTOR, "[data-stat='away_team']").text
-
-            games_dates.append(game_date)
-            games_local_time.append(local_time_obj)
-            games_venue_time.append(venue_time_obj)
-            home_teams.append(home_name)
-            away_teams.append(away_name)
 
         driver.quit()
         return games_dates, games_local_time, games_venue_time, home_teams, away_teams
@@ -856,14 +859,17 @@ class UpdateSchedule:
         filtered_rains = []
         for t, temp, rain in zip(times, temps, rains):
             dt = datetime.fromisoformat(t)
-            if start_datetime.time() <= dt.time() <= end_datetime.time():
+            if start_datetime.time() <= dt.time() <= end_datetime.time() and temp is not None:
                 filtered_temps.append(temp)
                 filtered_rains.append(rain)
 
         if not filtered_temps:
             return None, None
 
-        avg_temp = sum(filtered_temps) / len(filtered_temps)
+        if filtered_temps:
+            avg_temp = sum(filtered_temps) / len(filtered_temps)
+        else:
+            avg_temp = None
         raining = any(r > 0.0 for r in filtered_rains)
         return avg_temp, raining
 
@@ -899,39 +905,42 @@ class Extract_Data:
             referees = []
 
             for row in rows:
-                date_element = row.find_element(By.CSS_SELECTOR, "[data-stat='date']")
-                date_text = date_element.text.strip()
-                cleaned_date_text = re.sub(r'[^0-9-]', '', date_text)
-                if cleaned_date_text:
-                    game_date = datetime.strptime(cleaned_date_text, '%Y-%m-%d').date()
-                else:
-                    continue
-
-                if lud <= game_date < self.upto_date:
-                    games_dates.append(game_date)
-
-                    venue_time_element = row.find_element(By.CSS_SELECTOR, '.venuetime')
-                    venue_time_str = venue_time_element.text.strip("()")
-                    venue_time_obj = datetime.strptime(venue_time_str, "%H:%M").time()
-                    game_times.append(venue_time_obj)
-
-                    try:
-                        href_element = row.find_element(By.CSS_SELECTOR, "[data-stat='match_report'] a")
-                        filtered_games_urls.append(href_element.get_attribute('href'))
-                    except NoSuchElementException:
+                try:
+                    date_element = row.find_element(By.CSS_SELECTOR, "[data-stat='date']")
+                    date_text = date_element.text.strip()
+                    cleaned_date_text = re.sub(r'[^0-9-]', '', date_text)
+                    if cleaned_date_text:
+                        game_date = datetime.strptime(cleaned_date_text, '%Y-%m-%d').date()
+                    else:
                         continue
 
-                    home_name_element = row.find_element(By.CSS_SELECTOR, "[data-stat='home_team']")
-                    home_name = home_name_element.text
-                    home_teams.append(home_name)
+                    if lud <= game_date < self.upto_date:
+                        games_dates.append(game_date)
 
-                    away_name_element = row.find_element(By.CSS_SELECTOR, "[data-stat='away_team']")
-                    away_name = away_name_element.text
-                    away_teams.append(away_name)
+                        venue_time_element = row.find_element(By.CSS_SELECTOR, '.venuetime')
+                        venue_time_str = venue_time_element.text.strip("()")
+                        venue_time_obj = datetime.strptime(venue_time_str, "%H:%M").time()
+                        game_times.append(venue_time_obj)
 
-                    referee_name_element = row.find_element(By.CSS_SELECTOR, "[data-stat='referee']")
-                    referee_name = referee_name_element.text           
-                    referees.append(referee_name)
+                        try:
+                            href_element = row.find_element(By.CSS_SELECTOR, "[data-stat='match_report'] a")
+                            filtered_games_urls.append(href_element.get_attribute('href'))
+                        except NoSuchElementException:
+                            continue
+
+                        home_name_element = row.find_element(By.CSS_SELECTOR, "[data-stat='home_team']")
+                        home_name = home_name_element.text
+                        home_teams.append(home_name)
+
+                        away_name_element = row.find_element(By.CSS_SELECTOR, "[data-stat='away_team']")
+                        away_name = away_name_element.text
+                        away_teams.append(away_name)
+
+                        referee_name_element = row.find_element(By.CSS_SELECTOR, "[data-stat='referee']")
+                        referee_name = referee_name_element.text           
+                        referees.append(referee_name)
+                except Exception:
+                    continue
             driver.quit()
             
             return filtered_games_urls, games_dates, game_times, home_teams, away_teams, referees
@@ -1637,21 +1646,21 @@ class Process_Data:
         Class to reset the players_data table and fill it with new data.
         """
 
-        DB.execute("TRUNCATE TABLE players_data;")
+        # DB.execute("TRUNCATE TABLE players_data;")
         # DB.execute("TRUNCATE TABLE referee_data;")
 
-        self._unify_duplicate_players()
+        # self._unify_duplicate_players()
 
-        self.insert_players_basics()
-        self.update_players_shots_coef(upto_date)
+        # self.insert_players_basics()
+        # self.update_players_shots_coef(upto_date)
         # self.update_players_totals()
         # self.update_players_xg_coef()
-        # self.update_shots()
-        # self.update_match_info_referee_totals()
-        # self.update_referee_data_totals()
-        # self.train_context_ras_model()
-        # self.train_refined_sq_model()
-        # self.train_post_shot_goal_model()
+        self.update_shots()
+        self.update_match_info_referee_totals()
+        self.update_referee_data_totals()
+        self.train_context_ras_model()
+        self.train_refined_sq_model()
+        self.train_post_shot_goal_model()
 
     def insert_players_basics(self):
         """
@@ -1950,7 +1959,7 @@ class Process_Data:
         players_id_df = DB.select("SELECT DISTINCT player_id FROM players_data")
         print("Updating players totals")
         
-        for player_id in tqdm(players_id_df["player_id"].tolist(), desc="Total de juugadores (Totales)"):
+        for player_id in tqdm(players_id_df["player_id"].tolist(), desc="Total de jugadores (Totales)"):
             pagg_query = """
             SELECT
                 COALESCE(SUM(headers), 0) AS headers,
@@ -2359,9 +2368,18 @@ class Process_Data:
                 )
             )
 
+            params = (
+                None if isinstance(plsqa, float) and math.isnan(plsqa) else plsqa,
+                None if isinstance(shooter_sq, float) and math.isnan(shooter_sq) else shooter_sq,
+                None if isinstance(assister_sq, float) and math.isnan(assister_sq) else assister_sq,
+                None if isinstance(rsq, float) and math.isnan(rsq) else rsq,
+                None if isinstance(shooter_A, float) and math.isnan(shooter_A) else shooter_A,
+                None if isinstance(gk_A, float) and math.isnan(gk_A) else gk_A,
+                row['shot_id']
+            )
             DB.execute(
                 "UPDATE shots_data SET total_PLSQA = %s, shooter_SQ = %s, assister_SQ = %s, RSQ = %s, shooter_A = %s, GK_A = %s WHERE shot_id = %s",
-                (plsqa, shooter_sq, assister_sq, rsq, shooter_A, gk_A, row['shot_id'])
+                params
             )
 
     def update_match_info_referee_totals(self):
@@ -3414,6 +3432,9 @@ class Alg:
             return 6
         
     def get_shot_type(self, rahs, rafs):
+        rahs = max(0, rahs)
+        rafs = max(0, rafs)
+        
         total = rahs + rafs
         if total == 0:
             probs = [0.2, 0.8]
@@ -3642,6 +3663,9 @@ class AutoLineups:
         home_team_id = int(result["home_team_id"].iloc[0])
         away_team_id = int(result["away_team_id"].iloc[0])
         match_url = result['ss_url'].iloc[0]
+        match_time = result['local_time'].iloc[0]
+        match_time_as_time = (datetime.min + match_time).time()
+        match_timestamp = int(datetime.combine(date.today(), match_time_as_time).timestamp())
 
         match = re.search(r'id:(\d+)', match_url)
         if not match:
@@ -3762,11 +3786,19 @@ class AutoLineups:
         sql_query = """
             UPDATE schedule_data
                SET referee_name = %s,
-                   game_strength = %s
+                   game_strength = %s,
+                   current_home_goals = %s,
+                   current_away_goals = %s,
+                   current_period_start_timestamp = %s,
+                   period = %s
              WHERE schedule_id = %s
         """
         DB.execute(sql_query, (self.referee_name,
                                self.game_strength,
+                               0,
+                               0,
+                               match_timestamp,
+                               "period1",
                                schedule_id))
 
     def _fetch_json_wsel(self, url):
