@@ -422,6 +422,18 @@ def _load_model(name: str) -> tuple[xgb.Booster, list[str]]:
 
     return booster, columns
 
+def get_match_name(schedule_id):
+    sql_query = "SELECT home_team_id, away_team_id FROM schedule_data WHERE schedule_id = %s"
+    result = DB.select(sql_query, (schedule_id,))
+
+    if not result.empty:
+        home_name = get_team_name_by_id(int(result.iloc[0]["home_team_id"]))
+        away_name = get_team_name_by_id(int(result.iloc[0]["away_team_id"]))
+
+        return f"{home_name} vs {away_name}"  
+    else:
+        return schedule_id
+
 _ID_RE = re.compile(r"(?P<name>.+?)_\d+_[A-Z]{1,2}$")
 # ------------------------------ Fetch & Remove Data ------------------------------
 class UpdateSchedule:
@@ -431,11 +443,9 @@ class UpdateSchedule:
         
         for league_id in tqdm(active_leagues_df["league_id"].tolist(), desc="Processing leagues"):
             fbref_url = active_leagues_df[active_leagues_df['league_id'] == league_id]['fbref_fixtures_url'].values[0]
-            # ss_url = active_leagues_df[active_leagues_df['league_id'] == league_id]['ss_url'].values[0]
             upto_date = self.from_date + timedelta(days=5)
 
             games_dates, games_local_time, games_venue_time, home_teams, away_teams = self.get_games_basic_info(fbref_url, upto_date)
-            # smatches_dict = self.get_ss_urls(ss_url)
 
             for i in tqdm(range(len(games_dates)), desc="Games"):
                 game_date = games_dates[i]
@@ -453,8 +463,6 @@ class UpdateSchedule:
                 home_id = get_team_id_by_name(home_team)
                 away_team = away_teams[i]
                 away_id = get_team_id_by_name(away_team)
-
-                # ss_url = self.get_matched_teams_url(smatches_dict, f"{home_team} vs {away_team}")
 
                 home_elevation_dif = self.get_team_elevation_dif(home_id, away_id, "home")
                 away_elevation_dif = self.get_team_elevation_dif(home_id, away_id, "away")
@@ -499,18 +507,16 @@ class UpdateSchedule:
                     home_rest_days,
                     away_rest_days,
                     temperature,
-                    is_raining,
-                    ss_url
+                    is_raining
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 ON DUPLICATE KEY UPDATE
                     date         = VALUES(date),
                     local_time   = VALUES(local_time),
                     venue_time   = VALUES(venue_time),
                     temperature  = VALUES(temperature),
-                    is_raining   = VALUES(is_raining),
-                    ss_url       = IF(ss_url IS NULL, VALUES(ss_url), ss_url);
+                    is_raining   = VALUES(is_raining);
                 """
 
                 raw_params = (
@@ -526,8 +532,7 @@ class UpdateSchedule:
                     home_rest_days,
                     away_rest_days,
                     temp,
-                    rain,
-                    "ss_url" # HCANGE THIS
+                    rain
                 )
 
                 params = tuple(self._to_python(p) for p in raw_params)
@@ -670,63 +675,6 @@ class UpdateSchedule:
 
         driver.quit()
         return games_dates, games_local_time, games_venue_time, home_teams, away_teams
-
-    def get_ss_urls(self, ss_url):
-        s = Service('chromedriver.exe')
-        options = webdriver.ChromeOptions()
-        options.add_argument("--headless=new")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--blink-settings=imagesEnabled=false")
-        options.add_argument("--ignore-certificate-errors")
-        driver = webdriver.Chrome(service=s, options=options)
-        driver.get(ss_url)
-
-        try:
-            popup_close = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".Button.RVwfR")))
-            popup_close.click()
-        except Exception as e:
-            print("Popup not found or not clickable:", e)
-
-        round_div = driver.find_elements(By.CSS_SELECTOR, ".Box.kiSsvW")
-
-        href_list = []
-        for div in round_div:
-            anchor_tags = div.find_elements(By.TAG_NAME, "a")
-            for a in anchor_tags:
-                href = a.get_attribute("href")
-                if href:
-                    href_list.append(href)
-
-        smatches_dict = {}
-        for url in href_list:
-            driver.get(url)
-            try:
-                elements = WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, ".fPSBzf.iRgpoQ.bYPztT")))
-                home_cont = elements[0]
-                away_cont = elements[1]
-                key = f"{home_cont.text} vs {away_cont.text}"
-                smatches_dict[key] = url
-            except:
-                continue
-
-        driver.quit()
-        return smatches_dict
-
-    def get_matched_teams_url(self, ssdict, target_title):
-        match, score, _ = process.extractOne(
-            target_title,
-            ssdict.keys(),
-            scorer=fuzz.ratio,
-        )
-
-        if score > 50:
-            best_url = ssdict[match]
-        else:
-            best_url = None
-
-        return best_url
 
     def get_team_elevation_dif(self, home_id, away_id, mode):
         teams_df = DB.select(f"SELECT * FROM team_data WHERE team_id IN ({home_id}, {away_id})")
@@ -2699,6 +2647,8 @@ class Alg:
     def __init__(self, schedule_id, home_initial_goals, away_initial_goals, match_initial_time, home_n_subs_avail, away_n_subs_avail):
         self.schedule_id = schedule_id
 
+        print(f"Simulating {get_match_name(self.schedule_id)}")  
+
         match_df = DB.select("SELECT * FROM schedule_data WHERE schedule_id = %s", (self.schedule_id,))
 
         self.home_team_id = int(match_df.iloc[0]['home_team_id'])
@@ -3285,13 +3235,22 @@ class Alg:
             else:
                 n_windows = 3
 
-            top_minutes = (valid_subs_df[(valid_subs_df['team_id'] == team_id) & (valid_subs_df['sub_in'] > match_initial_time)]['sub_in'].value_counts().head(n_windows).index.tolist())
+            top_minutes = (valid_subs_df[(valid_subs_df['team_id'] == team_id) &
+                            (valid_subs_df['sub_in'] > match_initial_time)]['sub_in']
+                            .value_counts().head(n_windows).index.tolist())
+            
+            if len(top_minutes) < n_windows:
+                if top_minutes:
+                    top_minutes.extend([top_minutes[-1]] * (n_windows - len(top_minutes)))
+                else:
+                    top_minutes = [match_initial_time] * n_windows
 
             base = avail_subs // n_windows
             remainder = avail_subs % n_windows
             distribution = {}
             for i in range(n_windows):
-                distribution[top_minutes[i]] = base + 1 if i < remainder else base
+                minute = top_minutes[i]
+                distribution[minute] = distribution.get(minute, 0) + (base + 1 if i < remainder else base)
             return distribution
 
         home_distribution = get_distribution(home_id, effective_home_subs)
@@ -3653,6 +3612,8 @@ class AutoLineups:
     def __init__(self, schedule_id):
         self.schedule_id = schedule_id
 
+        print(f"Getting {get_match_name(self.schedule_id)} lineups")  
+
         sql_query = f"""
             SELECT 
                 *
@@ -3666,6 +3627,10 @@ class AutoLineups:
         match_time = result['local_time'].iloc[0]
         match_time_as_time = (datetime.min + match_time).time()
         match_timestamp = int(datetime.combine(date.today(), match_time_as_time).timestamp())
+
+        if not match_url:
+            print("No match URL provided. Skipping lineup processing.")
+            return
 
         match = re.search(r'id:(\d+)', match_url)
         if not match:
@@ -3790,7 +3755,8 @@ class AutoLineups:
                    current_home_goals = %s,
                    current_away_goals = %s,
                    current_period_start_timestamp = %s,
-                   period = %s
+                   period = %s,
+                   simulate = 1
              WHERE schedule_id = %s
         """
         DB.execute(sql_query, (self.referee_name,
@@ -3824,6 +3790,8 @@ class AutoLineups:
 class AutoMatchInfo:
     def __init__(self, schedule_id):
         self.schedule_id = schedule_id
+
+        print(f"Getting {get_match_name(self.schedule_id)} live info")    
 
         sql_query = f"""
             SELECT 
@@ -3887,10 +3855,10 @@ class AutoMatchInfo:
             incidents: list[dict],
             home_status: list[dict],
             away_status: list[dict],
+            last_minute_checked: int,
             home_subs_avail: int,
-            away_subs_avail: int,
-            last_minute_checked: int = 0
-        ) -> tuple[dict, list[dict], list[dict], int, int, int]:
+            away_subs_avail: int
+        ) -> tuple[list[dict], list[dict], int, int, int, int, int]:
             events = {
                 "home": {"substitutions": [], "yellow_cards": [], "red_cards": []},
                 "away": {"substitutions": [], "yellow_cards": [], "red_cards": []},
@@ -4045,6 +4013,100 @@ class AutoMatchInfo:
 
         driver.quit()
         return json_data
+
+class AutoSS:
+    def __init__(self):
+        active_leagues_df = DB.select("SELECT * FROM league_data WHERE is_active = 1")
+        
+        for league_id in tqdm(active_leagues_df["league_id"].tolist(), desc="Processing leagues"):
+            league_ss_url = active_leagues_df[active_leagues_df['league_id'] == league_id]['ss_url'].values[0]
+
+            href_list = self.get_ss_urls(league_ss_url)
+
+            match_dict = {}
+
+            for url in href_list:
+                if "/match/" in url:
+                    parts = url.split("/match/")[1].split("/")
+                    if parts:
+                        match = parts[0].replace("-", " ")
+                        match_dict[match] = url
+
+            missing_ssurl_games_df = DB.select(f"SELECT schedule_id, home_team_id, away_team_id FROM schedule_data WHERE league_id = {league_id} AND date >= CURRENT_DATE")
+
+            for _, row in missing_ssurl_games_df.iterrows():
+                schedule_id = int(row["schedule_id"])
+                home_team = get_team_name_by_id(int(row["home_team_id"]))
+                away_team = get_team_name_by_id(int(row["away_team_id"]))
+                ss_url = self.get_matched_teams_url(match_dict, f"{home_team} {away_team}")
+
+                if ss_url:
+                    upd_sql = "UPDATE schedule_data SET ss_url = %s WHERE schedule_id = %s"
+                    DB.execute(upd_sql, (ss_url, schedule_id))
+
+    def get_ss_urls(self, league_ss_url):
+        s = Service('chromedriver.exe')
+        options = webdriver.ChromeOptions()
+        # options.add_argument("--headless=new")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--blink-settings=imagesEnabled=false")
+        options.add_argument("--ignore-certificate-errors")
+        driver = webdriver.Chrome(service=s, options=options)
+        driver.get(league_ss_url)
+
+        try:
+            popup_close = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".Button.RVwfR")))
+            popup_close.click()
+        except Exception as e:
+            print("Popup not found or not clickable:", e)
+
+        driver.execute_script("window.scrollBy(0, 100);")
+        round_div = driver.find_elements(By.CSS_SELECTOR, ".Box.kiSsvW")
+
+        href_list = []
+        for div in round_div:
+            anchor_tags = div.find_elements(By.TAG_NAME, "a")
+            for a in anchor_tags:
+                href = a.get_attribute("href")
+                if href:
+                    href_list.append(href)
+
+        driver.quit()
+        return href_list
+
+    def get_matched_teams_url(self, ssdict, target_title):
+        def normalize_text(text):
+            text = text.lower()
+            text = unicodedata.normalize('NFKD', text)
+            text = ''.join(c for c in text if not unicodedata.combining(c))
+            return text
+        normalized_target = normalize_text(target_title)
+
+        normalized_ssdict = {
+            normalize_text(key): key for key in ssdict.keys()
+        }
+        
+        result = process.extractOne(
+            normalized_target,
+            normalized_ssdict.keys(),
+            scorer=fuzz.ratio,
+        )
+
+        if result is None:
+            return None 
+        
+        match, score, _ = result
+
+        original_match = normalized_ssdict[match]
+
+        if score > 50:
+            best_url = ssdict[original_match]
+        else:
+            best_url = None
+
+        return best_url
 
 # ------------------------------ Trading ------------------------------
 class MatchTrade:

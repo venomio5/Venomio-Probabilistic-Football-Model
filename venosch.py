@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import core
 import multiprocessing as mp
 import time
+from tqdm import tqdm
 
 scheduler = None
 
@@ -17,7 +18,7 @@ def schedule_auto_lineups_info():
         WHERE CONCAT(date, ' ', local_time) BETWEEN %s AND %s
     """, (now.strftime("%Y-%m-%d %H:%M:%S"), future.strftime("%Y-%m-%d %H:%M:%S")))
 
-    for idx, row in matches_df.iterrows():
+    for idx, row in tqdm(matches_df.iterrows(), total=len(matches_df), desc="Scheduling games"):
         local_time_str = (datetime.min + row["local_time"]).time().strftime("%H:%M:%S")
         game_time = datetime.strptime(f'{row["date"]} {local_time_str}', "%Y-%m-%d %H:%M:%S")
         trigger_time = game_time - timedelta(hours=2)
@@ -29,16 +30,6 @@ def schedule_auto_lineups_info():
             job_id = f'autolineup_{int(row["schedule_id"])}'
             if not scheduler.get_job(job_id):
                 scheduler.add_job(
-                func=execute_autolineup_once,
-                trigger=DateTrigger(run_date=trigger_time),
-                args=[int(row["schedule_id"])],
-                id=job_id
-            )
-
-        job_id = f'autolineup_{int(row["schedule_id"])}'
-
-        if not scheduler.get_job(job_id):
-            scheduler.add_job(
                 func=execute_autolineup_once,
                 trigger=DateTrigger(run_date=trigger_time),
                 args=[int(row["schedule_id"])],
@@ -61,7 +52,7 @@ def schedule_auto_lineups_info():
 def execute_autolineup_once(schedule_id):
     core.AutoLineups(schedule_id)
     if check_player_data_exist(schedule_id):
-        core.Alg(schedule_id, 0, 0, 0, 5, 5)
+        process_match_info(schedule_id)
     else:
         scheduler.add_job(
             func=retry_autolineup_until_players,
@@ -79,7 +70,10 @@ def retry_autolineup_until_players(schedule_id):
         core.Alg(schedule_id, 0, 0, 0, 5, 5)
 
 def process_match_info(schedule_id):
-    core.AutoMatchInfo(schedule_id)
+    try:
+        core.AutoMatchInfo(schedule_id)
+    except Exception as e:
+        print(f"[Warning] AutoMatchInfo failed for schedule_id={schedule_id}: {e}")
 
     df = core.DB.select("""
         SELECT  simulate,
@@ -99,11 +93,11 @@ def process_match_info(schedule_id):
     if row["simulate"] == 1:
         core.Alg(
             schedule_id,
-            row["current_home_goals"],
-            row["current_away_goals"],
-            row["last_minute_checked"],
-            row["home_n_subs_avail"],
-            row["away_n_subs_avail"]
+            int(row["current_home_goals"]),
+            int(row["current_away_goals"]),
+            int(row["last_minute_checked"]) if row["last_minute_checked"] is not None else 0,
+            int(row["home_n_subs_avail"]),
+            int(row["away_n_subs_avail"])
         )
         core.DB.execute("""
             UPDATE schedule_data
@@ -130,6 +124,7 @@ def main():
     global scheduler
     scheduler = BackgroundScheduler()
 
+    # core.AutoSS()
     schedule_auto_lineups_info()            
     scheduler.start()
 

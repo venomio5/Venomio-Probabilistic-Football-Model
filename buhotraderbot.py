@@ -27,7 +27,32 @@ import pandas as pd
 from telegram.error import BadRequest  
 import math
 
-locale.setlocale(locale.LC_TIME, 'es_ES.UTF-8')
+locale.setlocale(locale.LC_TIME, 'es_ES')
+
+dias_semana = {
+    'Monday': 'Lunes',
+    'Tuesday': 'Martes',
+    'Wednesday': 'Miércoles',
+    'Thursday': 'Jueves',
+    'Friday': 'Viernes',
+    'Saturday': 'Sábado',
+    'Sunday': 'Domingo',
+}
+
+meses = {
+    'January': 'Enero',
+    'February': 'Febrero',
+    'March': 'Marzo',
+    'April': 'Abril',
+    'May': 'Mayo',
+    'June': 'Junio',
+    'July': 'Julio',
+    'August': 'Agosto',
+    'September': 'Septiembre',
+    'October': 'Octubre',
+    'November': 'Noviembre',
+    'December': 'Diciembre',
+}
 
 # stripe listen --forward-to localhost:8000/stripe-webhook
 
@@ -487,7 +512,8 @@ async def section_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_time = datetime.now()
     two_hours_ago = current_time - timedelta(hours=2.1)
     current_date = current_time.date()
-    today_matches = [row for _, row in matches.iterrows() if row["date"] == current_date]
+    today_matches = [row for _, row in matches.iterrows() if row["date"] == current_date and ((two_hours_ago <= row["datetime"] <= current_time) or (row["datetime"] > current_time))
+]
 
     page = 0
     if update.callback_query and update.callback_query.data.startswith("today_page_"):
