@@ -512,8 +512,8 @@ async def section_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_time = datetime.now()
     two_hours_ago = current_time - timedelta(hours=2.1)
     current_date = current_time.date()
-    today_matches = [row for _, row in matches.iterrows() if row["date"] == current_date and ((two_hours_ago <= row["datetime"] <= current_time) or (row["datetime"] > current_time))
-]
+    today_matches = [row for _, row in matches.iterrows() if row["date"] == current_date and ((two_hours_ago <= row["datetime"] <= current_time) or (row["datetime"] > current_time))]
+    today_matches = sorted(today_matches, key=lambda row: row["datetime"])
 
     page = 0
     if update.callback_query and update.callback_query.data.startswith("today_page_"):
@@ -555,6 +555,7 @@ async def section_upcoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     matches = get_all_matches()
     current_date = datetime.now().date()
     upcoming_matches = [row for _, row in matches.iterrows() if row["date"] > current_date]
+    upcoming_matches = sorted(upcoming_matches, key=lambda row: row["datetime"])
 
     page = 0
     if update.callback_query and update.callback_query.data.startswith("upcoming_page_"):
@@ -1198,6 +1199,10 @@ def main():
     app.add_handler(CallbackQueryHandler(reload_odds, pattern=r"^reload_\d+_.+"))
     app.add_handler(CallbackQueryHandler(section_faq, pattern=r"^faq$"))
     app.add_handler(CallbackQueryHandler(section_faq_answer, pattern=r"^faq_answer_\d+$"))
+
+    app.add_handler(CallbackQueryHandler(section_today, pattern=r"^today_page_\d+$"))
+    app.add_handler(CallbackQueryHandler(section_upcoming, pattern=r"^upcoming_page_\d+$"))
+
     app.add_handler(CallbackQueryHandler(route))
     app.add_error_handler(error_handler)  
 

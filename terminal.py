@@ -299,6 +299,7 @@ class MainWindow(QMainWindow):
 
 # ----------------------- MATCH SECTION  -----------------------
     def on_match_clicked(self, match):
+        print(f"{match['home_team']} vs {match['away_team']} {match['schedule_id']}")
         match_window = QMainWindow()
         match_window.setWindowTitle(f"{match['home_team']} vs {match['away_team']}")
         match_window.setStyleSheet("background-color: #1a1a1a; color: white;")

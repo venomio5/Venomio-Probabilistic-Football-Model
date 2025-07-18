@@ -67,7 +67,7 @@ def retry_autolineup_until_players(schedule_id):
     core.AutoLineups(schedule_id) 
     if check_player_data_exist(schedule_id):
         scheduler.remove_job(f"retry_{schedule_id}")
-        core.Alg(schedule_id, 0, 0, 0, 5, 5)
+        process_match_info(schedule_id)
 
 def process_match_info(schedule_id):
     try:
@@ -91,19 +91,22 @@ def process_match_info(schedule_id):
 
     row = df.iloc[0]
     if row["simulate"] == 1:
-        core.Alg(
-            schedule_id,
-            int(row["current_home_goals"]),
-            int(row["current_away_goals"]),
-            int(row["last_minute_checked"]) if row["last_minute_checked"] is not None else 0,
-            int(row["home_n_subs_avail"]),
-            int(row["away_n_subs_avail"])
-        )
-        core.DB.execute("""
-            UPDATE schedule_data
-            SET simulate = 0
-            WHERE schedule_id = %s
-        """, (schedule_id,))
+        try:
+            core.Alg(
+                schedule_id,
+                int(row["current_home_goals"]),
+                int(row["current_away_goals"]),
+                int(row["last_minute_checked"]) if row["last_minute_checked"] is not None else 0,
+                int(row["home_n_subs_avail"]),
+                int(row["away_n_subs_avail"])
+            )
+            core.DB.execute("""
+                UPDATE schedule_data
+                SET simulate = 0
+                WHERE schedule_id = %s
+            """, (schedule_id,))
+        except Exception as e:
+            print(f"Simulation failed for schedule_id {schedule_id}: {e}")
 
 def check_player_data_exist(schedule_id):
     df = core.DB.select("""
@@ -124,7 +127,7 @@ def main():
     global scheduler
     scheduler = BackgroundScheduler()
 
-    # core.AutoSS()
+    core.AutoSS()
     schedule_auto_lineups_info()            
     scheduler.start()
 
