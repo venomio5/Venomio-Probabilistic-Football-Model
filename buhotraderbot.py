@@ -332,7 +332,7 @@ ITEMS_PER_PAGE = 10
 EVENTS_MENU = [
     ("📺Hoy", "hoy"),
     ("📅Próximos", "prox"),
-    ("🔙", "eventos"),
+    ("⬅️", "eventos"),
 ]
 
 MARKETS = [
@@ -440,14 +440,47 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(description, reply_markup=markup, parse_mode="Markdown")
 
 async def section_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    rows = list(build_markup(EVENTS_MENU[:-1], cols=2).inline_keyboard)
+    matches = get_all_matches()
+    current_time = datetime.now()
+    two_hours_ago = current_time - timedelta(hours=2.1)
+    current_date = current_time.date()
+    today_matches = [row for _, row in matches.iterrows() if row["date"] == current_date and ((two_hours_ago <= row["datetime"] <= current_time) or (row["datetime"] > current_time))]
+    today_matches = sorted(today_matches, key=lambda row: row["datetime"])
 
-    markup = InlineKeyboardMarkup(rows)
+    page = 0
+    if update.callback_query and update.callback_query.data.startswith("today_page_"):
+        try:
+            page = int(update.callback_query.data.split("_")[-1])
+        except:
+            page = 0
+
+    total_pages = (len(today_matches) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
+    start_index = page * ITEMS_PER_PAGE
+    end_index = start_index + ITEMS_PER_PAGE
+    page_matches = today_matches[start_index:end_index]
+
+    btn_rows = []
+    for m in page_matches:
+        button_text = f"{m['home_team']} vs {m['away_team']} ({m['datetime'].strftime('%H:%M')})"
+        if two_hours_ago <= m["datetime"] <= current_time:
+            button_text = "🟢 " + button_text
+        btn_rows.append([InlineKeyboardButton(button_text, callback_data=f"match_{m['schedule_id']}")])
+
+    if total_pages > 1:
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"today_page_{page-1}"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"today_page_{page+1}"))
+        if nav_buttons:
+            btn_rows.append(nav_buttons)
+
+    markup = InlineKeyboardMarkup(btn_rows)
 
     if update.callback_query:
-        await update.callback_query.edit_message_text("🔘*Eventos*", reply_markup=markup, parse_mode="Markdown")
+        await update.callback_query.edit_message_text("*Eventos de Hoy*", reply_markup=markup, parse_mode="Markdown")
     else:
-        await update.message.reply_text("🔘*Eventos*", reply_markup=markup, parse_mode="Markdown")
+        await update.message.reply_text("*Eventos de Hoy*", reply_markup=markup, parse_mode="Markdown")
 
 async def section_scanner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "Estamos trabajando en la sección de escáner."
@@ -507,90 +540,6 @@ async def section_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             text, reply_markup=markup, parse_mode="Markdown")
 
-async def section_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    matches = get_all_matches()
-    current_time = datetime.now()
-    two_hours_ago = current_time - timedelta(hours=2.1)
-    current_date = current_time.date()
-    today_matches = [row for _, row in matches.iterrows() if row["date"] == current_date and ((two_hours_ago <= row["datetime"] <= current_time) or (row["datetime"] > current_time))]
-    today_matches = sorted(today_matches, key=lambda row: row["datetime"])
-
-    page = 0
-    if update.callback_query and update.callback_query.data.startswith("today_page_"):
-        try:
-            page = int(update.callback_query.data.split("_")[-1])
-        except:
-            page = 0
-
-    total_pages = (len(today_matches) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
-    start_index = page * ITEMS_PER_PAGE
-    end_index = start_index + ITEMS_PER_PAGE
-    page_matches = today_matches[start_index:end_index]
-
-    btn_rows = []
-    for m in page_matches:
-        button_text = f"{m['home_team']} vs {m['away_team']} ({m['datetime'].strftime('%H:%M')})"
-        if two_hours_ago <= m["datetime"] <= current_time:
-            button_text = "🟢 " + button_text
-        btn_rows.append([InlineKeyboardButton(button_text, callback_data=f"match_{m['schedule_id']}")])
-
-    if total_pages > 1:
-        nav_buttons = []
-        if page > 0:
-            nav_buttons.append(InlineKeyboardButton("Anterior", callback_data=f"today_page_{page-1}"))
-        if page < total_pages - 1:
-            nav_buttons.append(InlineKeyboardButton("Siguiente", callback_data=f"today_page_{page+1}"))
-        if nav_buttons:
-            btn_rows.append(nav_buttons)
-
-    btn_rows.append([InlineKeyboardButton("🔙", callback_data="eventos")])
-    markup = InlineKeyboardMarkup(btn_rows)
-
-    if update.callback_query:
-        await update.callback_query.edit_message_text("*Eventos de Hoy*", reply_markup=markup, parse_mode="Markdown")
-    else:
-        await update.message.reply_text("*Eventos de Hoy*", reply_markup=markup, parse_mode="Markdown")
-
-async def section_upcoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    matches = get_all_matches()
-    current_date = datetime.now().date()
-    upcoming_matches = [row for _, row in matches.iterrows() if row["date"] > current_date]
-    upcoming_matches = sorted(upcoming_matches, key=lambda row: row["datetime"])
-
-    page = 0
-    if update.callback_query and update.callback_query.data.startswith("upcoming_page_"):
-        try:
-            page = int(update.callback_query.data.split("_")[-1])
-        except:
-            page = 0
-
-    total_pages = (len(upcoming_matches) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
-    start_index = page * ITEMS_PER_PAGE
-    end_index = start_index + ITEMS_PER_PAGE
-    page_matches = upcoming_matches[start_index:end_index]
-
-    btn_rows = []
-    for m in page_matches:
-        button_text = f"{m['home_team']} vs {m['away_team']} ({m['datetime'].strftime('%d/%m %H:%M')})"
-        btn_rows.append([InlineKeyboardButton(button_text, callback_data=f"match_{m['schedule_id']}")])
-
-    if total_pages > 1:
-        nav_buttons = []
-        if page > 0:
-            nav_buttons.append(InlineKeyboardButton("Anterior", callback_data=f"upcoming_page_{page-1}"))
-        if page < total_pages - 1:
-            nav_buttons.append(InlineKeyboardButton("Siguiente", callback_data=f"upcoming_page_{page+1}"))
-        if nav_buttons:
-            btn_rows.append(nav_buttons)
-
-    btn_rows.append([InlineKeyboardButton("🔙", callback_data="eventos")])
-    markup = InlineKeyboardMarkup(btn_rows)
-
-    if update.callback_query:
-        await update.callback_query.edit_message_text("📅*Próximos Eventos*", reply_markup=markup, parse_mode="Markdown")
-    else:
-        await update.message.reply_text("📅*Próximos Eventos*", reply_markup=markup, parse_mode="Markdown")
-
 def build_match_header(schedule_id: int) -> str:
     match = get_all_matches().loc[lambda df: df["schedule_id"] == schedule_id].iloc[0]
     
@@ -612,7 +561,7 @@ def build_match_header(schedule_id: int) -> str:
 
     if timedelta(hours=0) <= now - kickoff <= timedelta(hours=2.1):
         if not period:
-            time_display = f"⏱ HT  |  {current_home_goals} - {current_away_goals}"
+            time_display = f"⏱ Descanso  |  {current_home_goals} - {current_away_goals}"
         else:
             current_period_start = datetime.fromtimestamp(current_period_start_timestamp)
             elapsed_minutes = int((now - current_period_start).total_seconds() // 60)
@@ -632,9 +581,9 @@ def build_match_header(schedule_id: int) -> str:
 
             time_display = f"⏱ {minute_display}'  |  {current_home_goals} - {current_away_goals}"
     elif kickoff > now:
-        time_display = "🗓 " + kickoff.strftime("%A %d de %B").capitalize()
+        time_display = "🗓 " + kickoff.strftime("%A %d de %B, %H:%M").capitalize()
     else:
-        time_display = "🗓 " + kickoff.strftime("%A %d de %B")
+        time_display = "🗓 " + kickoff.strftime("%A %d de %B, %H:%M").capitalize()
 
     return (
         f"<i>{league} {blocks}</i>\n"
@@ -655,7 +604,7 @@ async def match_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
                               callback_data=f"market_{schedule_id}_{key}")]
         for name, key in MARKETS
     ]
-    rows.append([InlineKeyboardButton("🔙", callback_data="eventos")])
+    rows.append([InlineKeyboardButton("⬅️", callback_data="eventos")])
     markup = build_markup(rows, cols=2)
 
     await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
@@ -674,7 +623,7 @@ async def market_odds(update: Update, context: ContextTypes.DEFAULT_TYPE, callba
     text = header + odds_text
 
     menu = [
-        [InlineKeyboardButton("🔙", callback_data=f"match_{schedule_id}")],
+        [InlineKeyboardButton("⬅️", callback_data=f"match_{schedule_id}")],
         [InlineKeyboardButton("🔄", callback_data=f"reload_{schedule_id}_{market_key}")]
     ]
     markup = build_markup(menu, cols=2)
@@ -796,7 +745,7 @@ def get_odds(schedule_id: int, market_key: str) -> dict:
     if period == "period2":
         base_minute = 45
 
-    current_minute = base_minute + elapsed_minutes
+    current_minute = base_minute + min(elapsed_minutes, 45)
 
     if injury_time is not None:
         current_minute = current_minute - injury_time
@@ -1134,7 +1083,7 @@ Sí, está en desarrollo. Para evaluar el rendimiento se utilizarán métricas c
     }
     answer_text = faq_answers.get(data, "Respuesta no encontrada.")
 
-    rows = [("🔙", "faq")]
+    rows = [("⬅️", "faq")]
     markup = build_markup(rows, cols=1)
     await query.edit_message_text(text=answer_text, reply_markup=markup, parse_mode="Markdown")
 
@@ -1144,8 +1093,6 @@ SECTIONS = {
     # "escaner":    section_scanner,
     "faq":      section_faq,
     "perfil":     section_profile,
-    "hoy":       section_today,
-    "prox":   section_upcoming,
     "faq":        section_faq,
 }
 
@@ -1203,8 +1150,7 @@ def main():
     app.add_handler(CallbackQueryHandler(section_faq, pattern=r"^faq$"))
     app.add_handler(CallbackQueryHandler(section_faq_answer, pattern=r"^faq_answer_\d+$"))
 
-    app.add_handler(CallbackQueryHandler(section_today, pattern=r"^today_page_\d+$"))
-    app.add_handler(CallbackQueryHandler(section_upcoming, pattern=r"^upcoming_page_\d+$"))
+    app.add_handler(CallbackQueryHandler(section_events, pattern=r"^today_page_\d+$"))
 
     app.add_handler(CallbackQueryHandler(route))
     app.add_error_handler(error_handler)  
