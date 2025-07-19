@@ -2702,12 +2702,18 @@ class Alg:
         self.home_sub_minutes, self.away_sub_minutes = self.get_sub_minutes(self.home_team_id, self.away_team_id, self.match_initial_time, self.home_n_subs_avail, self.away_n_subs_avail)
         self.all_sub_minutes = list(set(list(self.home_sub_minutes.keys()) + list(self.away_sub_minutes.keys())))
 
-        if self.match_initial_time >= 45:
+        if self.match_initial_time >= 80:
+            range_value = 500
+        elif self.match_initial_time > 60:
+            range_value = 1000
+        elif self.match_initial_time > 45:
             range_value = 2000
+        elif self.match_initial_time > 15:
+            range_value = 3000
         elif self.match_initial_time < 1:
             range_value = 5000
-        elif self.match_initial_time < 45:
-            range_value = 3000
+        else:
+            range_value = 4000
 
         self.run_simulations(range_value, 4)
 
@@ -3880,16 +3886,19 @@ class AutoMatchInfo:
 
             # ------------------------------------------------------------------------    
             for inc in incidents:
-                minute     = inc.get("time", 0)
+                inc_type = inc.get("incidentType")
+
+                # we only care about substitutions & cards ---------------------------
+                if inc_type not in ("substitution", "card"):
+                    continue
+
+                minute = inc.get("time", 0)
                 if minute <= last_minute_checked:
                     continue
 
                 side       = "home" if inc.get("isHome") else "away"
                 squad_idx  = idx_home if side == "home" else idx_away
                 squad_stat = home_status if side == "home" else away_status
-
-                inc_type   = inc.get("incidentType")
-                last_minute = max(last_minute, minute)
 
                 # substitutions -------------------------------------------------------
                 if inc_type == "substitution":
@@ -3908,7 +3917,7 @@ class AutoMatchInfo:
                     )
 
                 # cards ----------------------------------------------------------------
-                elif inc_type == "card":
+                else:  # inc_type == "card"
                     pid = _match_player_id(inc["player"]["name"], squad_idx)
 
                     if inc["incidentClass"] == "yellow":
@@ -3924,6 +3933,9 @@ class AutoMatchInfo:
                         for pl in squad_stat:
                             if pl["player_id"] == pid:
                                 pl["red_card"] = True
+
+                # update “last_minute” ONLY for incidents we processed ---------------
+                last_minute = max(last_minute, minute)
 
             # simulate flags ----------------------------------------------------------
             simulate_home = int(
@@ -3945,7 +3957,7 @@ class AutoMatchInfo:
                 home_subs_avail,
                 away_subs_avail 
             )
-
+        
         api_incidents_url = f"https://www.sofascore.com/api/v1/event/{match_id}/incidents"
         iresponse = requests.get(api_incidents_url, headers=headers)
 

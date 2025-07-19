@@ -127,7 +127,7 @@ def main():
     global scheduler
     scheduler = BackgroundScheduler()
 
-    core.AutoSS()
+    # core.AutoSS()
     schedule_auto_lineups_info()            
     scheduler.start()
 

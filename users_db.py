@@ -27,23 +27,26 @@ def change_period_end(telegram_id: int, new_period_end: int):
     conn.commit()
     conn.close()
 
-def update_customer_id(telegram_id: int, new_customer_id: str):
+def add_user(telegram_id: int, stripe_customer_id: str, stripe_subscription_id: str, period_end: int):
     conn = sqlite3.connect("users.db")
     cur = conn.cursor()
 
-    cur.execute(
-        """
-        UPDATE subscriptions
-        SET stripe_customer_id = ?
-        WHERE telegram_id = ?
-        """,
-        (new_customer_id, telegram_id)
-    )
-
-    conn.commit()
-    conn.close()
+    try:
+        cur.execute(
+            """
+            INSERT INTO subscriptions (telegram_id, stripe_customer_id, stripe_subscription_id, period_end)
+            VALUES (?, ?, ?, ?)
+            """,
+            (telegram_id, stripe_customer_id, stripe_subscription_id, period_end)
+        )
+        conn.commit()
+        print(f"Usuario {telegram_id} agregado exitosamente.")
+    except sqlite3.IntegrityError:
+        print(f"El usuario con telegram_id {telegram_id} ya existe.")
+    finally:
+        conn.close()
 
 yesterday = int(time.time()) - 86400
-one_more_year = int(time.time()) + 365 * 24 * 3600
+ten_more_years = int(time.time()) + 10 * 365 * 24 * 3600
 
-change_period_end(6796842653, one_more_year)
+# change_period_end(1138801740, ten_more_years)

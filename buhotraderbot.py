@@ -611,23 +611,26 @@ def build_match_header(schedule_id: int) -> str:
     now = datetime.now()
 
     if timedelta(hours=0) <= now - kickoff <= timedelta(hours=2.1):
-        current_period_start = datetime.fromtimestamp(current_period_start_timestamp)
-        elapsed_minutes = int((now - current_period_start).total_seconds() // 60)
-
-        base_minute = 0
-        if period == "period2":
-            base_minute = 45
-
-        current_minute = base_minute + elapsed_minutes
-        max_minute = 45 if period == "period1" else 90
-        capped_minute = min(current_minute, max_minute)
-
-        if current_minute > max_minute and period_injury_time > 0:
-            minute_display = f"{max_minute}+{period_injury_time}"
+        if not period:
+            time_display = f"⏱ HT  |  {current_home_goals} - {current_away_goals}"
         else:
-            minute_display = f"{capped_minute}"
+            current_period_start = datetime.fromtimestamp(current_period_start_timestamp)
+            elapsed_minutes = int((now - current_period_start).total_seconds() // 60)
 
-        time_display = f"⏱ {minute_display}'  |  {current_home_goals} - {current_away_goals}"
+            base_minute = 0
+            if period == "period2":
+                base_minute = 45
+
+            current_minute = base_minute + elapsed_minutes
+            max_minute = 45 if period == "period1" else 90
+            capped_minute = min(current_minute, max_minute)
+
+            if current_minute > max_minute and period_injury_time > 0:
+                minute_display = f"{max_minute}+{period_injury_time}"
+            else:
+                minute_display = f"{capped_minute}"
+
+            time_display = f"⏱ {minute_display}'  |  {current_home_goals} - {current_away_goals}"
     elif kickoff > now:
         time_display = "🗓 " + kickoff.strftime("%A %d de %B").capitalize()
     else:
