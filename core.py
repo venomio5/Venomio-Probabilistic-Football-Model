@@ -29,6 +29,9 @@ import os
 import itertools 
 import copy
 import unicodedata
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --------------- Useful Classes, Functions & Variables ---------------
 class DatabaseManager:
@@ -62,6 +65,7 @@ class DatabaseManager:
         user: str,
         password: str,
         database: str,
+        port: int = 3306,
         pool_name: str = "db_pool",
         pool_size: int = 6,
     ) -> None:
@@ -69,6 +73,7 @@ class DatabaseManager:
             pool_name=pool_name,
             pool_size=pool_size,
             host=host,
+            port=port,
             user=user,
             password=password,
             database=database,
@@ -265,7 +270,13 @@ class Fill_Teams_Data:
         driver.quit()
         return fixtures_url
 
-DB = DatabaseManager(host="localhost", user="root", password="venomio", database="vpfm")
+host = os.getenv('DB_HOST')
+port = int(os.getenv('DB_PORT'))
+user = os.getenv('DB_USER')
+password = os.getenv('DB_PASSWORD')
+database = os.getenv('DB_NAME')
+
+DB = DatabaseManager(host=host, port=port, user=user, password=password, database=database)
 
 def get_team_name_by_id(team_id):
     query = "SELECT team_name FROM team_data WHERE team_id = %s"
@@ -282,6 +293,7 @@ def get_team_id_by_name(team_name):
     return None
 
 def get_league_name_by_id(league_id):
+    print(league_id)
     query = "SELECT league_name FROM league_data WHERE league_id = %s"
     result = DB.select(query, (league_id,))
     if not result.empty:

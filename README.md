@@ -375,3 +375,13 @@ CREATE TABLE simulation_data (
         ON DELETE CASCADE
 );
 ```
+
+##### users_data
+```
+CREATE TABLE users_data (
+    telegram_id BIGINT PRIMARY KEY,
+    stripe_customer_id VARCHAR(255),
+    stripe_subscription_id VARCHAR(255),
+    period_end BIGINT
+);
+```

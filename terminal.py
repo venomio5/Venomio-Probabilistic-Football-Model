@@ -141,13 +141,16 @@ class MainWindow(QMainWindow):
         self.all_matches = []
         fixtures_query = "SELECT * FROM schedule_data"
         self.all_matches = self.vpfm_db.select(fixtures_query)
+
         self.all_matches['datetime'] = self.all_matches.apply(
             lambda row: datetime.combine(row['date'], datetime.min.time()) + row['local_time'],
             axis=1
         )
+
         self.all_matches["league_name"] = self.all_matches["league_id"].apply(
             lambda lid: core.get_league_name_by_id(lid)
         )
+
         self.all_matches["home_team"] = self.all_matches["home_team_id"].apply(
             lambda tid: core.get_team_name_by_id(tid)
         )

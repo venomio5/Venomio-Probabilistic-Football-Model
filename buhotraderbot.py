@@ -12,7 +12,6 @@ from telegram.ext import (
     ContextTypes,
 )
 
-import sqlite3
 import stripe
 import time
 import logging
@@ -26,6 +25,10 @@ import locale
 import pandas as pd
 from telegram.error import BadRequest  
 import math
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 locale.setlocale(locale.LC_TIME, 'es_ES')
 
@@ -60,12 +63,12 @@ STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
 STRIPE_WEBHOOK_PORT   = 8000
 
 BOT_USERNAME          = "BuhoTraderBot"
-STRIPE_SECRET_KEY     = "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"
-STRIPE_PRICE_ID       = "price_1RksVrHWQA4B7gi0fD3Lijed"
+STRIPE_SECRET_KEY     = os.getenv('STRIPE_SECRET_KEY')
+STRIPE_PRICE_ID       = os.getenv('STRIPE_PRICE_ID')
 
 stripe.api_key = STRIPE_SECRET_KEY
 
-TOKEN = '7731194014:AAFO4Wd_3pzrkYOMAedhQdHcCHEiwploFe8'
+TOKEN = os.getenv('TOKEN')
 
 BOT_APP = None
 
@@ -165,24 +168,7 @@ def get_aggregated_goals(shots_df, home_team_id, start_minute, start_home_goals,
     )
     return agg
 
-# DB & STRIPE
-def init_db():
-    conn = sqlite3.connect("users.db")
-    cur  = conn.cursor()
-
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS subscriptions(
-            telegram_id             INTEGER PRIMARY KEY,
-            stripe_customer_id      TEXT,
-            stripe_subscription_id  TEXT,
-            period_end              INTEGER
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
-
+# STRIPE
 async def stripe_webhook(request):
     payload    = await request.text()
     sig_header = request.headers.get("stripe-signature", "")
@@ -245,13 +231,13 @@ async def start_stripe_webhook_server():
     )
 
 def user_subscription_active(user_id: int) -> bool:
-    conn = sqlite3.connect("users.db")
-    cur  = conn.cursor()
-    cur.execute("SELECT period_end FROM subscriptions WHERE telegram_id=?", (user_id,))
-    row  = cur.fetchone()
-    conn.close()
-
-    active = bool(row and row[0] and row[0] > int(time.time()))
+    user_df = core.DB.select("SELECT period_end FROM users_data WHERE telegram_id = %s", (user_id,))
+   
+    if user_df.empty:
+        return False
+    
+    period_end = user_df.iloc[0]['period_end']
+    active = bool(period_end and int(period_end) > int(time.time()))
 
     return active
 
@@ -267,38 +253,36 @@ def activate_subscription(user_id: int, subscription_id: str):
 
     customer_id = sub.get("customer")
 
-    conn = sqlite3.connect("users.db")
-    cur  = conn.cursor()
-    cur.execute(
+    core.DB.execute(
         """
-        INSERT INTO subscriptions(telegram_id, stripe_customer_id,
-                                   stripe_subscription_id, period_end)
-        VALUES (?,?,?,?)
-        ON CONFLICT(telegram_id) DO UPDATE SET
-            stripe_customer_id     = excluded.stripe_customer_id,
-            stripe_subscription_id = excluded.stripe_subscription_id,
-            period_end             = excluded.period_end
+        INSERT INTO users_data (telegram_id, stripe_customer_id, stripe_subscription_id, period_end)
+        VALUES (%s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            stripe_customer_id     = VALUES(stripe_customer_id),
+            stripe_subscription_id = VALUES(stripe_subscription_id),
+            period_end             = VALUES(period_end)
         """,
-        (user_id, customer_id, subscription_id, period_end),
+        (user_id, customer_id, subscription_id, period_end)
     )
-    conn.commit()
-    conn.close()
 
 async def create_checkout_session(user_id: int) -> str:
     try:
+        user_trial = core.DB.select(
+            "SELECT telegram_id FROM users_data WHERE telegram_id = %s", (user_id,)
+        )
+        trial_data = {"trial_period_days": 7} if user_trial.empty else {}
         session = stripe.checkout.Session.create(
             mode="subscription",
             client_reference_id=str(user_id),
-
-
             subscription_data={
-                "metadata": {"telegram_id": str(user_id)}
+                "metadata": {"telegram_id": str(user_id)},
+                **trial_data
             },
 
             line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
             discounts=[{"coupon": "4Noe7bX7"}],
             success_url=f"https://t.me/{BOT_USERNAME}?start=paid_{{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"https://t.me/{BOT_USERNAME}?start=cancel",
+            cancel_url=f"https://t.me/{BOT_USERNAME}?start=cancel"
         )
         return session.url
     except stripe.error.InvalidRequestError as err:
@@ -306,19 +290,17 @@ async def create_checkout_session(user_id: int) -> str:
         return ""
 
 def create_billing_portal_session(user_id: int) -> str:
-    conn = sqlite3.connect("users.db")
-    cur  = conn.cursor()
-    cur.execute("SELECT stripe_customer_id FROM subscriptions WHERE telegram_id=?",
+    user_df = core.DB.select("SELECT stripe_customer_id FROM users_data WHERE telegram_id = %s",
                 (user_id,))
-    row = cur.fetchone()
-    conn.close()
 
-    if not row or not row[0]:
+    if user_df.empty or not user_df.iloc[0]["stripe_customer_id"]:
         return ""
+    
+    customer_id = user_df.iloc[0]["stripe_customer_id"]
 
     try:
         session = stripe.billing_portal.Session.create(
-            customer=row[0],
+            customer=customer_id,
             return_url=f"https://t.me/{BOT_USERNAME}?start=perfil",
         )
         return session.url
@@ -415,7 +397,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🚨 Acceso exclusivo con *suscripción activa*.
 
 🔘 *Eventos* – Obtén cuotas en tiempo real generadas por un modelo de IA avanzado que simula miles de escenarios por evento.
-📈 *Escáner* _Funcionalidad en desarrollo_ - Recibe alertas precisas basadas en movimientos de cuotas impulsadas por el Smart Money.
 
 🕒 *Horarios* – El bot opera en horarios no oficiales por ahora, generalmente activo durante eventos deportivos. Zona horaria de referencia: GMT-6 (Monterrey, México).    
 
@@ -483,7 +464,7 @@ async def section_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("*Eventos de Hoy*", reply_markup=markup, parse_mode="Markdown")
 
 async def section_scanner(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "Estamos trabajando en la sección de escáner."
+    text = "📈 *Escáner* _Funcionalidad en desarrollo_ - Recibe alertas precisas basadas en movimientos de cuotas impulsadas por el Smart Money."
     if update.callback_query:
         await update.callback_query.edit_message_text(text)
     else:
@@ -492,21 +473,22 @@ async def section_scanner(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def section_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    conn = sqlite3.connect("users.db")
-    cur  = conn.cursor()
-    cur.execute(
-        "SELECT stripe_subscription_id, period_end "
-        "FROM subscriptions WHERE telegram_id=?",
-        (user_id,),
+    user_df = core.DB.select(
+        "SELECT stripe_subscription_id, period_end FROM users_data WHERE telegram_id = %s",
+        (user_id,)
     )
-    row = cur.fetchone()
-    conn.close()
 
-    subscription_id, period_end = (row or (None, None))
+    if user_df.empty:
+        subscription_id, period_end = None, None
+    else:
+        subscription_id = user_df.iloc[0]["stripe_subscription_id"]
+        period_end = user_df.iloc[0]["period_end"]
+
     period_end_s = (
         f"{time.strftime('%A', time.localtime(period_end)).capitalize()}, "
         f"{time.strftime('%d', time.localtime(period_end))} de "
-        f"{time.strftime('%B', time.localtime(period_end)).capitalize()}"
+        f"{time.strftime('%B', time.localtime(period_end)).capitalize()} del "
+        f"{time.strftime('%Y', time.localtime(period_end))}"
         if period_end else "—"
     )
 
@@ -1130,8 +1112,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     global BOT_APP                                             
-
-    init_db()
 
     app = (
         ApplicationBuilder()

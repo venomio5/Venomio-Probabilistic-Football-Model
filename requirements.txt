@@ -1,0 +1,13 @@
+python-telegram-bot==20.8
+stripe
+aiohttp
+python-dotenv
+pandas
+mysql-connector-python
+selenium
+requests
+rapidfuzz
+scikit-learn
+scipy
+tqdm
+xgboost
