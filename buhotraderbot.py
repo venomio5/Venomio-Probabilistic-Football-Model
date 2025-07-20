@@ -34,8 +34,8 @@ locale.setlocale(locale.LC_TIME, 'C')
 
 # stripe listen --forward-to localhost:8000/stripe-webhook
 
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
-STRIPE_WEBHOOK_PORT   = 8000
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+STRIPE_WEBHOOK_PORT = int(os.getenv("PORT", "8000"))
 
 BOT_USERNAME          = "BuhoTraderBot"
 STRIPE_SECRET_KEY     = os.getenv('STRIPE_SECRET_KEY')
