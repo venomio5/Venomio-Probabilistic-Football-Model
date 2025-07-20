@@ -373,7 +373,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 🔘 *Eventos* – Obtén cuotas en tiempo real generadas por un modelo de IA avanzado que simula miles de escenarios por evento.
 
-🕒 *Horarios* – El bot opera en horarios no oficiales por ahora, generalmente activo durante eventos deportivos. Zona horaria de referencia: GMT-6 (Monterrey, México).    
+🕒 Horarios – El bot está disponible 24/7, aunque al principio puede tardar unos minutos en responder mientras "despierta". Zona horaria de referencia: GMT-6 (Monterrey, México).   
 
 📘 Visita la sección de *Preguntas Frecuentes* y comprende a fondo cómo funciona este sistema.
 
