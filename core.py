@@ -293,7 +293,6 @@ def get_team_id_by_name(team_name):
     return None
 
 def get_league_name_by_id(league_id):
-    print(league_id)
     query = "SELECT league_name FROM league_data WHERE league_id = %s"
     result = DB.select(query, (league_id,))
     if not result.empty:
