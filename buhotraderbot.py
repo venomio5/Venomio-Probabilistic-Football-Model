@@ -30,32 +30,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-locale.setlocale(locale.LC_TIME, 'es_ES')
-
-dias_semana = {
-    'Monday': 'Lunes',
-    'Tuesday': 'Martes',
-    'Wednesday': 'Miércoles',
-    'Thursday': 'Jueves',
-    'Friday': 'Viernes',
-    'Saturday': 'Sábado',
-    'Sunday': 'Domingo',
-}
-
-meses = {
-    'January': 'Enero',
-    'February': 'Febrero',
-    'March': 'Marzo',
-    'April': 'Abril',
-    'May': 'Mayo',
-    'June': 'Junio',
-    'July': 'Julio',
-    'August': 'Agosto',
-    'September': 'Septiembre',
-    'October': 'Octubre',
-    'November': 'Noviembre',
-    'December': 'Diciembre',
-}
+locale.setlocale(locale.LC_TIME, 'C')
 
 # stripe listen --forward-to localhost:8000/stripe-webhook
 
