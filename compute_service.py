@@ -5,7 +5,7 @@ import core
 from datetime import datetime, timedelta
 import pandas as pd
 import math
-
+import numpy as np
 
 # SQL
 def get_all_matches():
@@ -350,6 +350,12 @@ def get_odds(schedule_id: int, market_key: str) -> dict:
 
     return {}
 
+def _df_to_jsonable(df: pd.DataFrame) -> list[dict]:
+    return (
+        df.replace({np.nan: None, np.inf: None, -np.inf: None})
+          .to_dict(orient="records")
+    )
+
 API_KEY = os.getenv("COMPUTE_API_KEY", "")
 
 app = FastAPI()
@@ -367,7 +373,7 @@ async def ping():
 async def matches(x_api_key: str = Header(None)):
     _auth(x_api_key)
     df = get_all_matches()
-    return df.to_dict(orient="records")
+    return _df_to_jsonable(df)
 
 
 @app.get("/match/{schedule_id}")
@@ -377,7 +383,7 @@ async def match_detail(schedule_id: int, x_api_key: str = Header(None)):
     row = df[df["schedule_id"] == schedule_id]
     if row.empty:
         raise HTTPException(status_code=404, detail="not found")
-    return row.iloc[0].to_dict()
+    return _df_to_jsonable(row)[0] 
 
 
 @app.get("/odds/{schedule_id}/{market_key}")

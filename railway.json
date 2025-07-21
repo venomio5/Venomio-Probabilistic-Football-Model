@@ -1,0 +1,20 @@
+{
+  "build": {
+    "command": "pip install -r requirements.txt"
+  },
+  "deploy": {
+    "command": "python buhotraderbot.py"
+  },
+  "triggers": [
+    {
+      "name": "StartBot",
+      "schedule": "0 13 * * *",
+      "command": "python buhotraderbot.py"
+    },
+    {
+      "name": "StopBot",
+      "schedule": "0 4 * * *",
+      "command": "pkill -f buhotraderbot.py"
+    }
+  ]
+}

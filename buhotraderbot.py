@@ -87,7 +87,14 @@ def fetch_odds(schedule_id: int, market_key: str):
     return _compute_get(f"/odds/{schedule_id}/{market_key}") or {}
 
 def get_all_matches():
-    return pd.DataFrame(fetch_matches(force=True))
+    df = pd.DataFrame(fetch_matches(force=True))
+    if df.empty:
+        return df
+
+    df["date"]     = pd.to_datetime(df["date"]).dt.date
+    df["datetime"] = pd.to_datetime(df["datetime"])
+
+    return df
 
 def get_odds(schedule_id: int, market_key: str) -> dict:
     return fetch_odds(schedule_id, market_key)
@@ -458,6 +465,8 @@ def build_match_header(schedule_id: int) -> str:
     home    = match["home_team"]
     away    = match["away_team"]
     kickoff = match["datetime"]
+    if isinstance(kickoff, str):
+        kickoff = datetime.fromisoformat(kickoff)
     current_home_goals = int(match["current_home_goals"])
     current_away_goals = int(match["current_away_goals"])
     current_period_start_timestamp = int(match["current_period_start_timestamp"])
