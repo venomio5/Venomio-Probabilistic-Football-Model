@@ -276,7 +276,8 @@ user = os.getenv('DB_USER')
 password = os.getenv('DB_PASSWORD')
 database = os.getenv('DB_NAME')
 
-DB = DatabaseManager(host=host, port=port, user=user, password=password, database=database)
+DB = DatabaseManager(host="localhost", user=user, password="venomio", database="vpfm")
+RDB = DatabaseManager(host=host, port=port, user=user, password=password, database=database)
 
 def get_team_name_by_id(team_id):
     query = "SELECT team_name FROM team_data WHERE team_id = %s"

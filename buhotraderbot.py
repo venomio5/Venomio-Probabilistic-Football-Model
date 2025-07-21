@@ -30,8 +30,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-locale.setlocale(locale.LC_TIME, 'C')
-
 # stripe listen --forward-to localhost:8000/stripe-webhook
 
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
@@ -206,7 +204,7 @@ async def start_stripe_webhook_server():
     )
 
 def user_subscription_active(user_id: int) -> bool:
-    user_df = core.DB.select("SELECT period_end FROM users_data WHERE telegram_id = %s", (user_id,))
+    user_df = core.RDB.select("SELECT period_end FROM users_data WHERE telegram_id = %s", (user_id,))
    
     if user_df.empty:
         return False
@@ -228,7 +226,7 @@ def activate_subscription(user_id: int, subscription_id: str):
 
     customer_id = sub.get("customer")
 
-    core.DB.execute(
+    core.RDB.execute(
         """
         INSERT INTO users_data (telegram_id, stripe_customer_id, stripe_subscription_id, period_end)
         VALUES (%s, %s, %s, %s)
@@ -242,7 +240,7 @@ def activate_subscription(user_id: int, subscription_id: str):
 
 async def create_checkout_session(user_id: int) -> str:
     try:
-        user_trial = core.DB.select(
+        user_trial = core.RDB.select(
             "SELECT telegram_id FROM users_data WHERE telegram_id = %s", (user_id,)
         )
         trial_data = {"trial_period_days": 7} if user_trial.empty else {}
@@ -265,7 +263,7 @@ async def create_checkout_session(user_id: int) -> str:
         return ""
 
 def create_billing_portal_session(user_id: int) -> str:
-    user_df = core.DB.select("SELECT stripe_customer_id FROM users_data WHERE telegram_id = %s",
+    user_df = core.RDB.select("SELECT stripe_customer_id FROM users_data WHERE telegram_id = %s",
                 (user_id,))
 
     if user_df.empty or not user_df.iloc[0]["stripe_customer_id"]:
@@ -448,7 +446,7 @@ async def section_scanner(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def section_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    user_df = core.DB.select(
+    user_df = core.RDB.select(
         "SELECT stripe_subscription_id, period_end FROM users_data WHERE telegram_id = %s",
         (user_id,)
     )
@@ -460,11 +458,7 @@ async def section_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         period_end = user_df.iloc[0]["period_end"]
 
     period_end_s = (
-        f"{time.strftime('%A', time.localtime(period_end)).capitalize()}, "
-        f"{time.strftime('%d', time.localtime(period_end))} de "
-        f"{time.strftime('%B', time.localtime(period_end)).capitalize()} del "
-        f"{time.strftime('%Y', time.localtime(period_end))}"
-        if period_end else "—"
+        time.strftime('%d/%m/%Y', time.localtime(period_end)) if period_end else "—"
     )
 
     auto_renew_txt = "—"
@@ -537,10 +531,8 @@ def build_match_header(schedule_id: int) -> str:
                 minute_display = f"{capped_minute}"
 
             time_display = f"⏱ {minute_display}'  |  {current_home_goals} - {current_away_goals}"
-    elif kickoff > now:
-        time_display = "🗓 " + kickoff.strftime("%A %d de %B, %H:%M").capitalize()
     else:
-        time_display = "🗓 " + kickoff.strftime("%A %d de %B, %H:%M").capitalize()
+        time_display = "🗓 " + kickoff.strftime("%d/%m/%Y - %H:%M")
 
     return (
         f"<i>{league} {blocks}</i>\n"
