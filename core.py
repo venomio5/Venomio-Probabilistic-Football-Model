@@ -276,7 +276,11 @@ user = os.getenv('DB_USER')
 password = os.getenv('DB_PASSWORD')
 database = os.getenv('DB_NAME')
 
-DB = DatabaseManager(host="localhost", user=user, password="venomio", database="vpfm")
+try:
+    DB = DatabaseManager(host="localhost", user=user, password="venomio", database="vpfm")
+except Exception as e:
+    print(f"[INFO] No se pudo conectar a la DB local: {e}")
+    DB = None
 RDB = DatabaseManager(host=host, port=port, user=user, password=password, database=database)
 
 def get_team_name_by_id(team_id):
