@@ -484,7 +484,7 @@ def build_match_header(schedule_id: int) -> str:
         if not period:
             time_display = f"⏱ Descanso  |  {current_home_goals} - {current_away_goals}"
         else:
-            current_period_start = datetime.fromtimestamp(current_period_start_timestamp)
+            current_period_start = datetime.fromtimestamp(current_period_start_timestamp, tz=ZoneInfo("America/Mexico_City"))
             elapsed_minutes = int((now - current_period_start).total_seconds() // 60)
 
             base_minute = 0
