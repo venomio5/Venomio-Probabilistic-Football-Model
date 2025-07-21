@@ -31,7 +31,9 @@ from functools import lru_cache
 
 load_dotenv()
 
+os.environ['TZ'] = 'America/Mexico_City'
 time.tzset()
+
 print(datetime.now())
 
 COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "")
