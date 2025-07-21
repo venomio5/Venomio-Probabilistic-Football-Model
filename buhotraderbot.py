@@ -467,6 +467,7 @@ def build_match_header(schedule_id: int) -> str:
     kickoff = match["datetime"]
     if isinstance(kickoff, str):
         kickoff = datetime.fromisoformat(kickoff)
+        kickoff = kickoff.replace(tzinfo=ZoneInfo("America/Mexico_City"))
     current_home_goals = int(match["current_home_goals"])
     current_away_goals = int(match["current_away_goals"])
     current_period_start_timestamp = int(match["current_period_start_timestamp"])
