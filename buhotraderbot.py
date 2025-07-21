@@ -28,13 +28,9 @@ import math
 import os
 from dotenv import load_dotenv
 from functools import lru_cache
+from zoneinfo import ZoneInfo
 
 load_dotenv()
-
-os.environ['TZ'] = 'America/Mexico_City'
-time.tzset()
-
-print(datetime.now())
 
 COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "")
 COMPUTE_API_KEY = os.getenv("COMPUTE_API_KEY", "")
@@ -334,7 +330,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 🔘 *Eventos* – Obtén cuotas en tiempo real generadas por un modelo de IA avanzado que simula miles de escenarios por evento.
 
-🕒 Horarios – El bot está disponible 24/7, aunque al principio puede tardar unos minutos en responder mientras "despierta". Zona horaria de referencia: GMT-6 (Monterrey, México).   
+🕒 Horarios – El bot está disponible 24/7, aunque al principio puede tardar unos minutos en responder mientras "despierta". Zona horaria de referencia: GMT-6 (America/Mexico_City).   
 
 📘 Visita la sección de *Preguntas Frecuentes* y comprende a fondo cómo funciona este sistema.
 
@@ -365,7 +361,7 @@ async def section_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(msg)
         return
     matches = get_all_matches()
-    current_time = datetime.now()
+    current_time = datetime.now(ZoneInfo("America/Mexico_City"))
     two_hours_ago = current_time - timedelta(hours=2.1)
     current_date = current_time.date()
     today_matches = [row for _, row in matches.iterrows() if row["date"] == current_date and ((two_hours_ago <= row["datetime"] <= current_time) or (row["datetime"] > current_time))]
@@ -482,7 +478,7 @@ def build_match_header(schedule_id: int) -> str:
     blocks_count = int(round(game_strength * 5))
     blocks = "■" * blocks_count + "□" * (5 - blocks_count)
     
-    now = datetime.now()
+    now = datetime.now(ZoneInfo("America/Mexico_City"))
 
     if timedelta(hours=0) <= now - kickoff <= timedelta(hours=2.1):
         if not period:
