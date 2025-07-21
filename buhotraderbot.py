@@ -31,6 +31,8 @@ from functools import lru_cache
 
 load_dotenv()
 
+print(datetime.now())
+
 COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "")
 COMPUTE_API_KEY = os.getenv("COMPUTE_API_KEY", "")
 
