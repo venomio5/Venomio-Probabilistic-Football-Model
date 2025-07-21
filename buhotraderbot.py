@@ -31,6 +31,7 @@ from functools import lru_cache
 
 load_dotenv()
 
+time.tzset()
 print(datetime.now())
 
 COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "")
