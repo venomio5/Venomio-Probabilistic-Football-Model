@@ -92,9 +92,8 @@ def get_all_matches():
     if df.empty:
         return df
 
-    df["date"]     = pd.to_datetime(df["date"]).dt.date
-    df["datetime"] = pd.to_datetime(df["datetime"])
-
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df["datetime"] = pd.to_datetime(df["datetime"]).dt.tz_localize("America/Mexico_City")
     return df
 
 def get_odds(schedule_id: int, market_key: str) -> dict:
