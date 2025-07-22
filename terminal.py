@@ -1682,7 +1682,8 @@ class MainWindow(QMainWindow):
             list_item = self.add_task_to_queue(f"Update Schedule")
 
             def task():
-                core.UpdateSchedule(upto_date)
+                schedule_updater = core.UpdateSchedule(upto_date)
+                schedule_updater.update_all_leagues()
 
             worker = UpdateWorker(task)
             worker.signals.finished.connect(lambda li=list_item: (self.remove_task_from_queue(li), self.load_fixtures()))

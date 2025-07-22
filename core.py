@@ -455,6 +455,8 @@ _ID_RE = re.compile(r"(?P<name>.+?)_\d+_[A-Z]{1,2}$")
 class UpdateSchedule:
     def __init__(self, from_date):
         self.from_date = from_date
+
+    def update_all_leagues(self):
         active_leagues_df = DB.select("SELECT * FROM league_data WHERE is_active = 1")
         
         for league_id in tqdm(active_leagues_df["league_id"].tolist(), desc="Processing leagues"):
@@ -507,8 +509,6 @@ class UpdateSchedule:
                     home_rest_days = self.get_team_rest_days(home_id, game_date)
                     away_rest_days = self.get_team_rest_days(away_id, game_date)
 
-                temp, rain = self.get_weather(home_id, game_date, game_venue_time)
-
                 insert_sql = """
                 INSERT INTO schedule_data (
                     home_team_id,
@@ -521,18 +521,14 @@ class UpdateSchedule:
                     away_elevation_dif,
                     away_travel,
                     home_rest_days,
-                    away_rest_days,
-                    temperature,
-                    is_raining
+                    away_rest_days
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 ON DUPLICATE KEY UPDATE
                     date         = VALUES(date),
                     local_time   = VALUES(local_time),
                     venue_time   = VALUES(venue_time),
-                    temperature  = VALUES(temperature),
-                    is_raining   = VALUES(is_raining);
                 """
 
                 raw_params = (
@@ -546,9 +542,7 @@ class UpdateSchedule:
                     away_elevation_dif,
                     away_travel_dist,
                     home_rest_days,
-                    away_rest_days,
-                    temp,
-                    rain
+                    away_rest_days
                 )
 
                 params = tuple(self._to_python(p) for p in raw_params)
@@ -601,6 +595,28 @@ class UpdateSchedule:
               AND sd.league_id = %s
             """
             DB.execute(stale_delete_sql, (cutoff_date, league_id))
+
+    def update_game_weather(self, schedule_id):
+        row = DB.select(
+            "SELECT home_team_id, away_team_id, date, venue_time, league_id FROM schedule_data WHERE schedule_id = %s",
+            (schedule_id,)
+        )
+        if row.empty:
+            return
+
+        home_id = row["home_team_id"].iat[0]
+        game_date = row["date"].iat[0]
+        game_venue_time = row["venue_time"].iat[0]
+
+        temp, rain = self.get_weather(home_id, game_date, game_venue_time)
+
+        update_sql = """
+        UPDATE schedule_data
+        SET temperature = %s,
+            is_raining  = %s
+        WHERE schedule_id = %s
+        """
+        DB.execute(update_sql, (temp, rain, schedule_id))
 
     def _schedule_exists(self, home_id, away_id, game_date, league_id):
         sql = """
@@ -1619,9 +1635,9 @@ class Process_Data:
         # self.update_players_shots_coef(upto_date)
         # self.update_players_totals()
         # self.update_players_xg_coef()
-        self.update_shots()
-        self.update_match_info_referee_totals()
-        self.update_referee_data_totals()
+        # self.update_shots()
+        # self.update_match_info_referee_totals()
+        # self.update_referee_data_totals()
         self.train_context_ras_model()
         self.train_refined_sq_model()
         self.train_post_shot_goal_model()
@@ -2493,10 +2509,10 @@ class Process_Data:
                         tree_method='hist',
                         max_depth=6,
                         eta=0.03,
-                        subsample=0.8,
-                        colsample_bytree=0.7,
-                        min_child_weight=20,
-                        gamma=3,
+                        subsample=1.0,
+                        colsample_bytree=1.0,
+                        min_child_weight=10,
+                        gamma=2,
                         reg_alpha=1,
                         reg_lambda=2)  
         
@@ -2549,11 +2565,11 @@ class Process_Data:
                       eval_metric='logloss',
                       tree_method='hist',
                       max_depth=4,
-                      eta=0.05,
-                      subsample=0.8,
+                      eta=0.03,
+                      subsample=1.0,
                       colsample_bytree=1.0,
                       min_child_weight=2,
-                      gamma=2,           
+                      gamma=1,           
                       reg_alpha=0.5,        
                       reg_lambda=2) 
 
@@ -2636,10 +2652,10 @@ class Process_Data:
                       tree_method='hist',
                       max_depth=5,
                       eta=0.03,
-                      subsample=0.8,
-                      colsample_bytree=0.8,
+                      subsample=1.0,
+                      colsample_bytree=1.0,
                       min_child_weight=6,
-                      gamma=2,
+                      gamma=1,
                       reg_alpha=1,
                       reg_lambda=2)
         
@@ -2663,7 +2679,7 @@ class Alg:
     def __init__(self, schedule_id, home_initial_goals, away_initial_goals, match_initial_time, home_n_subs_avail, away_n_subs_avail):
         self.schedule_id = schedule_id
 
-        print(f"Simulating {get_match_name(self.schedule_id)}")  
+        print(f"Simulating {get_match_name(self.schedule_id)}")
 
         match_df = DB.select("SELECT * FROM schedule_data WHERE schedule_id = %s", (self.schedule_id,))
 
@@ -2728,6 +2744,8 @@ class Alg:
             range_value = 3000
         elif self.match_initial_time < 1:
             range_value = 5000
+            schedule_updater = UpdateSchedule(from_date=datetime.today())
+            schedule_updater.update_game_weather(self.schedule_id)
         else:
             range_value = 4000
 
