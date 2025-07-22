@@ -528,7 +528,7 @@ class UpdateSchedule:
                 ON DUPLICATE KEY UPDATE
                     date         = VALUES(date),
                     local_time   = VALUES(local_time),
-                    venue_time   = VALUES(venue_time),
+                    venue_time   = VALUES(venue_time)
                 """
 
                 raw_params = (
@@ -1626,18 +1626,18 @@ class Process_Data:
         Class to reset the players_data table and fill it with new data.
         """
 
-        # DB.execute("TRUNCATE TABLE players_data;")
-        # DB.execute("TRUNCATE TABLE referee_data;")
+        DB.execute("TRUNCATE TABLE players_data;")
+        DB.execute("TRUNCATE TABLE referee_data;")
 
-        # self._unify_duplicate_players()
+        self._unify_duplicate_players()
 
-        # self.insert_players_basics()
-        # self.update_players_shots_coef(upto_date)
-        # self.update_players_totals()
-        # self.update_players_xg_coef()
-        # self.update_shots()
-        # self.update_match_info_referee_totals()
-        # self.update_referee_data_totals()
+        self.insert_players_basics()
+        self.update_players_shots_coef(upto_date)
+        self.update_players_totals()
+        self.update_players_xg_coef()
+        self.update_shots()
+        self.update_match_info_referee_totals()
+        self.update_referee_data_totals()
         self.train_context_ras_model()
         self.train_refined_sq_model()
         self.train_post_shot_goal_model()
