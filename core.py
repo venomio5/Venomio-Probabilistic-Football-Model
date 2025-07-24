@@ -290,9 +290,9 @@ def get_team_name_by_id(team_id):
         return result.iloc[0]["team_name"]
     return None
 
-def get_team_id_by_name(team_name):
-    query = "SELECT team_id FROM team_data WHERE team_name = %s"
-    result = DB.select(query, (team_name,))
+def get_team_id_by_name(team_name, league_id):
+    query = "SELECT team_id FROM team_data WHERE team_name = %s AND league_id = %s"
+    result = DB.select(query, (team_name, league_id))
     if not result.empty:
         return int(result.iloc[0]["team_id"])
     return None
@@ -460,6 +460,20 @@ class UpdateSchedule:
         active_leagues_df = DB.select("SELECT * FROM league_data WHERE is_active = 1")
         
         for league_id in tqdm(active_leagues_df["league_id"].tolist(), desc="Processing leagues"):
+            weather_missing_rows = DB.select(
+                """
+                SELECT schedule_id
+                FROM schedule_data
+                WHERE (temperature IS NULL OR is_raining IS NULL)
+                AND date < %s
+                AND league_id = %s
+                """,
+                (self.from_date, league_id)
+            )
+
+            for sid in weather_missing_rows["schedule_id"].tolist():
+                self.update_game_weather(sid)
+            
             fbref_url = active_leagues_df[active_leagues_df['league_id'] == league_id]['fbref_fixtures_url'].values[0]
             upto_date = self.from_date + timedelta(days=5)
 
@@ -478,9 +492,9 @@ class UpdateSchedule:
                     game_venue_time = game_local_time
 
                 home_team = home_teams[i]
-                home_id = get_team_id_by_name(home_team)
+                home_id = get_team_id_by_name(home_team, league_id)
                 away_team = away_teams[i]
-                away_id = get_team_id_by_name(away_team)
+                away_id = get_team_id_by_name(away_team, league_id)
 
                 home_elevation_dif = self.get_team_elevation_dif(home_id, away_id, "home")
                 away_elevation_dif = self.get_team_elevation_dif(home_id, away_id, "away")
@@ -814,7 +828,10 @@ class UpdateSchedule:
             else "https://api.open-meteo.com/v1/forecast?"
         )
 
-        dummy_date = datetime(2000, 1, 1, game_venue_time.hour, game_venue_time.minute)
+        total_seconds = game_venue_time.total_seconds()
+        hours = int(total_seconds // 3600)
+        minutes = int((total_seconds % 3600) // 60)
+        dummy_date = datetime(2000, 1, 1, hours, minutes)
         start_datetime = dummy_date - timedelta(hours=1)
         end_datetime = dummy_date + timedelta(hours=2)
 
@@ -946,9 +963,9 @@ class Extract_Data:
                 game_time = game_times[i]
                 game_datetime = datetime.combine(game_date, game_time)
                 home_team = home_teams[i]
-                home_id = get_team_id_by_name(home_team)
+                home_id = get_team_id_by_name(home_team, league_id)
                 away_team = away_teams[i]
-                away_id = get_team_id_by_name(away_team)
+                away_id = get_team_id_by_name(away_team, league_id)
                 referee = referees[i]
 
                 params = (

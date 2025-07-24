@@ -338,7 +338,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     rows = [
         [InlineKeyboardButton("❓ FAQs", callback_data="faq")],
-        [InlineKeyboardButton("🕊️ X", url="https://x.com/buhotrader")],
+        [InlineKeyboardButton("Redes", url="https://linktr.ee/BuhoTrader")],
     ]
 
     url = await create_checkout_session(user_id)

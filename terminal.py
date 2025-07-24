@@ -1669,7 +1669,7 @@ class MainWindow(QMainWindow):
             list_item = self.add_task_to_queue(f"Extract & Process up to {upto_date}")
 
             def task():
-                core.Extract_Data(upto_date)
+                # core.Extract_Data(upto_date)
                 core.Process_Data(upto_date)
 
             worker = UpdateWorker(task)
@@ -1941,7 +1941,7 @@ class MainWindow(QMainWindow):
         bankrollSpinBox.setDecimals(2)
         bankrollSpinBox.setRange(0, 10000000)
         bankrollSpinBox.setSingleStep(1)
-        bankrollSpinBox.setValue(1500.00)
+        bankrollSpinBox.setValue(3000.00)
         bankrollLayout.addWidget(bankrollLabel)
         bankrollLayout.addWidget(bankrollSpinBox)
         layout.addLayout(bankrollLayout)
