@@ -325,20 +325,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     description = """
-🚨 Acceso exclusivo con *suscripción activa*.
+    🚨 Acceso exclusivo con *suscripción activa*.
 
-🔘 *Eventos* – Obtén cuotas en tiempo real generadas por un modelo de IA avanzado que simula miles de escenarios por evento.
+    🔘 *Eventos* – Obtén cuotas en tiempo real generadas por un modelo de IA avanzado que simula miles de escenarios por evento.
 
-🕒 Horarios – El bot está disponible 24/7, aunque al principio puede tardar unos minutos en responder mientras "despierta". Zona horaria de referencia: GMT-6 (America/Mexico_City).   
+    🕒 *Horarios* – El bot está disponible 24/7, aunque al principio puede tardar unos minutos en responder mientras "despierta". Zona horaria de referencia: GMT-6 (America/Mexico\\_City).   
 
-📘 Visita la sección de *Preguntas Frecuentes* y comprende a fondo cómo funciona este sistema.
+    📘 Visita la sección de *Preguntas Frecuentes* y comprende a fondo cómo funciona este sistema.
 
-⚠️ *Aviso legal*: Toda decisión que tomes es bajo tu propio criterio y responsabilidad. Este bot no garantiza resultados, solo proporciona herramientas de análisis avanzadas.
+    ⚠️ *Aviso legal*: Toda decisión que tomes es bajo tu propio criterio y responsabilidad. Este bot no garantiza resultados, solo proporciona herramientas de análisis avanzadas.
     """
 
     rows = [
         [InlineKeyboardButton("❓ FAQs", callback_data="faq")],
-        [InlineKeyboardButton("Redes", url="https://linktr.ee/BuhoTrader")],
+        [InlineKeyboardButton("🔗 Redes", url="https://linktr.ee/BuhoTrader")],
     ]
 
     url = await create_checkout_session(user_id)
