@@ -1,102 +1,42 @@
 # Venomio Probabilistic Football Model
-**Version 7.0.1**
-**Not distributed for public use or deployment.**
+**Version 8.0.1**
 
-## Overview  
-A sports terminal tool for sports trading or betting. 
-*Explain later with images how to use it*
-### Soccer Checklist
-- **New Season**: Update league teams.
-- **Every Week**: Update league data.
-- **Every Day/Hour**: Update schedule.
+## Model Theory  
+This model simulates each minute of a football (soccer) match with 2 outputs: Goal or No Goal. If there is a Goal, it changes the game state with the **Projected Expected Goals per Minute (PxG/M)** which is the **most important metric** in this model.
 
-## Soccer Algorithm Theory
-Simulates each minute of a soccer match based on **Shots Per Minute (SPM)**. At each time step, each squad has a projected shots per minute (SPM) value. SPM changes dynamically based on:
-- **Game state**: winning or losing (by 1 or more), or level.
-- **Lineup changes**: substitutions or red cards.
-- **Time segment**: 0-15, 15-30, 30-45, 45-60, 60-75, 75-90.
-
-### Modeling Projected Shots Per Minute
-* Data for the last preceding year.
-#### Regularized Adjusted Shots (RAS) 
-RAS is derived via **Ridge Regression** using:
+### Projected Expected Goals per Minute (PxG/M)
+Projected Expected Goals per Minute (PxG/M) is calculated by:
+#### 1. Regularized Adjusted Expected Goals (RAxG)
+A ridge regression (linear model) that learns individual players´ offensive and defensive impact. Having more weight on recent matches, for up to matches for the preceding year. Data is acquired by FBREF and input data to the model is:
 - List of team A players
 - List of team B players
-- Total shots by team A
-- Total shots by team B
+- Total xG produced by team A
+- Total xG produced by team B
 - Total minutes played
-
-The **Output** is each player's contribution to team shot production.
-
-### Contextual XGBoost Model
-RAS values serve as a baseline to an advanced XGBoost model, which integrates critical external and situational factors to predict final performance metrics (SPM). This are the features used:
-- Total team RAS (As baseline shots per minute)
+*Check how to do the weighting for recency. 
+#### 2. Contextual XGBoost Model
+RAxG is then summed up to get the teams projected xG based on the RAxG alone. Then this value is added to an advanced XGBoost model, which integrates context awareness. This are the features used:
+- Total team RAxG (As baseline xG per minute)
 - Team_is_home (Bool)
 - Team_elevation_dif & Opp_elevation_dif (stadium elevation - avg(league, team))
 - Team_travel & Opp_travel (Distance in km)
 - Team_rest_days & Opp_rest_days (Number of rest days)
-- Match_state (-1.5, -1, 0, 1, 1.5)
-- Match_segment (1, 2, 3, 4, 5, 6)
-- Player_dif (-1.5, -1, 0, 1, 1.5)
+- Match_state (-1.5, -1, 0, 1, 1.5) - if they are losing or wining by x goals.
+- Match_segment (1, 2, 3, 4, 5, 6) - segment is divided in 15-minutes interrvals, 1 being the first 15 minutes of the match.
+- Player_dif (-1.5, -1, 0, 1, 1.5) - if a team has a red card advantage or disadvantage. 
 - Temperature (°C) at kickoff
 - Is_Raining (Bool)
 - Match_time (aft, evening, night)
 
-**Output**: Refined prediction of team-level and minute-level Shots Per Minute. Use high level minutes of RAS for certainty (Low minutes, the model is not as effective). 
-
-# Shot Resolution
-For each simulated shot:
-## Regularized Adjusted Shot Type (RAST)
-From the same **RAS** but for each type (Head or Foot):
-- List of team A players
-- List of team B players
-- Total head and foot shots by team A
-- Total head and foot shots by team B
-- Total minutes played
-
-## Specific players
-- **Shooter**: Determined by weighted randomness favoring players with higher shot volume for the type.
-- **Assister**: Determined by weighted randomness where headers receive full weight (100%), and foot depend on the shooting player’s ability to generate their own attempts, augmented by key passes (KP).
-
-## Shot Quality
-### Player-Level Shot Quality Attribution
-Another regularized coefficient reflecting their average influence on xG when present.
-- List of team A players
-- List of team B players
-- Total head and foot xg by team A
-- Total head and foot xg by team B
-- Per shot
-
-**Output**: Each player's contribution to team shot quality.
-
-### Refined Shot Quality Model
-Aggregate the ridge data per shot and build a model to learn nonlinear, hierarchical patterns.
-- Total PLSQA
-- Shooter SQ
-- Assister SQ
-- Match_state
-- Player_dif
-- Target: xG
-
-**Output**: Refined shot quality. 
-
-### Player Performance Modifier
-- RSQ
-- Shooter Ability (Difference between xG and PSxG in %)
-- GK Ability (Difference between PSxG and Goals in %)
-- Team_is_home
-- Team_elevation_dif
-- Team_travel
-- Team_rest_days
-- Temperature_C
-- Is_Raining
-- Match_time (aft, evening, night)
-- Target: Outcome of the Shot
-
-**Output**: Refined post shot expected goal.
-
-# Lineup Dynamics
-## Substitutions
+The output is the final PxG/M. 
+### Changes in PxG/M
+Now, you may ask "Why going into a simulation of each minute of the game?", and the answer is: A soccer match is dynamic, losing or winning affect how players think, that affects performance. Not only that, but other things changes, and that chnages the following actions. So here are the things that changes the PxG/M:
+#### Game state
+Like I said, winning or losing (by 1 or more), or level. Each goal, changes the PxG/M of both teams. So the simualtions is tracking the score.
+#### Lineup changes
+In here there  are two things to keep in mind: subs and red cards.
+##### Substitutions
+The manager´s decision to sub in a player depends on the match state. Like I said, each game is different, not the same players will play evry time. I need a model to make the subs based on the managers history decisoins. Like this:
 1. Pull historical substitution data for both teams from the database.
 2. Compute how many subs each team usually makes in past games.
 3. Based on how many substitutions each team can still make, determine how many they are realistically allowed to do now.
@@ -111,277 +51,16 @@ Aggregate the ridge data per shot and build a model to learn nonlinear, hierarch
 8. Remove chosen players from active, insert new ones from passive.
 
 Repeat this process each time a substitution minute is reached.
-
-## Card and Foul Simulation
+##### Red Cards
+Now obvoisuly, there are a few players that are more probable to a red card, especially if already being on a yellow card. Again this is makes the game dynamic. So how will I simualte this? By:
 1. Get the teams fouls per 90 minutes by getting the average of the team fouls comitted and the opponent fouls drawn.
 2. Get the normalized teams fouls per 90 minutes by getting the average from the referee fouls per match, and the sum of the team and opponent fouls per 90 minutes. Then divide the teams fouls per 90 minute by the total average.
 3. Multiply each normalized team fouls per minute with home and away factors, and team status (leading, trailing, level)
 4. Choose on weighed  probability on who fouled, and then on weighed probability, choose between YC, RD, and None, based on referee data and player´s data. 
+#### Time segment
+As the game evolve, the fatigue increases, so the PxG/M differs. So at each time segment, there is a change in PxG/M: 0-15, 15-30, 30-45, 45-60, 60-75, 75-90.
 
-## Output Metrics
-Minute-by-minute event log:
-- Score.
-- Players goals, assists, and red cards.
-
-### SQL Setup
-#### Database
-CREATE DATABASE vpfm;
-USE vpfm;
-
-#### Tables
-##### match_info
-```
-CREATE TABLE match_info (
-    match_id INT AUTO_INCREMENT PRIMARY KEY,
-    home_team_id INT NOT NULL,
-    away_team_id INT NOT NULL,
-    date DATETIME NOT NULL,
-    league_id INT,
-    referee_name VARCHAR(100),
-    total_fouls INT DEFAULT 0,
-    yellow_cards INT DEFAULT 0,
-    red_cards INT DEFAULT 0,
-    home_elevation_dif INT,
-    away_elevation_dif INT,
-    away_travel INT,
-    home_rest_days INT,
-    away_rest_days INT,
-    temperature_c INT,
-    is_raining BOOLEAN,
-    url VARCHAR(200),
-    UNIQUE (home_team_id, away_team_id, date)
-);
-```
-##### match_detail
-```
-CREATE TABLE match_detail (
-    detail_id INT AUTO_INCREMENT PRIMARY KEY,
-    match_id INT NOT NULL,
-    teamA_players JSON NOT NULL,
-    teamB_players JSON NOT NULL,
-    teamA_headers INT NOT NULL,
-    teamA_footers INT NOT NULL,
-    teamA_hxg FLOAT NOT NULL,
-    teamA_fxg FLOAT NOT NULL,
-    teamB_headers INT NOT NULL,
-    teamB_footers INT NOT NULL,
-    teamB_hxg FLOAT NOT NULL,
-    teamB_fxg FLOAT NOT NULL,
-    minutes_played INT NOT NULL,
-    teamA_pdras FLOAT,
-    teamB_pdras FLOAT,
-    match_state ENUM('-1.5', '-1', '0', '1', '1.5') NOT NULL,
-    match_segment ENUM('1', '2', '3', '4', '5', '6') NOT NULL,
-    player_dif ENUM('-1.5', '-1', '0', '1', '1.5') NOT NULL,
-    UNIQUE KEY uq_match_detail (
-        match_id,
-        teamA_headers,
-        teamA_footers,
-        teamA_hxg,
-        teamA_fxg,
-        teamB_headers,
-        teamB_footers,
-        teamB_hxg,
-        teamB_fxg,
-        match_state,
-        match_segment,
-        player_dif
-    ),
-    FOREIGN KEY (match_id) REFERENCES match_info (match_id)
-        ON DELETE CASCADE
-);
-```
-##### match_breakdown
-```
-CREATE TABLE match_breakdown (
-    match_id INT,
-    player_id VARCHAR(50),
-    headers INT DEFAULT 0,
-    footers INT DEFAULT 0,
-    key_passes INT DEFAULT 0,
-    non_assisted_footers INT DEFAULT 0,
-    hxg FLOAT DEFAULT 0.0,
-    fxg FLOAT DEFAULT 0.0,
-    kp_hxg FLOAT DEFAULT 0.0,
-    kp_fxg FLOAT DEFAULT 0.0,
-    hpsxg FLOAT DEFAULT 0.0,
-    fpsxg FLOAT DEFAULT 0.0,
-    gk_psxg FLOAT DEFAULT 0.0,
-    gk_ga INT DEFAULT 0,
-    sub_in INT,
-    sub_out INT,
-    in_status VARCHAR(50),
-    out_status VARCHAR(50),
-    fouls_committed INT DEFAULT 0,
-    fouls_drawn INT DEFAULT 0,
-    yellow_cards INT DEFAULT 0,
-    red_cards INT DEFAULT 0,
-    minutes_played INT DEFAULT 0,
-    PRIMARY KEY (match_id, player_id),
-    FOREIGN KEY (match_id) REFERENCES match_info (match_id)
-        ON DELETE CASCADE
-);
-```
-##### players_data
-```
-CREATE TABLE players_data (
-    player_id VARCHAR(50) PRIMARY KEY,
-    current_team INT NOT NULL,
-    off_sh_coef FLOAT DEFAULT NULL,
-    def_sh_coef FLOAT DEFAULT NULL,
-    off_headers_coef FLOAT DEFAULT NULL,
-    def_headers_coef FLOAT DEFAULT NULL,
-    off_footers_coef FLOAT DEFAULT NULL,
-    def_footers_coef FLOAT DEFAULT NULL,
-    off_hxg_coef FLOAT DEFAULT NULL,
-    def_hxg_coef FLOAT DEFAULT NULL,
-    off_fxg_coef FLOAT DEFAULT NULL,
-    def_fxg_coef FLOAT DEFAULT NULL,
-    minutes_played INT DEFAULT 0,
-    headers INT DEFAULT NULL,
-    footers INT DEFAULT NULL,
-    key_passes INT DEFAULT NULL,
-    non_assisted_footers INT DEFAULT NULL,
-    hxg FLOAT DEFAULT 0.0,
-    fxg FLOAT DEFAULT 0.0,
-    kp_hxg FLOAT DEFAULT 0.0,
-    kp_fxg FLOAT DEFAULT 0.0,
-    hpsxg FLOAT DEFAULT 0.0,
-    fpsxg FLOAT DEFAULT 0.0,
-    gk_psxg FLOAT DEFAULT 0.0,
-    gk_ga INT DEFAULT 0,
-    fouls_committed INT DEFAULT 0,
-    fouls_drawn INT DEFAULT 0,
-    yellow_cards INT DEFAULT 0,
-    red_cards INT DEFAULT 0,
-    sub_in JSON,
-    sub_out JSON,
-    in_status JSON,
-    out_status JSON
-);
-```
-##### referee_data
-```
-CREATE TABLE referee_data (
-    referee_name VARCHAR(100) PRIMARY KEY,
-    fouls INT DEFAULT 0,
-    yellow_cards INT DEFAULT 0,
-    red_cards INT DEFAULT 0,
-    matches_played INT DEFAULT 0 
-);
-```
-##### shots_data
-```
-CREATE TABLE shots_data (
-    shot_id INT AUTO_INCREMENT PRIMARY KEY,
-    match_id INT,
-    xg FLOAT NOT NULL,
-    psxg FLOAT NOT NULL,
-    outcome BOOLEAN,
-    shot_type ENUM('head', 'foot') NOT NULL,
-    shooter_id VARCHAR(50) NOT NULL,
-    assister_id VARCHAR(50) NOT NULL,
-    team_id INT NOT NULL,
-    GK_id VARCHAR(50) NOT NULL,
-    off_players JSON NOT NULL,
-    def_players JSON NOT NULL,
-    total_PLSQA FLOAT DEFAULT NULL,
-    shooter_SQ FLOAT DEFAULT NULL,
-    assister_SQ FLOAT DEFAULT NULL,
-    match_state ENUM('-1.5', '-1', '0', '1', '1.5') NOT NULL,
-    player_dif ENUM('-1.5', '-1', '0', '1', '1.5') NOT NULL,
-    RSQ FLOAT DEFAULT NULL,
-    shooter_A FLOAT DEFAULT NULL,
-    GK_A FLOAT DEFAULT NULL,
-    FOREIGN KEY (match_id) REFERENCES match_info (match_id)
-        ON DELETE CASCADE
-);
-```
-##### team_data
-```
-CREATE TABLE team_data (
-    team_id INT AUTO_INCREMENT PRIMARY KEY,
-    team_name VARCHAR(100) NOT NULL,
-    team_elevation INT NOT NULL,
-    team_coordinates VARCHAR(50) NOT NULL,
-    team_fixtures_url VARCHAR(200) NOT NULL,
-    league_id INT NOT NULL,
-    FOREIGN KEY (league_id) REFERENCES league_data(league_id)
-        ON DELETE CASCADE,
-    UNIQUE KEY uniq_team_league (team_name, league_id)
-);
-```
-##### league_data
-```
-CREATE TABLE league_data (
-    league_id INT AUTO_INCREMENT PRIMARY KEY,
-    league_name VARCHAR(100) UNIQUE NOT NULL,
-    fbref_fixtures_url VARCHAR(200),
-    last_updated_date DATE,
-    is_active BOOLEAN,
-    ss_url VARCHAR(200),
-    hsh_baseline_coef FLOAT,
-    fsh_baseline_coef FLOAT,
-    hxg_baseline_coef FLOAT,
-    fxg_baseline_coef FLOAT
-);
-```
-##### schedule_data
-```
-CREATE TABLE schedule_data (
-    schedule_id INT AUTO_INCREMENT PRIMARY KEY,
-    home_team_id INT NOT NULL,
-    away_team_id INT NOT NULL,
-    date DATE NOT NULL,
-    local_time TIME NOT NULL,
-    venue_time TIME NOT NULL,
-    league_id INT NOT NULL,
-    home_elevation_dif INT,
-    away_elevation_dif INT,
-    away_travel INT,
-    home_rest_days INT,
-    away_rest_days INT,
-    temperature INT,
-    is_raining BOOLEAN,
-    home_players_data JSON,
-    away_players_data JSON,
-    ss_url VARCHAR(200),
-    referee_name VARCHAR(100),
-    current_home_goals INT,
-    current_away_goals INT,   
-    current_period_start_timestamp INT,
-    period VARCHAR(100),
-    period_injury_time INT,
-    last_minute_checked INT,
-    simulate BOOLEAN,
-    home_n_subs_avail INT DEFAULT 5,
-    away_n_subs_avail INT DEFAULT 5,
-    game_strength FLOAT,
-    UNIQUE (home_team_id, away_team_id)
-);
-```
-##### simulation_data
-```
-CREATE TABLE simulation_data (
-    sim_id INT NOT NULL,
-    schedule_id INT NOT NULL,
-    minute INT NOT NULL,
-    shooter VARCHAR(50) NOT NULL,
-    squad VARCHAR(20) NOT NULL,
-    outcome VARCHAR(20) NOT NULL,
-    body_part VARCHAR(20) NOT NULL,
-    assister VARCHAR(50),
-    FOREIGN KEY (schedule_id) REFERENCES schedule_data(schedule_id)
-        ON DELETE CASCADE
-);
-```
-
-##### users_data
-```
-CREATE TABLE users_data (
-    telegram_id BIGINT PRIMARY KEY,
-    stripe_customer_id VARCHAR(255),
-    stripe_subscription_id VARCHAR(255),
-    period_end BIGINT
-);
-```
+### Model Checklist
+- **New Season**: Update league teams.
+- **Every Week**: Update league data.
+- **Every Day/Hour**: Update schedule.
