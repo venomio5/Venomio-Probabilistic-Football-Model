@@ -14,7 +14,6 @@ A ridge regression (linear model) that learns individual players´ offensive and
 - Total xG produced by team B
 - Total minutes played
 
-
 Weights:
 - **Primary data**: Last 12 months 
 - **Heavy weighting**: Last 3 months (50% of total weight)
