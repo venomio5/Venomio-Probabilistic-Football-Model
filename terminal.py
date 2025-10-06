@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
                             QDialog, QListWidget, QListWidgetItem, QTabWidget, QFormLayout, QPlainTextEdit, QHeaderView,
                             QGridLayout, QLineEdit, QGroupBox, QSpinBox, QDateEdit, QTableWidget, QTableWidgetItem)
 from functools import partial
-import core
+#import core
 import warnings 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 import pandas as pd
@@ -45,7 +45,7 @@ class MainWindow(QMainWindow):
         self.threadpool = QThreadPool()
         self.open_windows = []
         
-        self.vpfm_db = core.DB
+        #self.vpfm_db = core.DB
         
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -135,7 +135,7 @@ class MainWindow(QMainWindow):
         self.league_filter.currentIndexChanged.connect(self.filter_matches)
 
         # Initialize data
-        self.load_fixtures()
+        #self.load_fixtures()
 
     def load_fixtures(self):
         self.all_matches = []
@@ -1569,7 +1569,7 @@ class MainWindow(QMainWindow):
         league_layout.setContentsMargins(5, 5, 5, 5)
         self.league_scroll.setWidget(self.league_container)
         
-        self.load_leagues()
+        #self.load_leagues()
 
         compare_evs_button = QPushButton("Compare Profit")
         compare_evs_button.setStyleSheet("background-color: #138585; color: white; padding: 10px;")

@@ -13,8 +13,14 @@ A ridge regression (linear model) that learns individual players´ offensive and
 - Total xG produced by team A
 - Total xG produced by team B
 - Total minutes played
-*Check how to do the weighting for recency. 
+
+
+Weights:
+- **Primary data**: Last 12 months 
+- **Heavy weighting**: Last 3 months (50% of total weight)
+
 #### 2. Contextual XGBoost Model
+*For this do a research beforehand for each if there is really an impact.
 RAxG is then summed up to get the teams projected xG based on the RAxG alone. Then this value is added to an advanced XGBoost model, which integrates context awareness. This are the features used:
 - Total team RAxG (As baseline xG per minute)
 - Team_is_home (Bool)
@@ -59,6 +65,10 @@ Now obvoisuly, there are a few players that are more probable to a red card, esp
 4. Choose on weighed  probability on who fouled, and then on weighed probability, choose between YC, RD, and None, based on referee data and player´s data. 
 #### Time segment
 As the game evolve, the fatigue increases, so the PxG/M differs. So at each time segment, there is a change in PxG/M: 0-15, 15-30, 30-45, 45-60, 60-75, 75-90.
+#### Bayes' Theorem
+Update the projections based on the real xG. 
+#### Variance
+Inlcude variance of a standrd deviation for the projected goals per minute and other things.
 
 ### Model Checklist
 - **New Season**: Update league teams.
