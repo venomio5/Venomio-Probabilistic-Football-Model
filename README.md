@@ -44,7 +44,7 @@ In here there  are two things to keep in mind: subs and red cards.
 ##### Substitutions
 The manager´s decision to sub in a player depends on the match state. Like I said, each game is different, not the same players will play evry time. I need a model to make the subs based on the managers history decisoins. Like this:
 1. Pull historical substitution data for both teams from the database.
-2. Compute how many subs each team usually makes in past games.
+2. Compute how many subs each team usually makes in past h/a games.
 3. Based on how many substitutions each team can still make, determine how many they are realistically allowed to do now.
 4. From historical data, find the most common minutes when each team usually makes subs.
 5. Distribute the allowed number of substitutions across these likely minutes.
@@ -58,7 +58,7 @@ The manager´s decision to sub in a player depends on the match state. Like I sa
 
 Repeat this process each time a substitution minute is reached.
 ##### Red Cards
-Now obvoisuly, there are a few players that are more probable to a red card, especially if already being on a yellow card. Again this is makes the game dynamic. So how will I simualte this? By:
+Now obviously, there are a few players that are more probable to a red card, especially if already being on a yellow card. Again this is makes the game dynamic. So how will I simualte this? By:
 1. Get the teams fouls per 90 minutes by getting the average of the team fouls comitted and the opponent fouls drawn.
 2. Get the normalized teams fouls per 90 minutes by getting the average from the referee fouls per match, and the sum of the team and opponent fouls per 90 minutes. Then divide the teams fouls per 90 minute by the total average.
 3. Multiply each normalized team fouls per minute with home and away factors, and team status (leading, trailing, level)
@@ -66,9 +66,9 @@ Now obvoisuly, there are a few players that are more probable to a red card, esp
 #### Time segment
 As the game evolve, the fatigue increases, so the PxG/M differs. So at each time segment, there is a change in PxG/M: 0-15, 15-30, 30-45, 45-60, 60-75, 75-90.
 #### Bayes' Theorem
-Update the projections based on the real xG. 
+Update the projections based on the real xG. For the live model.
 #### Variance
-Inlcude variance of a standrd deviation for the projected goals per minute and other things.
+Inlcude variance of a standard deviation for the projected goals per minute and other things.
 
 ### Model Checklist
 - **New Season**: Update league teams.

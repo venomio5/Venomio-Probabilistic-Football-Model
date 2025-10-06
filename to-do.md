@@ -1,1 +1,5 @@
-1. Review the model and set new goals
+- Rview and test featuers for the contextual xgboost model
+- Test them with the old database (python)
+- Design and Create electron js app template
+- Rewrite the scraping to js and fix the databases
+- Rewrite the monte carlo and everythinbg else
