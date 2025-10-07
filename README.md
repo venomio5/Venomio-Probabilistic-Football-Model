@@ -16,6 +16,42 @@ A ridge regression (linear model) that learns individual players´ offensive and
 
 Time decay for more weight for recent games.
 
+#### Fatigue & Rythm
+##### Initial_Fatigue
+Initial Fatigue = min(1, Total_Decayed_Minutes / 90)
+
+Total_Decayed_Minutes = Σ [Minutes_Played_in_Match * exp(-Days_Since_Match / 3)]
+
+##### Rhythm Calculation
+Rhythm = min(1, Total_Decayed_Minutes / 90)
+
+Total_Decayed_Minutes = Σ [Minutes_Played_in_Match * exp(-Days_Since_Match / 14)]
+
+##### In-Game Fatigue Accumulation
+Fatigue(t) = Initial_Fatigue + (1 - Initial_Fatigue) * [1 / (1 + exp(-k_effective * (t - t0)))]
+Where:
+- Fatigue rate increases with initial fatigue: k_effective = k_base * (1 + 2 * Initial_Fatigue)
+- k_base = 0.07 (base accumulation rate)
+- t0 = 35 (inflection point)
+
+#####  In-Game Rhythm Improvement
+Rhythm(t) = Rhythm_start + (1 - Rhythm_start) * (t / 90) * Improvement_Rate
+Where Improvement_Rate = 0.25 (can improve up to 25% during a match)
+
+##### Halftime Recovery
+Fatigue_After_Halftime = Fatigue_At_45min * 0.7 (30% recovery)
+
+##### Final Performance Model
+Effective_Off_RAxG = Base_Off_RAxG * (1 - ω_off * Fatigue(t)) * (0.7 + 0.3 * Rhythm(t))
+Effective_Def_RAxG = Base_Def_RAxG * (1 - ω_def * Fatigue(t)) * (0.7 + 0.3 * Rhythm(t))
+
+Parameters to learn:
+- ω_off = 0.25 (fatigue hurts offense)
+- ω_def = 0.5 (fatigue hurts defense more)
+- k_base = 0.07 (base fatigue rate)
+- t0 = 35 (when fatigue accelerates)
+- Improvement_Rate = 0.25 (rhythm improvement)
+
 #### Contextual XGBoost Model
 *For this do a research beforehand for each if there is really an impact.
 RAxG is then summed up to get the teams projected xG based on the RAxG alone. Then this value is added to an advanced XGBoost model, which integrates context awareness. This are the features used:
@@ -30,31 +66,6 @@ RAxG is then summed up to get the teams projected xG based on the RAxG alone. Th
 - Match_time (aft, evening, night)
 
 The output is the final PxG/90. 
-
-#### Fatigue
-- Team_rest_days & Opp_rest_days (Number of rest days)
-- Match_segment (1, 2, 3, 4, 5, 6) - segment is divided in 15-minutes interrvals, 1 being the first 15 minutes of the match.
-Pre-Game:
-
-For each player, calculate Initial_Fatigue based on their recent minutes played (with time decay).
-
-In-Game (for each 15-minute segment s):
-
-Track Minutes: For each player on the pitch, update their in-game fatigue.
-
-Current_Fatigue(s) = Initial_Fatigue + Fatigue_Accumulated(Current_Minute)
-
-Apply a halftime recovery multiplier at the 45-minute mark.
-
-Handle Substitutions: A substitute comes on with their Initial_Fatigue and their Fatigue_Accumulated(t) clock starts from 0 at the minute they enter.
-
-Calculate Features: For each team, aggregate the player fatigue values into the new team-level fatigue features listed above.
-
-Model Integration:
-
-Replace the static "Total team RAxG" feature with the dynamic Team_A_RAxG(s) and Team_B_RAxG(s) calculated using the effective, fatigue-adjusted player impacts.
-
-Add all the new team-level fatigue features to your XGBoost model's feature set.
 
 ### Changes in PxG/M
 Now, you may ask "Why going into a simulation of each minute of the game?", and the answer is: A soccer match is dynamic, losing or winning affect how players think, that affects performance. Not only that, but other things changes, and that chnages the following actions. So here are the things that changes the PxG/M:
@@ -85,7 +96,7 @@ Now obviously, there are a few players that are more probable to a red card, esp
 3. Multiply each normalized team fouls per minute with home and away factors, and team status (leading, trailing, level)
 4. Choose on weighed  probability on who fouled, and then on weighed probability, choose between YC, RD, and None, based on referee data and player´s data. 
 #### Time segment
-As the game evolve, the fatigue increases, so the PxG/M differs. So at each time segment, there is a change in PxG/M: 0-15, 15-30, 30-45, 45-60, 60-75, 75-90.
+As the game evolve, the fatigue increases, so the PxG/m differs. So at each time segment, there is a change in PxG/m: 0-15, 15-30, 30-45, 45-60, 60-75, 75-90.
 #### Bayes' Theorem
 Update the projections based on the real xG. For the live model.
 #### Variance
