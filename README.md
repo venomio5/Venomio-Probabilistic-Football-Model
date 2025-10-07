@@ -28,29 +28,32 @@ Rhythm = min(1, Total_Decayed_Minutes / 90)
 Total_Decayed_Minutes = Σ [Minutes_Played_in_Match * exp(-Days_Since_Match / 14)]
 
 ##### In-Game Fatigue Accumulation
-Fatigue(t) = Initial_Fatigue + (1 - Initial_Fatigue) * [1 / (1 + exp(-k_effective * (t - t0)))]
+Fatigue(t) = Initial_Fatigue + (t / 45) × Max_Fatigue_Increase × Initial_Fatigue
+Second half = Fatigue(t) = Fatigue_After_Halftime + ((t - 45) / 45) × Max_Fatigue_Increase × Fatigue_After_Halftime
+
 Where:
-- Fatigue rate increases with initial fatigue: k_effective = k_base * (1 + 2 * Initial_Fatigue)
-- k_base = 0.07 (base accumulation rate)
-- t0 = 35 (inflection point)
+Max_Fatigue_Increase = 1 (maximum 100% increase per half)
+Fatigue accumulation scales with current fatigue level
+Hard cap at 1.0 - cannot exceed complete exhaustion (Use a min(1,x)) to the toal fatigue
 
 #####  In-Game Rhythm Improvement
-Rhythm(t) = Rhythm_start + (1 - Rhythm_start) * (t / 90) * Improvement_Rate
-Where Improvement_Rate = 0.25 (can improve up to 25% during a match)
+Rhythm(t) = Rhythm_start + (1 - Rhythm_start) * Improvement_Rate * (1 - exp(-t / τ_inmatch))
+grows quickly at first then asymptotes
+Where:
+Improvement_Rate = 0.2 (can improve up to 20% during a match)
+τ_inmatch = 20
 
 ##### Halftime Recovery
-Fatigue_After_Halftime = Fatigue_At_45min * 0.7 (30% recovery)
+Fatigue_After_Halftime = Fatigue_At_45min * 0.85 (15% recovery)
 
 ##### Final Performance Model
-Effective_Off_RAxG = Base_Off_RAxG * (1 - ω_off * Fatigue(t)) * (0.7 + 0.3 * Rhythm(t))
-Effective_Def_RAxG = Base_Def_RAxG * (1 - ω_def * Fatigue(t)) * (0.7 + 0.3 * Rhythm(t))
+Effective_Off_RAxG = Base_Off_RAxG * (0.9 + 0.1 * Rhythm(t))
+Effective_Def_RAxG = Base_Def_RAxG * (1 + ω * Fatigue(t))
 
-Parameters to learn:
-- ω_off = 0.25 (fatigue hurts offense)
-- ω_def = 0.5 (fatigue hurts defense more)
-- k_base = 0.07 (base fatigue rate)
-- t0 = 35 (when fatigue accelerates)
-- Improvement_Rate = 0.25 (rhythm improvement)
+Where:
+- ω = 0.8 (fatigue hurts defense)
+
+Rhythm affects offense, and fatigue affects defense.
 
 #### Contextual XGBoost Model
 *For this do a research beforehand for each if there is really an impact.
