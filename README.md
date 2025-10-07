@@ -6,7 +6,7 @@ This model simulates each minute of a football (soccer) match with 2 outputs: Go
 
 ### Projected Expected Goals per Minute (PxG/M)
 Projected Expected Goals per Minute (PxG/M) is calculated by:
-#### 1. Regularized Adjusted Expected Goals (RAxG)
+#### Regularized Adjusted Expected Goals (RAxG)
 A ridge regression (linear model) that learns individual players´ offensive and defensive impact. Having more weight on recent matches, for up to matches for the preceding year. Data is acquired by FBREF and input data to the model is:
 - List of team A players
 - List of team B players
@@ -14,26 +14,48 @@ A ridge regression (linear model) that learns individual players´ offensive and
 - Total xG produced by team B
 - Total minutes played
 
-Weights:
-- **Primary data**: Last 12 months 
-- **Heavy weighting**: Last 3 months (50% of total weight)
+Time decay for more weight for recent games.
 
-#### 2. Contextual XGBoost Model
+#### Contextual XGBoost Model
 *For this do a research beforehand for each if there is really an impact.
 RAxG is then summed up to get the teams projected xG based on the RAxG alone. Then this value is added to an advanced XGBoost model, which integrates context awareness. This are the features used:
-- Total team RAxG (As baseline xG per minute)
-- Team_is_home (Bool)
-- Team_elevation_dif & Opp_elevation_dif (stadium elevation - avg(league, team))
-- Team_travel & Opp_travel (Distance in km)
-- Team_rest_days & Opp_rest_days (Number of rest days)
-- Match_state (-1.5, -1, 0, 1, 1.5) - if they are losing or wining by x goals.
-- Match_segment (1, 2, 3, 4, 5, 6) - segment is divided in 15-minutes interrvals, 1 being the first 15 minutes of the match.
-- Player_dif (-1.5, -1, 0, 1, 1.5) - if a team has a red card advantage or disadvantage. 
-- Temperature (°C) at kickoff
+- Total team RAxG (As baseline xG per 90 minutes)
+- Team_is_home = Bool
+- Elevation_dif = (stadium elevation - avg(league, team)) 
+- Travel_dif = Team_travel - Opp_travel (Distance in km). Home vs away = 0 - 500 = -500 | Away vs Home = 500 - 0 = 500.
+- Match_state (-1.5, -0.5, 0, 0.5, 1.5) - if they are losing or wining by x goals.
+- Player_dif (-1.5, -0.5, 0, 0.5, 1.5) - if a team has a red card advantage or disadvantage. 
+- Temperature_dif = (°C at kickoff) (actual temp - avg(league, team)) 
 - Is_Raining (Bool)
 - Match_time (aft, evening, night)
 
-The output is the final PxG/M. 
+The output is the final PxG/90. 
+
+#### Fatigue
+- Team_rest_days & Opp_rest_days (Number of rest days)
+- Match_segment (1, 2, 3, 4, 5, 6) - segment is divided in 15-minutes interrvals, 1 being the first 15 minutes of the match.
+Pre-Game:
+
+For each player, calculate Initial_Fatigue based on their recent minutes played (with time decay).
+
+In-Game (for each 15-minute segment s):
+
+Track Minutes: For each player on the pitch, update their in-game fatigue.
+
+Current_Fatigue(s) = Initial_Fatigue + Fatigue_Accumulated(Current_Minute)
+
+Apply a halftime recovery multiplier at the 45-minute mark.
+
+Handle Substitutions: A substitute comes on with their Initial_Fatigue and their Fatigue_Accumulated(t) clock starts from 0 at the minute they enter.
+
+Calculate Features: For each team, aggregate the player fatigue values into the new team-level fatigue features listed above.
+
+Model Integration:
+
+Replace the static "Total team RAxG" feature with the dynamic Team_A_RAxG(s) and Team_B_RAxG(s) calculated using the effective, fatigue-adjusted player impacts.
+
+Add all the new team-level fatigue features to your XGBoost model's feature set.
+
 ### Changes in PxG/M
 Now, you may ask "Why going into a simulation of each minute of the game?", and the answer is: A soccer match is dynamic, losing or winning affect how players think, that affects performance. Not only that, but other things changes, and that chnages the following actions. So here are the things that changes the PxG/M:
 #### Game state
