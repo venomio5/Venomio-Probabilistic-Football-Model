@@ -46,7 +46,7 @@ Improvement_Rate = 0.2 (can improve up to 20% during a match)
 ##### Halftime Recovery
 Fatigue_After_Halftime = Fatigue_At_45min * 0.85 (15% recovery)
 
-##### Final Performance Model
+##### Final Individual Output
 Effective_Off_RAxG = Base_Off_RAxG * (0.9 + 0.1 * Rhythm(t))
 Effective_Def_RAxG = Base_Def_RAxG * (1 + ω * Fatigue(t))
 
@@ -55,7 +55,7 @@ Where:
 
 Rhythm affects offense, and fatigue affects defense.
 
-#### Contextual XGBoost Model
+#### Team Performance
 *For this do a research beforehand for each if there is really an impact.
 RAxG is then summed up to get the teams projected xG based on the RAxG alone. Then this value is added to an advanced XGBoost model, which integrates context awareness. This are the features used:
 - Total team RAxG (As baseline xG per 90 minutes)
@@ -64,9 +64,6 @@ RAxG is then summed up to get the teams projected xG based on the RAxG alone. Th
 - Travel_dif = Team_travel - Opp_travel (Distance in km). Home vs away = 0 - 500 = -500 | Away vs Home = 500 - 0 = 500.
 - Match_state (-1.5, -0.5, 0, 0.5, 1.5) - if they are losing or wining by x goals.
 - Player_dif (-1.5, -0.5, 0, 0.5, 1.5) - if a team has a red card advantage or disadvantage. 
-- Temperature_dif = (°C at kickoff) (actual temp - avg(league, team)) 
-- Is_Raining (Bool)
-- Match_time (aft, evening, night)
 
 The output is the final PxG/90. 
 
