@@ -17,7 +17,6 @@ import math
 from rapidfuzz import process, fuzz
 import re
 import numpy as np
-from sklearn.model_selection import GridSearchCV
 from sklearn.linear_model import Ridge, RidgeCV
 from scipy import sparse
 import json
@@ -31,9 +30,7 @@ import copy
 import unicodedata
 from dotenv import load_dotenv
 
-load_dotenv()
-
-# --------------- Useful Classes, Functions & Variables ---------------
+# ------------------------------ Database ------------------------------
 class DatabaseManager:
     """
     Optimizes the initializaiton of a MySQLConnectionPool with UTF-8MB4 encoding.
@@ -59,8 +56,7 @@ class DatabaseManager:
         many=True
     )
     """
-    def __init__(
-        self,
+    def __init__(self,
         host: str,
         user: str,
         password: str,
@@ -120,6 +116,156 @@ class DatabaseManager:
                 cur.execute(sql, params or ())
             return cur.rowcount
 
+load_dotenv()
+host = os.getenv('DB_HOST')
+port = int(os.getenv('DB_PORT'))
+user = os.getenv('DB_USER')
+password = os.getenv('DB_PASSWORD')
+database = os.getenv('DB_NAME')
+
+try:
+    DB = DatabaseManager(host="localhost", user=user, password="venomio", database="vpfm")
+except Exception as e:
+    print(f"[INFO] Could not connect to DB: {e}")
+    DB = None
+
+# --------------- Useful Functions & Variables ---------------
+def get_team_name_by_id(id: int):
+    query = "SELECT name FROM teams WHERE id = %s"
+    result = DB.select(query, (id,))
+    if not result.empty:
+        return result.iloc[0]["name"]
+    return None
+
+def get_team_id_by_name(team_name: str, league_id: int):
+    query = "SELECT id FROM teams WHERE name = %s AND league_id = %s"
+    result = DB.select(query, (team_name, league_id))
+    if not result.empty:
+        return int(result.iloc[0]["id"])
+    return None
+
+def get_league_name_by_id(league_id: int):
+    query = "SELECT name FROM leagues WHERE id = %s"
+    result = DB.select(query, (league_id,))
+    if not result.empty:
+        return result.iloc[0]["name"]
+    return None
+
+def match_players(team_id, raw_source):
+    def _normalize(text: str) -> str:
+        """
+        1. Quita acentos.
+        2. Elimina todo lo que no sea letra o espacio.
+        3. Convierte a minúsculas y colapsa espacios.
+        """
+        text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+        text = re.sub(r"[^a-zA-Z\s]", " ", text)
+        return " ".join(text.lower().split())
+
+    if hasattr(raw_source, "toPlainText"):               
+        raw_text = raw_source.toPlainText()
+        raw_list = [line.strip() for line in raw_text.split("\n")]
+    elif isinstance(raw_source, (list, tuple)):         
+        raw_list = [str(line).strip() for line in raw_source]
+    else:
+        raise TypeError("raw_source must be QTextEdit-like or list/tuple")
+
+    clean_list = [l for l in raw_list if l and not any(c.isdigit() for c in l)]
+
+    unmatched_starters = clean_list[:11]
+    unmatched_benchers = clean_list[11:]
+
+    player_sql_query = """
+        SELECT  player_id,
+                SUBSTRING_INDEX(player_id, '_', 1) AS player_name
+        FROM    players_data
+        WHERE   current_team = %s;
+    """
+    players_df = DB.select(player_sql_query, (team_id,))
+
+    id_to_name = {row.player_id: _normalize(row.player_name)
+                  for row in players_df.itertuples(index=False)}
+    remaining_ids, remaining_names = list(id_to_name.keys()), list(id_to_name.values())
+
+    def _pick_id(raw_name: str, thr: int):
+        norm = _normalize(raw_name)
+        match = process.extractOne(norm, remaining_names,
+                                   scorer=fuzz.token_set_ratio,
+                                   score_cutoff=thr)
+        if not match:
+            return None
+        idx = remaining_names.index(match[0])
+        remaining_names.pop(idx) 
+        return remaining_ids.pop(idx)
+
+    def _resolve(names):
+        out, pending, thr = [], names, 85
+        while pending and thr >= 60: 
+            still = []
+            for n in pending:
+                pid = _pick_id(n, thr)
+                (out if pid else still).append(pid or n)
+            pending, thr = still, thr - 10
+        return out
+
+    matched_starters = _resolve(unmatched_starters)
+    matched_benchers = _resolve(unmatched_benchers)
+    return matched_starters, matched_benchers
+
+def send_lineup_to_db(players_list, schedule_id, team):
+    column_name = f"{team}_players_data"
+    sql_query = f"UPDATE schedule_data SET {column_name} = %s WHERE schedule_id = %s"
+    DB.execute(sql_query, (json.dumps(players_list, ensure_ascii=False), schedule_id))
+
+def get_saved_lineup(schedule_id, team):
+    column_name = f"{team}_players_data"
+    sql_query = f"SELECT {column_name} FROM schedule_data WHERE schedule_id = %s"
+    result = DB.select(sql_query, (schedule_id,))
+
+    if result.empty:
+        return []
+
+    raw_value = result.iloc[0][column_name]
+
+    if not raw_value:
+        return []
+
+    try:
+        return json.loads(raw_value)
+    except (TypeError, json.JSONDecodeError):
+        return []
+
+def load_model(name: str) -> tuple[xgb.Booster, list[str]]:
+    booster_path  = f'models/{name}_booster.json'
+    columns_path  = f'models/{name}_columns.json'
+
+    booster = xgb.Booster()
+    booster.load_model(booster_path)
+
+    with open(columns_path, 'r') as fh:
+        columns = json.load(fh)
+
+    return booster, columns
+
+def get_match_title(id: int):
+    sql_query = "SELECT home_team_id, away_team_id FROM schedule WHERE id = %s"
+    result = DB.select(sql_query, (id,))
+
+    if not result.empty:
+        home_name = get_team_name_by_id(int(result.iloc[0]["home_team_id"]))
+        away_name = get_team_name_by_id(int(result.iloc[0]["away_team_id"]))
+
+        return f"{home_name} vs {away_name}"  
+    else:
+        return id
+
+def flip(series: pd.Series) -> pd.Series:
+    flipped = -series
+    flipped[series == 0] = 0.0
+    return flipped
+
+_ID_RE = re.compile(r"(?P<name>.+?)_\d+_[A-Z]{1,2}$")
+# ------------------------------ Fetch & Remove Data ------------------------------
 class Fill_Teams_Data:
     """
     - Fetches the fixture URL from the league_data table.
@@ -270,154 +416,6 @@ class Fill_Teams_Data:
         driver.quit()
         return fixtures_url
 
-host = os.getenv('DB_HOST')
-port = int(os.getenv('DB_PORT'))
-user = os.getenv('DB_USER')
-password = os.getenv('DB_PASSWORD')
-database = os.getenv('DB_NAME')
-
-try:
-    DB = DatabaseManager(host="localhost", user=user, password="venomio", database="vpfm")
-except Exception as e:
-    print(f"[INFO] No se pudo conectar a la DB local: {e}")
-    DB = None
-
-def get_team_name_by_id(id):
-    query = "SELECT name FROM teams WHERE id = %s"
-    result = DB.select(query, (id,))
-    if not result.empty:
-        return result.iloc[0]["name"]
-    return None
-
-def get_team_id_by_name(team_name, league_id):
-    query = "SELECT id FROM teams WHERE name = %s AND league_id = %s"
-    result = DB.select(query, (team_name, league_id))
-    if not result.empty:
-        return int(result.iloc[0]["id"])
-    return None
-
-def get_league_name_by_id(league_id):
-    query = "SELECT name FROM leagues WHERE id = %s"
-    result = DB.select(query, (league_id,))
-    if not result.empty:
-        return result.iloc[0]["name"]
-    return None
-
-def match_players(team_id, raw_source):
-    def _normalize(text: str) -> str:
-        """
-        1. Quita acentos.
-        2. Elimina todo lo que no sea letra o espacio.
-        3. Convierte a minúsculas y colapsa espacios.
-        """
-        text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
-        text = re.sub(r"[^a-zA-Z\s]", " ", text)
-        return " ".join(text.lower().split())
-
-    if hasattr(raw_source, "toPlainText"):               
-        raw_text = raw_source.toPlainText()
-        raw_list = [line.strip() for line in raw_text.split("\n")]
-    elif isinstance(raw_source, (list, tuple)):         
-        raw_list = [str(line).strip() for line in raw_source]
-    else:
-        raise TypeError("raw_source must be QTextEdit-like or list/tuple")
-
-    clean_list = [l for l in raw_list if l and not any(c.isdigit() for c in l)]
-
-    unmatched_starters = clean_list[:11]
-    unmatched_benchers = clean_list[11:]
-
-    player_sql_query = """
-        SELECT  player_id,
-                SUBSTRING_INDEX(player_id, '_', 1) AS player_name
-        FROM    players_data
-        WHERE   current_team = %s;
-    """
-    players_df = DB.select(player_sql_query, (team_id,))
-
-    id_to_name = {row.player_id: _normalize(row.player_name)
-                  for row in players_df.itertuples(index=False)}
-    remaining_ids, remaining_names = list(id_to_name.keys()), list(id_to_name.values())
-
-    def _pick_id(raw_name: str, thr: int):
-        norm = _normalize(raw_name)
-        match = process.extractOne(norm, remaining_names,
-                                   scorer=fuzz.token_set_ratio,
-                                   score_cutoff=thr)
-        if not match:
-            return None
-        idx = remaining_names.index(match[0])
-        remaining_names.pop(idx) 
-        return remaining_ids.pop(idx)
-
-    def _resolve(names):
-        out, pending, thr = [], names, 85
-        while pending and thr >= 60: 
-            still = []
-            for n in pending:
-                pid = _pick_id(n, thr)
-                (out if pid else still).append(pid or n)
-            pending, thr = still, thr - 10
-        return out
-
-    matched_starters = _resolve(unmatched_starters)
-    matched_benchers = _resolve(unmatched_benchers)
-    return matched_starters, matched_benchers
-
-def send_lineup_to_db(players_list, schedule_id, team):
-    column_name = f"{team}_players_data"
-    sql_query = f"UPDATE schedule_data SET {column_name} = %s WHERE schedule_id = %s"
-    DB.execute(sql_query, (json.dumps(players_list, ensure_ascii=False), schedule_id))
-
-def get_saved_lineup(schedule_id, team):
-    column_name = f"{team}_players_data"
-    sql_query = f"SELECT {column_name} FROM schedule_data WHERE schedule_id = %s"
-    result = DB.select(sql_query, (schedule_id,))
-
-    if result.empty:
-        return []
-
-    raw_value = result.iloc[0][column_name]
-
-    if not raw_value:
-        return []
-
-    try:
-        return json.loads(raw_value)
-    except (TypeError, json.JSONDecodeError):
-        return []
-
-def save_model(name: str, booster: xgb.Booster, columns: list[str]) -> None:
-    booster.save_model(f'models/{name}_booster.json')
-    with open(f'models/{name}_columns.json', 'w') as fh:
-        json.dump(columns, fh)
-
-def load_model(name: str) -> tuple[xgb.Booster, list[str]]:
-    booster_path  = f'models/{name}_booster.json'
-    columns_path  = f'models/{name}_columns.json'
-
-    booster = xgb.Booster()
-    booster.load_model(booster_path)
-
-    with open(columns_path, 'r') as fh:
-        columns = json.load(fh)
-
-    return booster, columns
-
-def get_match_title(id):
-    sql_query = "SELECT home_team_id, away_team_id FROM schedule WHERE id = %s"
-    result = DB.select(sql_query, (id,))
-
-    if not result.empty:
-        home_name = get_team_name_by_id(int(result.iloc[0]["home_team_id"]))
-        away_name = get_team_name_by_id(int(result.iloc[0]["away_team_id"]))
-
-        return f"{home_name} vs {away_name}"  
-    else:
-        return id
-
-_ID_RE = re.compile(r"(?P<name>.+?)_\d+_[A-Z]{1,2}$")
-# ------------------------------ Fetch & Remove Data ------------------------------
 class UpdateSchedule:
     def __init__(self, from_date):
         self.from_date = from_date
@@ -1603,23 +1601,25 @@ class Extract_Data:
         DB.execute(delete_query, (self.a_year_ago_date,))
 
 # ------------------------------ Process data ------------------------------
-class Process_Data:
+class ProcessData:
     """
     Process players data
     """
-    def __init__(self, current_date=datetime.now()):
+    def __init__(self, current_date: datetime = datetime.now()):
         self.current_date = current_date
         DB.execute("TRUNCATE TABLE players")
 
-        self._insert_players_basics()
-        self._update_players_raxg_coef()
-        self._update_players_totals()
-
-        self._update_reg_totals()
-
-        self.train_context_ras_model()
-        self.train_refined_sq_model()
-        self.train_post_shot_goal_model()
+        steps = [
+            ("Inserting players basics and unifying duplicates", self._insert_players_basics),
+            ("Updating players raxg coef", self._update_players_raxg_coef),
+            ("Updating players totals", self._update_players_totals),
+            ("Updating reg totals", self._update_reg_totals),
+            ("Training contextual raxg xg model", self._train_contextual_raxg_xg_model)
+        ]
+        
+        for desc, step_func in tqdm(steps, desc="Progress"):
+            print(desc)
+            step_func()
 
     def _insert_players_basics(self):
         """
@@ -1635,11 +1635,14 @@ class Process_Data:
         
         if result.empty:
             return 0
+        
+        result['teamA_players'] = result['teamA_players'].apply(lambda v: v if isinstance(v, list) else ast.literal_eval(v))
+        result['teamB_players'] = result['teamB_players'].apply(lambda v: v if isinstance(v, list) else ast.literal_eval(v))
 
         players_set = set()
         for _, row in result.iterrows():
-            teamA_players = json.loads(row["teamA_players"])
-            teamB_players = json.loads(row["teamB_players"])
+            teamA_players = row['teamA_players'] if isinstance(row['teamA_players'], list) else [row['teamA_players']]
+            teamB_players = row['teamB_players'] if isinstance(row['teamB_players'], list) else [row['teamB_players']]
             home_team = int(row["home_team_id"])
             away_team = int(row["away_team_id"])
         
@@ -1649,10 +1652,10 @@ class Process_Data:
             for player in teamB_players:
                 players_set.add((player, away_team))
         
-        insert_sql = "INSERT IGNORE INTO players (player_id, team_id) VALUES (%s, %s)"
+        insert_sql = "INSERT IGNORE INTO players (id, team_id) VALUES (%s, %s)"
         DB.execute(insert_sql, list(players_set), many=True)
 
-        self._unify_duplicated_players()
+        #self._unify_duplicated_players()
 
     def _unify_duplicated_players(self):
         """
@@ -1754,7 +1757,7 @@ class Process_Data:
         Having more weight on recent matches, for up to matches for the preceding year.
         It updates players coefficients per league
         """
-        leagues_df = DB.select("SELECT id, date FROM leagues WHERE is_active = 1")
+        leagues_df = DB.select("SELECT id FROM leagues WHERE is_active = 1")
 
         for lid in tqdm(leagues_df['id'].tolist(), desc="League RAxG Coeff"):
             matches_query = """
@@ -1840,8 +1843,6 @@ class Process_Data:
                 sample_weights.append(np.sqrt(minutes * time_weight))
                 row_num += 1
 
-            alphas = np.logspace(-3, 3, 13)
-
             X = sparse.csr_matrix((data_vals, (rows, cols)), shape=(row_num, 2 * num_players))
             y_array = np.array(y)
             sample_weights_array = np.array(sample_weights)
@@ -1849,13 +1850,18 @@ class Process_Data:
             y_mean = np.average(y_array, weights=sample_weights_array)
             y_centered = y_array - y_mean
 
-            ridge_cv = RidgeCV(alphas=alphas, fit_intercept=True, cv=5, store_cv_values=True)
+
+            alphas = np.logspace(-3, 3, 13)
+            ridge_cv = RidgeCV(alphas=alphas, fit_intercept=True, cv=5)
             ridge_cv.fit(X, y_centered, sample_weight=sample_weights_array)
 
-            intercept_adjusted = ridge_cv.intercept_ + y_mean
+            ridge = Ridge(alpha=ridge_cv.alpha_, fit_intercept=True)
+            ridge.fit(X, y_centered, sample_weight=sample_weights_array)
 
-            offensive_ratings = dict(zip(players, ridge_cv.coef_[:num_players]))
-            defensive_ratings = dict(zip(players, ridge_cv.coef_[num_players:]))
+            intercept_adjusted = ridge.intercept_ + y_mean
+
+            offensive_ratings = dict(zip(players, ridge.coef_[:num_players]))
+            defensive_ratings = dict(zip(players, ridge.coef_[num_players:]))
 
             for player in players:
                 off_xg_coef = offensive_ratings[player]
@@ -1875,7 +1881,7 @@ class Process_Data:
         """
         players_df = DB.select("SELECT DISTINCT id FROM players")
         
-        for pid in tqdm(players_df["id"].tolist(), desc="Total Players:"):
+        for pid in tqdm(players_df["id"].tolist(), desc="Total Players"):
             reg_query = """
             SELECT
                 COALESCE(SUM(minutes_played), 0) AS minutes_played,
@@ -1950,162 +1956,155 @@ class Process_Data:
             ))
 
     def _update_reg_totals(self):
-        sql = """
+        """
+        Updates regularization data in leagues
+        """
+        update_sql = """
         WITH reg AS (
         SELECT 
-            match_id,
+            mpb.match_id,
+            mg.league_id,
             COALESCE(SUM(fouls_committed),0) AS total_fouls,
             COALESCE(SUM(yellow_cards),0)    AS yellow_cards,
             COALESCE(SUM(red_cards),0)       AS red_cards
-        FROM vpfm.match_player_breakdown
+        FROM match_player_breakdown mpb
+        LEFT JOIN match_general mg
+            ON mpb.match_id = mg.id
         GROUP BY match_id
-        ) 
-        SELECT * 
+        ), league_totals AS (
+        SELECT
+            league_id,
+            COUNT(*) AS total_matches,
+            SUM(total_fouls) AS total_fouls,
+            SUM(yellow_cards) AS yellow_cards,
+            SUM(red_cards) AS red_cards
         FROM reg
+        GROUP BY league_id
+        )
+        UPDATE leagues l
+        JOIN league_totals lt
+            ON l.id = lt.league_id
+        SET
+            foul_rate = ROUND(total_fouls/total_matches, 1),
+            yc_rate = ROUND(yellow_cards/total_matches, 1),
+            rc_rate = ROUND(red_cards/total_matches, 1)
         """
-        DB.execute(sql)
+        DB.execute(update_sql)
 
-        sql = """
-        INSERT INTO referee_data
-                (referee_name, fouls, yellow_cards, red_cards, matches_played)
-
-        SELECT  referee_name,
-                SUM(COALESCE(total_fouls ,0))  AS fouls,
-                SUM(COALESCE(yellow_cards,0))  AS yellow_cards,
-                SUM(COALESCE(red_cards   ,0))  AS red_cards,
-                COUNT(*)                       AS matches_played
-        FROM    match_info
-        GROUP BY referee_name
-
-        ON DUPLICATE KEY UPDATE
-            fouls          = VALUES(fouls),
-            yellow_cards   = VALUES(yellow_cards),
-            red_cards      = VALUES(red_cards),
-            matches_played = VALUES(matches_played);
+    def _train_contextual_raxg_xg_model(self):
         """
-        DB.execute(sql)
-
-    def train_context_ras_model(self):
-        print("Training RAS")
-        def flip(series: pd.Series) -> pd.Series:
-            flipped = -series
-            flipped[series == 0] = 0.0
-            return flipped
-
-        sql_query = """
-            SELECT 
-                mi.match_id,
-                mi.home_team_id,
-                mi.away_team_id,
-                mi.home_elevation_dif,
-                mi.away_elevation_dif,
-                mi.away_travel,
-                mi.home_rest_days,
-                mi.away_rest_days,
-                mi.temperature_c,
-                mi.is_raining,
-                mi.date,
-                md.teamA_pdras,
-                md.teamB_pdras,
-                md.minutes_played,
-                md.match_state,
-                md.match_segment,
-                md.player_dif,
-                (md.teamA_headers + md.teamA_footers) AS home_shots,
-                (md.teamB_headers + md.teamB_footers) AS away_shots
-            FROM match_info mi
-            JOIN match_detail md ON mi.match_id = md.match_id
+        Train a contextual expected goals (xG) XGBOOST model using regularized adjusted xG (RAxG) as baseline.
+        
+        This model incorporates contextual factors like elevation differences, travel distance,
+        match state, and player quality differences to predict team xG performance. The model
+        uses Poisson regression with RAxG as base margin and applies sample weighting based
+        on minutes played.
         """
-        context_df = DB.select(sql_query)
+        # DELETE THE SUMS AND THE GROUP WHEN THATS FIXED ON THE DAT SCRAPING SECTION
+        data_query = """ 
+        SELECT 
+            mg.id,
+            mg.home_elevation_dif,
+            mg.away_elevation_dif,
+            mg.away_travel,
+            mg.date,
+            SUM(md.teamA_pd_raxg) AS teamA_pd_raxg,
+            SUM(md.teamB_pd_raxg) AS teamB_pd_raxg,
+            SUM(md.minutes_played) AS minutes_played,
+            md.match_state,
+            md.player_dif,
+            SUM(md.teamA_xg) AS teamA_xg,
+            SUM(md.teamB_xg) AS teamB_xg
+        FROM match_general mg
+        LEFT JOIN match_detailed md
+            ON mg.id = md.match_id
+        GROUP BY mg.id, md.match_state, md.player_dif
+        """
+        context_df = DB.select(data_query)
+        context_df = context_df.replace([np.inf, -np.inf], np.nan).dropna()
+        context_df['home_elevation_dif']  = pd.to_numeric(context_df['home_elevation_dif'],  errors='raise').astype(int)
+        context_df['away_elevation_dif']  = pd.to_numeric(context_df['away_elevation_dif'],  errors='raise').astype(int)
+        context_df['away_travel']  = pd.to_numeric(context_df['away_travel'],  errors='raise').astype(int)
         context_df['date'] = pd.to_datetime(context_df['date'])
+        context_df['teamA_pd_raxg']  = pd.to_numeric(context_df['teamA_pd_raxg'],  errors='raise').astype(float)
+        context_df['teamB_pd_raxg']  = pd.to_numeric(context_df['teamB_pd_raxg'],  errors='raise').astype(float)
+        context_df['minutes_played']  = pd.to_numeric(context_df['minutes_played'],  errors='raise').astype(int)
         context_df['match_state'] = pd.to_numeric(context_df['match_state'], errors='raise').astype(float)
         context_df['player_dif']  = pd.to_numeric(context_df['player_dif'],  errors='raise').astype(float)
+        context_df['teamA_xg']  = pd.to_numeric(context_df['teamA_xg'],  errors='raise').astype(float)
+        context_df['teamB_xg']  = pd.to_numeric(context_df['teamB_xg'],  errors='raise').astype(float)
+
 
         home_df = pd.DataFrame({
-            'shots'              : context_df['home_shots'],
-            'total_ras'          : context_df['teamA_pdras'],
+            'xg'                 : context_df['teamA_xg'],
+            'pd_raxg'            : context_df['teamA_pd_raxg'],
             'minutes_played'     : context_df['minutes_played'],
-            'team_is_home'       : 1,
-            'team_elevation_dif' : context_df['home_elevation_dif'],
-            'opp_elevation_dif'  : context_df['away_elevation_dif'],
-            'team_travel'        : 0,
-            'opp_travel'         : context_df['away_travel'],
-            'team_rest_days'     : context_df['home_rest_days'],
-            'opp_rest_days'      : context_df['away_rest_days'],
+            'is_home'            : 1,
+            'elevation_dif'      : context_df['home_elevation_dif'],
+            'travel'             : -context_df['away_travel'],
             'match_state'        : context_df['match_state'],
-            'match_segment'      : context_df['match_segment'],
-            'player_dif'         : context_df['player_dif'],
-            'temperature_c'      : context_df['temperature_c'],
-            'is_raining'         : context_df['is_raining'],
-            'match_time'         : context_df['date'].apply(_bucket_time)
+            'player_dif'         : context_df['player_dif']
         })
 
         away_df = pd.DataFrame({
-            'shots'              : context_df['away_shots'],
-            'total_ras'          : context_df['teamB_pdras'],
+            'xg'                 : context_df['teamB_xg'],
+            'pd_raxg'            : context_df['teamB_pd_raxg'],
             'minutes_played'     : context_df['minutes_played'],
-            'team_is_home'       : 0,
-            'team_elevation_dif' : context_df['away_elevation_dif'],
-            'opp_elevation_dif'  : context_df['home_elevation_dif'],
-            'team_travel'        : context_df['away_travel'],
-            'opp_travel'         : 0,
-            'team_rest_days'     : context_df['away_rest_days'],
-            'opp_rest_days'      : context_df['home_rest_days'],
+            'is_home'            : 0,
+            'elevation_dif'      : context_df['away_elevation_dif'],
+            'travel'             : context_df['away_travel'],
             'match_state'        : flip(context_df['match_state']),
-            'match_segment'      : context_df['match_segment'],
-            'player_dif'         : flip(context_df['player_dif']),
-            'temperature_c'      : context_df['temperature_c'],
-            'is_raining'         : context_df['is_raining'],
-            'match_time'         : context_df['date'].apply(_bucket_time)
+            'player_dif'         : flip(context_df['player_dif'])
         })
         
-        df = pd.concat([home_df, away_df], ignore_index=True)
+        concat_df = pd.concat([home_df, away_df], ignore_index=True)
+        clean_df = concat_df.copy()
+        clean_df = clean_df[clean_df['minutes_played'] >= 10]
 
-        df['shots_per_min']     = df['shots']      / df['minutes_played']
-        df['ras_per_min']       = df['total_ras']  / df['minutes_played']
+        clean_df['xg90'] = (clean_df['xg'] / clean_df['minutes_played']) * 90
+        clean_df['raxg90'] = (clean_df['pd_raxg'] / clean_df['minutes_played']) * 90
 
-        cat_cols  = ['match_state', 'player_dif', 'match_time']
-        bool_cols = ['team_is_home', 'is_raining']
-        num_cols  = ['team_elevation_dif', 'opp_elevation_dif', 'team_travel', 'opp_travel', 'team_rest_days', 'opp_rest_days', 'temperature_c', 'match_segment']
-
-        df['match_segment'] = df['match_segment'].astype(int)         
-        required_cols = cat_cols + bool_cols + num_cols + ['shots', 'total_ras']
-        missing_cols  = [c for c in ['shots', 'total_ras'] if c not in df.columns]
+        cat_cols  = ['match_state', 'player_dif']
+        bool_cols = ['is_home']
+        num_cols  = ['elevation_dif', 'travel']
+      
+        missing_cols  = [c for c in ['xg90', 'raxg90'] if c not in clean_df.columns]
         if missing_cols:
             raise ValueError(f'Missing expected columns: {missing_cols}')
-
-        df = df.dropna(subset=[c for c in required_cols if c in df.columns])
+        
+        sample_weights = np.sqrt(clean_df['minutes_played'] / clean_df['minutes_played'].max())
 
         for c in cat_cols:
-            df[c] = df[c].astype(str).str.lower()
+            clean_df[c] = clean_df[c].astype(str).str.lower()
 
-        df[bool_cols] = df[bool_cols].astype(int)
+        clean_df[bool_cols] = clean_df[bool_cols].astype(int)
 
-        X_cat = pd.get_dummies(df[cat_cols], prefix=cat_cols)
-        X     = pd.concat([df[num_cols], df[bool_cols], X_cat], axis=1)
+        X_cat = pd.get_dummies(clean_df[cat_cols], prefix=cat_cols)
+        X = pd.concat([clean_df[num_cols], clean_df[bool_cols], X_cat], axis=1)
 
-        y           = df['shots_per_min']
-        base_margin = np.log(df['ras_per_min'].clip(lower=1e-6))
+        y = clean_df['xg90']
+        base_margin = np.log(clean_df['raxg90'].clip(lower=0.01))
 
-        dtrain = xgb.DMatrix(X, label=y, base_margin=base_margin)
+        dtrain = xgb.DMatrix(X, label=y, base_margin=base_margin, weight=sample_weights)
 
         params = dict(objective='count:poisson',
                         tree_method='hist',
-                        max_depth=6,
+                        max_depth=4,
                         eta=0.03,
                         subsample=1.0,
                         colsample_bytree=1.0,
-                        min_child_weight=10,
-                        gamma=2,
-                        reg_alpha=1,
-                        reg_lambda=2)  
+                        min_child_weight=15,
+                        gamma=1,
+                        reg_alpha=0.5,
+                        reg_lambda=1.5,
+                        max_delta_step=1)
         
         cv_results = xgb.cv(
             params,
             dtrain,
-            num_boost_round=500,
+            num_boost_round=1000,
             nfold=5,
-            early_stopping_rounds=100,
+            early_stopping_rounds=50,
             metrics='poisson-nloglik',
             verbose_eval=False
         )
@@ -2113,152 +2112,11 @@ class Process_Data:
         optimal_rounds = len(cv_results)
         booster = xgb.train(params, dtrain, num_boost_round=optimal_rounds)
 
-        _save(f'cras', booster, X.columns.tolist())
+        booster.save_model('Database/craxg_booster.json')
+        with open('Database/craxg_columns.json', 'w') as fh:
+            json.dump(X.columns.tolist(), fh)
 
-    def train_refined_sq_model(self) -> tuple[xgb.Booster, list[str]]:
-        print("Training RSQ")
-        sql = """
-            SELECT
-                total_plsqa,
-                shooter_sq,
-                assister_sq,
-                CASE WHEN match_state < 0 THEN 'Trailing'
-                     WHEN match_state = 0 THEN 'Level'
-                     ELSE 'Leading' END AS match_state,
-                CASE WHEN player_dif < 0 THEN 'Neg'
-                     WHEN player_dif = 0 THEN 'Neu'
-                     ELSE 'Pos' END      AS player_dif,
-                xg
-            FROM shots_data
-            WHERE total_plsqa IS NOT NULL
-        """
-        df = DB.select(sql)
-
-        cat_cols = ['match_state', 'player_dif']
-        num_cols = ['total_plsqa', 'shooter_sq', 'assister_sq']
-        df[num_cols] = df[num_cols].apply(pd.to_numeric, errors='coerce')
-        for c in cat_cols:
-            df[c] = df[c].astype(str)
-
-        X_cat = pd.get_dummies(df[cat_cols], prefix=cat_cols, dummy_na=True)
-        X     = pd.concat([df[num_cols], X_cat], axis=1).astype(float)
-        y     = df['xg'].astype(float)
-
-        dtrain = xgb.DMatrix(X, label=y)
-        params = dict(objective='reg:logistic',
-                      eval_metric='logloss',
-                      tree_method='hist',
-                      max_depth=4,
-                      eta=0.03,
-                      subsample=1.0,
-                      colsample_bytree=1.0,
-                      min_child_weight=2,
-                      gamma=1,           
-                      reg_alpha=0.5,        
-                      reg_lambda=2) 
-
-        cv_results = xgb.cv(
-            params,
-            dtrain,
-            num_boost_round=1000,
-            nfold=5,
-            early_stopping_rounds=100,
-            metrics='logloss',
-            verbose_eval=False
-        )
-        
-        optimal_rounds = len(cv_results)
-        booster = xgb.train(params, dtrain, num_boost_round=optimal_rounds)
-
-        _save('rsq', booster, X.columns.tolist())
-
-    def train_post_shot_goal_model(self) -> tuple[xgb.Booster, list[str]]:
-        print("Training PSXG")
-        sql = """
-            SELECT
-                sd.RSQ,
-                sd.shooter_A,
-                sd.GK_A,
-                CASE WHEN sd.team_id = mi.home_team_id
-                     THEN 1 ELSE 0 END                       AS team_is_home,
-                CASE WHEN sd.team_id = mi.home_team_id
-                     THEN mi.home_elevation_dif
-                     ELSE mi.away_elevation_dif END          AS team_elevation_dif,
-                CASE WHEN sd.team_id = mi.home_team_id
-                     THEN 0 ELSE mi.away_travel END          AS team_travel,
-                CASE WHEN sd.team_id = mi.home_team_id
-                     THEN mi.home_rest_days
-                     ELSE mi.away_rest_days END              AS team_rest_days,
-                mi.temperature_c,
-                mi.is_raining,
-                mi.date,
-                sd.outcome
-            FROM   shots_data sd
-            JOIN   match_info mi ON mi.match_id = sd.match_id
-        """
-        df = DB.select(sql)
-
-        df['date']       = pd.to_datetime(df['date'])
-        df['match_time'] = df['date'].apply(lambda t: 'aft' if 9 <= t.hour < 14
-                                                      else ('evening' if 14 <= t.hour < 19
-                                                            else 'night'))
-
-        cat_cols  = ['match_time']
-        bool_cols = ['team_is_home', 'is_raining']
-        num_cols  = ['RSQ', 'shooter_A', 'GK_A',
-                     'team_elevation_dif', 'team_travel',
-                     'team_rest_days', 'temperature_c']
-
-        df[num_cols] = df[num_cols].apply(pd.to_numeric, errors='coerce')
-
-        df[bool_cols] = (
-            df[bool_cols]
-            .replace([np.inf, -np.inf], np.nan)
-            .fillna(0) 
-            .astype(int)           
-        )
-
-        df.replace([np.inf, -np.inf], np.nan, inplace=True)
-        df = df.dropna(subset=num_cols)
-
-        X_cat = pd.get_dummies(df[cat_cols], prefix=cat_cols, dummy_na=True)
-        X     = pd.concat([df[num_cols + bool_cols], X_cat], axis=1).astype(float)
-        y     = df['outcome'].astype(int)
-
-        pos_rate         = y.mean()
-        scale_pos_weight = (1 - pos_rate) / pos_rate if pos_rate > 0 else 1.0
-
-        dtrain = xgb.DMatrix(X, label=y)
-        params = dict(objective='binary:logistic',
-                      eval_metric='logloss',
-                      base_score = pos_rate,
-                      scale_pos_weight = scale_pos_weight,
-                      tree_method='hist',
-                      max_depth=5,
-                      eta=0.03,
-                      subsample=1.0,
-                      colsample_bytree=1.0,
-                      min_child_weight=6,
-                      gamma=1,
-                      reg_alpha=1,
-                      reg_lambda=2)
-        
-        cv_results = xgb.cv(
-            params,
-            dtrain,
-            num_boost_round=1000,
-            nfold=5,
-            stratified=True,
-            early_stopping_rounds=100,
-            verbose_eval=False
-        )
-
-        optimal_rounds = len(cv_results)
-        booster = xgb.train(params, dtrain, num_boost_round=optimal_rounds)
-
-        _save('psxg', booster, X.columns.tolist())
-
-# ------------------------------ Monte Carlo Sim ------------------------------
+# ------------------------------ Simulation ------------------------------
 class MonteCarloSim:
     """
     Match simulation
@@ -3736,7 +3594,7 @@ class AutoSS:
 
         return best_url
 
-# ------------------------------ Trading ------------------------------
+# ------------------------------ Trading (DELETE THIS) ------------------------------
 class MatchTrade:
     def __init__(self, matched_bets):
         self.matched_bets = matched_bets
