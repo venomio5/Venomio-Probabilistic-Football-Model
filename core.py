@@ -1613,13 +1613,10 @@ class Process_Data:
 
         self._insert_players_basics()
         self._update_players_raxg_coef()
+        self._update_players_totals()
 
-        self.update_players_totals()
-        
-        self.update_players_xg_coef()
-        self.update_shots()
-        self.update_match_info_referee_totals()
-        self.update_referee_data_totals()
+        self._update_reg_totals()
+
         self.train_context_ras_model()
         self.train_refined_sq_model()
         self.train_post_shot_goal_model()
@@ -1872,87 +1869,63 @@ class Process_Data:
 
             DB.execute("UPDATE leagues SET xg_baseline = %s WHERE id = %s", (float(intercept_adjusted), lid))
 
-    def update_players_totals(self):
+    def _update_players_totals(self):
         """
-        Function to sum all information from all players into players_data (referee_data) from match breakdown (match_info).
+        Sums all data from all players
         """
-        players_id_df = DB.select("SELECT DISTINCT player_id FROM players_data")
-        print("Updating players totals")
+        players_df = DB.select("SELECT DISTINCT id FROM players")
         
-        for player_id in tqdm(players_id_df["player_id"].tolist(), desc="Total de jugadores (Totales)"):
-            pagg_query = """
+        for pid in tqdm(players_df["id"].tolist(), desc="Total Players:"):
+            reg_query = """
             SELECT
-                COALESCE(SUM(headers), 0) AS headers,
-                COALESCE(SUM(footers), 0) AS footers,
-                COALESCE(SUM(key_passes), 0) AS key_passes,
-                COALESCE(SUM(non_assisted_footers), 0) AS non_assisted_footers,
                 COALESCE(SUM(minutes_played), 0) AS minutes_played,
-                COALESCE(SUM(hxg), 0) AS hxg,
-                COALESCE(SUM(fxg), 0) AS fxg,
-                COALESCE(SUM(kp_hxg), 0) AS kp_hxg,
-                COALESCE(SUM(kp_fxg), 0) AS kp_fxg,
-                COALESCE(SUM(hpsxg), 0) AS hpsxg,
-                COALESCE(SUM(fpsxg), 0) AS fpsxg,
-                COALESCE(SUM(gk_psxg), 0) AS gk_psxg,
-                COALESCE(SUM(gk_ga), 0) AS gk_ga,
                 COALESCE(SUM(fouls_committed), 0) AS fouls_committed,
                 COALESCE(SUM(fouls_drawn), 0) AS fouls_drawn,
                 COALESCE(SUM(yellow_cards), 0) AS yellow_cards,
                 COALESCE(SUM(red_cards), 0) AS red_cards
-            FROM match_breakdown
+            FROM match_player_breakdown
             WHERE player_id = %s
             """
-            pagg_result = DB.select(pagg_query, (player_id,))
-            if pagg_result.empty:
+            reg_result = DB.select(reg_query, (pid,))
+
+            if reg_result.empty:
                 continue
 
-            row = pagg_result.iloc[0]
+            player_row = reg_result.iloc[0]
 
-            status_query = """
+            pt_query = """
             SELECT in_status, out_status, sub_in, sub_out
-            FROM match_breakdown
+            FROM match_player_breakdown
             WHERE player_id = %s
             """
-            status_result = DB.select(status_query, (player_id,))
+            pt_result = DB.select(pt_query, (pid,))
             
             in_status_dict = {"trailing": 0, "level": 0, "leading": 0}
             out_status_dict = {"trailing": 0, "level": 0, "leading": 0}
             subs_in_list = []
             subs_out_list = []
             
-            for _, status_row in status_result.iterrows():
-                in_stat = status_row["in_status"]
-                out_stat = status_row["out_status"]
+            for _, pt_row in pt_result.iterrows():
+                in_stat = pt_row["in_status"]
+                out_stat = pt_row["out_status"]
 
                 if in_stat in in_status_dict:
                     in_status_dict[in_stat] += 1
                 if out_stat in out_status_dict:
                     out_status_dict[out_stat] += 1
 
-                sub_in_val = status_row["sub_in"]
+                sub_in_val = pt_row["sub_in"]
                 if pd.notna(sub_in_val) and sub_in_val != "":
                     subs_in_list.append(sub_in_val)
 
-                sub_out_val = status_row["sub_out"]
+                sub_out_val = pt_row["sub_out"]
                 if pd.notna(sub_out_val) and sub_out_val != "":
                     subs_out_list.append(sub_out_val)
 
-            pupdate_query = """
-            UPDATE players_data
+            player_update_query = """
+            UPDATE players
             SET 
-                headers = %s,
-                footers = %s,
-                key_passes = %s,
-                non_assisted_footers = %s,
                 minutes_played = %s,
-                hxg = %s,
-                fxg = %s,
-                kp_hxg = %s,
-                kp_fxg = %s,
-                hpsxg = %s,
-                fpsxg = %s,
-                gk_psxg = %s,
-                gk_ga = %s,
                 fouls_committed = %s,
                 fouls_drawn = %s,
                 yellow_cards = %s,
@@ -1961,366 +1934,37 @@ class Process_Data:
                 out_status = %s,
                 sub_in = %s,
                 sub_out = %s
-            WHERE player_id = %s
+            WHERE id = %s
             """
-            DB.execute(pupdate_query, (
-                int(row["headers"]),
-                int(row["footers"]),
-                int(row["key_passes"]),
-                int(row["non_assisted_footers"]),
-                int(row["minutes_played"]),
-                float(row["hxg"]),
-                float(row["fxg"]),
-                float(row["kp_hxg"]),
-                float(row["kp_fxg"]),
-                float(row["hpsxg"]),
-                float(row["fpsxg"]),
-                float(row["gk_psxg"]),
-                int(row["gk_ga"]),
-                int(row["fouls_committed"]),
-                int(row["fouls_drawn"]),
-                int(row["yellow_cards"]),
-                int(row["red_cards"]),
+            DB.execute(player_update_query, (
+                int(player_row["minutes_played"]),
+                int(player_row["fouls_committed"]),
+                int(player_row["fouls_drawn"]),
+                int(player_row["yellow_cards"]),
+                int(player_row["red_cards"]),
                 json.dumps(in_status_dict),
                 json.dumps(out_status_dict),
                 json.dumps(subs_in_list, allow_nan=False),
                 json.dumps(subs_out_list, allow_nan=False),
-                player_id
+                pid
             ))
 
-    def update_players_xg_coef(self):
-        """
-        Function to update players xg coefficients per league
-        """
-        league_id_df = DB.select("SELECT league_id FROM league_data WHERE is_active = 1")
-        
-        for league_id in tqdm(league_id_df['league_id'].tolist(), desc="League xG Coeff"):
-            baseline_per_type = {"headers": 0.0, "footers": 0.0}
-            for shot_type in ["headers", "footers"]:
-                prefix = "h" if shot_type == "headers" else "f"
-                league_matches_df = DB.select(f"SELECT match_id FROM match_info WHERE league_id = {league_id}")
-                matches_ids = league_matches_df['match_id'].tolist()
-                if not matches_ids:
-                    continue
-                matches_ids_placeholder = ','.join(['%s'] * len(matches_ids))
-                matches_sql = f"""
-                SELECT 
-                    teamA_players, 
-                    teamB_players, 
-                    teamA_{shot_type}, 
-                    teamB_{shot_type},
-                    teamA_{prefix}xg as teamA_xg,
-                    teamB_{prefix}xg as teamB_xg
-                FROM match_detail 
-                WHERE match_id IN ({matches_ids_placeholder});
-                """
-                matches_details_df = DB.select(matches_sql, matches_ids)
-
-                matches_details_df['teamA_players'] = matches_details_df['teamA_players'].apply(
-                    lambda v: v if isinstance(v, list) else ast.literal_eval(v)
-                )
-                matches_details_df['teamB_players'] = matches_details_df['teamB_players'].apply(
-                    lambda v: v if isinstance(v, list) else ast.literal_eval(v)
-                )
-                
-                players_set = set()
-                for _, row in matches_details_df.iterrows():
-                    players_set.update(row['teamA_players'])
-                    players_set.update(row['teamB_players'])
-                players = sorted(list(players_set))
-                num_players = len(players)
-                players_to_index = {player: idx for idx, player in enumerate(players)}
-                
-                rows, cols, data_vals, y, sample_weights = [], [], [], [], []
-                row_num = 0
-                
-                for _, row in matches_details_df.iterrows():
-                    shots_teamA = row[f'teamA_{shot_type}']
-                    shots_teamB = row[f'teamB_{shot_type}']
-                    
-                    if shots_teamA > 0:
-                        xg_teamA = row['teamA_xg']
-                        for p in row['teamA_players']:
-                            rows.append(row_num)
-                            cols.append(players_to_index[p])
-                            data_vals.append(1)
-                        for p in row['teamB_players']:
-                            rows.append(row_num)
-                            cols.append(num_players + players_to_index[p])
-                            data_vals.append(-1)
-                        y.append(xg_teamA / shots_teamA)
-                        sample_weights.append(shots_teamA)
-                        row_num += 1
-                        
-                    if shots_teamB > 0:
-                        xg_teamB = row['teamB_xg']
-                        for p in row['teamB_players']:
-                            rows.append(row_num)
-                            cols.append(players_to_index[p])
-                            data_vals.append(1)
-                        for p in row['teamA_players']:
-                            rows.append(row_num)
-                            cols.append(num_players + players_to_index[p])
-                            data_vals.append(-1)
-                        y.append(xg_teamB / shots_teamB)
-                        sample_weights.append(shots_teamB)
-                        row_num += 1
-                
-                if row_num == 0:
-                    continue
-                
-                X = sp.csr_matrix((data_vals, (rows, cols)), shape=(row_num, 2 * num_players))
-                y_array = np.array(y)
-                sample_weights_array = np.array(sample_weights)
-
-                alphas = np.logspace(-3, 3, 13)
-                
-                ridge_base = Ridge(fit_intercept=True, solver='sparse_cg')
-                grid = GridSearchCV(
-                    ridge_base,
-                    param_grid={'alpha': alphas},
-                    scoring='neg_mean_squared_error',
-                    cv=5,
-                    n_jobs=-1
-                )
-                y_mean = np.average(y_array, weights=sample_weights_array)
-                y_centered = y_array - y_mean
-                grid.fit(X, y_centered, sample_weight=sample_weights_array)
-
-                best_model = grid.best_estimator_
-                intercept_adjusted = best_model.intercept_ + y_mean
-                baseline_per_type[shot_type] += float(intercept_adjusted)
-                
-                offensive_ratings = dict(zip(players, best_model.coef_[:num_players]))
-                defensive_ratings = dict(zip(players, best_model.coef_[num_players:]))
-                
-                for player in tqdm(players):
-                    off_coef = offensive_ratings[player]
-                    def_coef = defensive_ratings[player]
-                    
-                    if shot_type == "headers":
-                        update_coef_query = """
-                        UPDATE players_data
-                        SET off_hxg_coef = %s, def_hxg_coef = %s
-                        WHERE player_id = %s
-                        """
-                    else:
-                        update_coef_query = """
-                        UPDATE players_data
-                        SET off_fxg_coef = %s, def_fxg_coef = %s
-                        WHERE player_id = %s
-                        """
-                    DB.execute(update_coef_query, (float(off_coef), float(def_coef), player))
-            DB.execute("""
-                UPDATE league_data
-                SET hxg_baseline_coef = %s, fxg_baseline_coef = %s
-                WHERE league_id = %s
-            """, (float(baseline_per_type["headers"]), float(baseline_per_type["footers"]), league_id))
-
-    def update_shots(self):
-        """
-        Before processing new data, update the shots plsqa, shooter and assister sq. And then the rsq, shooter  and gk ability.
-        """
-        def predict_refined_sq(booster: xgb.Booster,
-                            feature_columns: list[str],
-                            shot_features: dict,
-                            *,
-                            raw: bool = False) -> float:
-            
-            cat_cols = ['match_state', 'player_dif']
-            num_cols = ['total_plsqa', 'shooter_sq', 'assister_sq']
-            
-            row = shot_features.copy()
-            
-            for c in cat_cols:
-                v = row.get(c)
-                row[c] = np.nan if pd.isna(v) else str(v)
-            
-            num_df = pd.DataFrame([{k: row[k] for k in num_cols}])
-            cat_df = pd.get_dummies(
-                pd.DataFrame([{c: row[c] for c in cat_cols}]),
-                prefix       = cat_cols,
-                dummy_na     = True
-            )
-            cat_df = cat_df.reindex(
-                columns=[c for c in feature_columns if any(c.startswith(p + '_') for p in cat_cols)],
-                fill_value=0
-            )
-            
-            X = (
-                pd.concat([num_df, cat_df], axis=1)
-                .reindex(columns=feature_columns, fill_value=0)
-                .astype(float)
-            )
-            
-            dmat = xgb.DMatrix(X)
-            pred = booster.predict(dmat, output_margin=raw)
-            return float(pred[0])
-
-        booster, rsq_features  = _load_model('rsq')
-
-        non_updated_shots_df = DB.select("SELECT * FROM shots_data;")
-
-        team_ids = non_updated_shots_df["team_id"].dropna().unique().tolist()
-
-        if team_ids:
-            placeholders  = ",".join(["%s"] * len(team_ids))
-            team_sql      = f"""
-                SELECT team_id, league_id
-                FROM team_data
-                WHERE team_id IN ({placeholders});
-            """
-            team_df            = DB.select(team_sql, team_ids)
-            team_to_league_map = dict(zip(team_df["team_id"], team_df["league_id"]))
-            league_ids         = list({v for v in team_to_league_map.values() if v is not None})
-        else:
-            team_to_league_map = {}
-            league_ids         = []
-
-        non_updated_shots_df["league_id"] = non_updated_shots_df["team_id"].map(team_to_league_map)
-
-        if league_ids:
-            placeholders = ",".join(["%s"] * len(league_ids))
-            baseline_sql = f"""
-                SELECT league_id,
-                       hxg_baseline_coef,
-                       fxg_baseline_coef
-                FROM league_data
-                WHERE league_id IN ({placeholders});
-            """
-            baseline_df   = DB.select(baseline_sql, league_ids)
-            baseline_dict = {
-                r["league_id"]: {
-                    "hxg": float(r["hxg_baseline_coef"] or 0.0),
-                    "fxg": float(r["fxg_baseline_coef"] or 0.0)
-                }
-                for _, r in baseline_df.iterrows()
-            }
-        else:
-            baseline_dict = {}
-
-        non_updated_shots_df['off_players'] = non_updated_shots_df['off_players'].apply(
-            lambda v: v if isinstance(v, list) else ast.literal_eval(v)
-        )
-        non_updated_shots_df['def_players'] = non_updated_shots_df['def_players'].apply(
-            lambda v: v if isinstance(v, list) else ast.literal_eval(v)
-        )
-
-        players_needed = set()
-        for _, row in non_updated_shots_df.iterrows():
-            players_needed.update(row['off_players'])
-            players_needed.update(row['def_players'])
-            if row['assister_id']:
-                players_needed.add(row['assister_id'])
-            players_needed.add(row['shooter_id'])
-            players_needed.add(row['GK_id'])
-
-        if players_needed:
-            placeholders = ','.join(['%s'] * len(players_needed))
-            players_sql = (
-                f"SELECT player_id, off_hxg_coef, def_hxg_coef, off_fxg_coef, def_fxg_coef, headers, footers, key_passes, hxg, fxg, kp_hxg, kp_fxg, hpsxg, fpsxg, gk_psxg, gk_ga "
-                f"FROM players_data "
-                f"WHERE player_id IN ({placeholders});"
-            )
-            players_data_df  = DB.select(players_sql, list(players_needed))
-            p_dict = players_data_df.set_index("player_id").to_dict("index")
-        else:
-            p_dict = {}
-
-        for _, row in tqdm(non_updated_shots_df.iterrows(), total=len(non_updated_shots_df), desc="Updating shots"):
-            league_id   = row["league_id"]
-            hxg_base    = baseline_dict.get(league_id, {}).get("hxg", 0.0)
-            fxg_base    = baseline_dict.get(league_id, {}).get("fxg", 0.0)
-
-            off_ids = row['off_players']
-            def_ids = row['def_players']
-            bp = row['shot_type']
-            shooter_id = row['shooter_id']
-            assister_id = row['assister_id']
-            gk_id = row['GK_id']
-
-            if bp == "head":
-                offense = sum(p_dict.get(pid, {}).get('off_hxg_coef', 0) for pid in off_ids)
-                defense = sum(p_dict.get(pid, {}).get('def_hxg_coef', 0) for pid in def_ids)
-                plsqa   = hxg_base + offense - defense
-            else:
-                offense = sum(p_dict.get(pid, {}).get('off_fxg_coef', 0) for pid in off_ids)
-                defense = sum(p_dict.get(pid, {}).get('def_fxg_coef', 0) for pid in def_ids)
-                plsqa   = fxg_base + offense - defense
-
-            shooter_data = p_dict.get(shooter_id, {})
-            if bp == "head":
-                numerator = shooter_data.get('hxg', 0)
-                denominator = shooter_data.get('headers', 1)
-                shooter_A = shooter_data.get('hpsxg', 0) / numerator if numerator else 0.0
-            else:
-                numerator = shooter_data.get('fxg', 0)
-                denominator = shooter_data.get('footers', 1)
-                shooter_A = shooter_data.get('fpsxg', 0) / numerator if numerator else 0.0
-
-            shooter_sq = numerator / denominator if denominator else 0.0
-
-            if not assister_id or assister_id not in p_dict:
-                assister_sq = None
-            else:
-                assister_data = p_dict[assister_id]
-                if bp == "head":
-                    num = assister_data.get('kp_hxg', 0)
-                else:
-                    num = assister_data.get('kp_fxg', 0)
-                den         = assister_data.get('key_passes', 1)
-                assister_sq = num / den if den else 0.0
-
-            gk_data = p_dict.get(gk_id, {})
-            gk_psxg = gk_data.get('gk_psxg', 0)
-            gk_ga   = gk_data.get('gk_ga',   0)
-            gk_A    = 1.0 - (gk_ga / gk_psxg) if gk_psxg else 0.0
-
-            rsq = predict_refined_sq(
-                booster,
-                rsq_features,
-                dict(
-                    total_plsqa = plsqa,
-                    shooter_sq  = shooter_sq,
-                    assister_sq = assister_sq,
-                    match_state = row['match_state'],
-                    player_dif  = row['player_dif']
-                )
-            )
-
-            params = (
-                None if isinstance(plsqa, float) and math.isnan(plsqa) else plsqa,
-                None if isinstance(shooter_sq, float) and math.isnan(shooter_sq) else shooter_sq,
-                None if isinstance(assister_sq, float) and math.isnan(assister_sq) else assister_sq,
-                None if isinstance(rsq, float) and math.isnan(rsq) else rsq,
-                None if isinstance(shooter_A, float) and math.isnan(shooter_A) else shooter_A,
-                None if isinstance(gk_A, float) and math.isnan(gk_A) else gk_A,
-                row['shot_id']
-            )
-            DB.execute(
-                "UPDATE shots_data SET total_PLSQA = %s, shooter_SQ = %s, assister_SQ = %s, RSQ = %s, shooter_A = %s, GK_A = %s WHERE shot_id = %s",
-                params
-            )
-
-    def update_match_info_referee_totals(self):
+    def _update_reg_totals(self):
         sql = """
-        UPDATE match_info AS mi
-        JOIN (
-            SELECT  match_id,
-                    COALESCE(SUM(fouls_committed),0) AS total_fouls,
-                    COALESCE(SUM(yellow_cards),0)    AS yellow_cards,
-                    COALESCE(SUM(red_cards),0)       AS red_cards
-            FROM    match_breakdown
-            GROUP BY match_id
-        ) AS mb ON mb.match_id = mi.match_id
-        SET mi.total_fouls  = mb.total_fouls,
-            mi.yellow_cards = mb.yellow_cards,
-            mi.red_cards    = mb.red_cards
-        WHERE mi.total_fouls = 0;
+        WITH reg AS (
+        SELECT 
+            match_id,
+            COALESCE(SUM(fouls_committed),0) AS total_fouls,
+            COALESCE(SUM(yellow_cards),0)    AS yellow_cards,
+            COALESCE(SUM(red_cards),0)       AS red_cards
+        FROM vpfm.match_player_breakdown
+        GROUP BY match_id
+        ) 
+        SELECT * 
+        FROM reg
         """
         DB.execute(sql)
 
-    def update_referee_data_totals(self):
         sql = """
         INSERT INTO referee_data
                 (referee_name, fouls, yellow_cards, red_cards, matches_played)
