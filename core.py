@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from typing import Any, Iterable, Sequence
 import pandas as pd
 from mysql.connector.pooling import MySQLConnectionPool
-from datetime import datetime, date, time, timedelta
+from datetime import datetime, date, timedelta
 import numpy as np
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -18,15 +18,15 @@ from rapidfuzz import process, fuzz
 import re
 import numpy as np
 from sklearn.model_selection import GridSearchCV
-from sklearn.linear_model import Ridge
-import scipy.sparse as sp
+from sklearn.linear_model import Ridge, RidgeCV
+from scipy import sparse
 import json
 from tqdm import tqdm
 import ast
 import xgboost as xgb
 import multiprocessing
 import os
-import itertools 
+import itertools
 import copy
 import unicodedata
 from dotenv import load_dotenv
@@ -281,27 +281,26 @@ try:
 except Exception as e:
     print(f"[INFO] No se pudo conectar a la DB local: {e}")
     DB = None
-RDB = DatabaseManager(host=host, port=port, user=user, password=password, database=database)
 
-def get_team_name_by_id(team_id):
-    query = "SELECT team_name FROM team_data WHERE team_id = %s"
-    result = DB.select(query, (team_id,))
+def get_team_name_by_id(id):
+    query = "SELECT name FROM teams WHERE id = %s"
+    result = DB.select(query, (id,))
     if not result.empty:
-        return result.iloc[0]["team_name"]
+        return result.iloc[0]["name"]
     return None
 
 def get_team_id_by_name(team_name, league_id):
-    query = "SELECT team_id FROM team_data WHERE team_name = %s AND league_id = %s"
+    query = "SELECT id FROM teams WHERE name = %s AND league_id = %s"
     result = DB.select(query, (team_name, league_id))
     if not result.empty:
-        return int(result.iloc[0]["team_id"])
+        return int(result.iloc[0]["id"])
     return None
 
 def get_league_name_by_id(league_id):
-    query = "SELECT league_name FROM league_data WHERE league_id = %s"
+    query = "SELECT name FROM leagues WHERE id = %s"
     result = DB.select(query, (league_id,))
     if not result.empty:
-        return result.iloc[0]["league_name"]
+        return result.iloc[0]["name"]
     return None
 
 def match_players(team_id, raw_source):
@@ -365,21 +364,6 @@ def match_players(team_id, raw_source):
     matched_benchers = _resolve(unmatched_benchers)
     return matched_starters, matched_benchers
 
-def get_referee_name(schedule_id):
-    sql_query = "SELECT referee_name FROM schedule_data WHERE schedule_id = %s"
-    result = DB.select(sql_query, (schedule_id,))
-    return result.iloc[0]["referee_name"] if not result.empty else ""
-
-def send_referee_name_to_db(referee_raw_name, schedule_id):
-    sql_get_names = "SELECT DISTINCT referee_name FROM referee_data"
-    referee_rows = DB.select(sql_get_names)
-    all_names = referee_rows["referee_name"].dropna().tolist()
-
-    best_match, score, _ = process.extractOne(referee_raw_name, all_names, scorer=fuzz.WRatio)
-
-    sql = "UPDATE schedule_data SET referee_name = %s WHERE schedule_id = %s"
-    DB.execute(sql, (best_match, schedule_id))
-
 def send_lineup_to_db(players_list, schedule_id, team):
     column_name = f"{team}_players_data"
     sql_query = f"UPDATE schedule_data SET {column_name} = %s WHERE schedule_id = %s"
@@ -403,30 +387,12 @@ def get_saved_lineup(schedule_id, team):
     except (TypeError, json.JSONDecodeError):
         return []
 
-def _bucket_time(ts):
-
-    if ts is None or pd.isna(ts):
-        return 'evening'
-
-    if isinstance(ts, time):
-        ts = datetime.combine(date.today(), ts)
-
-    if not isinstance(ts, (pd.Timestamp, datetime)):
-        ts = pd.to_datetime(ts)
-
-    h = ts.hour
-    if 9 <= h < 14:
-        return 'aft'
-    if 14 <= h < 19:
-        return 'evening'
-    return 'night'
-
-def _save(name: str, booster: xgb.Booster, columns: list[str]) -> None:
+def save_model(name: str, booster: xgb.Booster, columns: list[str]) -> None:
     booster.save_model(f'models/{name}_booster.json')
     with open(f'models/{name}_columns.json', 'w') as fh:
         json.dump(columns, fh)
 
-def _load_model(name: str) -> tuple[xgb.Booster, list[str]]:
+def load_model(name: str) -> tuple[xgb.Booster, list[str]]:
     booster_path  = f'models/{name}_booster.json'
     columns_path  = f'models/{name}_columns.json'
 
@@ -438,9 +404,9 @@ def _load_model(name: str) -> tuple[xgb.Booster, list[str]]:
 
     return booster, columns
 
-def get_match_name(schedule_id):
-    sql_query = "SELECT home_team_id, away_team_id FROM schedule_data WHERE schedule_id = %s"
-    result = DB.select(sql_query, (schedule_id,))
+def get_match_title(id):
+    sql_query = "SELECT home_team_id, away_team_id FROM schedule WHERE id = %s"
+    result = DB.select(sql_query, (id,))
 
     if not result.empty:
         home_name = get_team_name_by_id(int(result.iloc[0]["home_team_id"]))
@@ -448,7 +414,7 @@ def get_match_name(schedule_id):
 
         return f"{home_name} vs {away_name}"  
     else:
-        return schedule_id
+        return id
 
 _ID_RE = re.compile(r"(?P<name>.+?)_\d+_[A-Z]{1,2}$")
 # ------------------------------ Fetch & Remove Data ------------------------------
@@ -1638,19 +1604,18 @@ class Extract_Data:
 
 # ------------------------------ Process data ------------------------------
 class Process_Data:
-    def __init__(self, upto_date):
-        """
-        Class to reset the players_data table and fill it with new data.
-        """
+    """
+    Process players data
+    """
+    def __init__(self, current_date=datetime.now()):
+        self.current_date = current_date
+        DB.execute("TRUNCATE TABLE players")
 
-        DB.execute("TRUNCATE TABLE players_data;")
-        DB.execute("TRUNCATE TABLE referee_data;")
+        self._insert_players_basics()
+        self._update_players_raxg_coef()
 
-        self._unify_duplicate_players()
-
-        self.insert_players_basics()
-        self.update_players_shots_coef(upto_date)
         self.update_players_totals()
+        
         self.update_players_xg_coef()
         self.update_shots()
         self.update_match_info_referee_totals()
@@ -1659,14 +1624,15 @@ class Process_Data:
         self.train_refined_sq_model()
         self.train_post_shot_goal_model()
 
-    def insert_players_basics(self):
+    def _insert_players_basics(self):
         """
-        Function to insert basic information from all players into players_data from match detail without duplicating.
+        Inserts players name and current team id. Then runs a function to unify duplicated players.
         """
         sql = """
-        SELECT md.teamA_players, md.teamB_players, mi.home_team_id, mi.away_team_id 
-        FROM match_detail md 
-        JOIN match_info mi ON md.match_id = mi.match_id 
+        SELECT md.teamA_players, md.teamB_players, mg.home_team_id, mg.away_team_id 
+        FROM match_detailed md
+        JOIN match_general mg
+            ON md.match_id = mg.id
         """
         result = DB.select(sql, ())
         
@@ -1686,30 +1652,31 @@ class Process_Data:
             for player in teamB_players:
                 players_set.add((player, away_team))
         
-        insert_sql = "INSERT IGNORE INTO players_data (player_id, current_team) VALUES (%s, %s)"
+        insert_sql = "INSERT IGNORE INTO players (player_id, team_id) VALUES (%s, %s)"
         DB.execute(insert_sql, list(players_set), many=True)
 
-        self._unify_duplicate_players()
+        self._unify_duplicated_players()
 
-    def _unify_duplicate_players(self):
+    def _unify_duplicated_players(self):
         """
-        1. Agrupa ids por (equipo, nombre) ignorando el dorsal.
-        2. Si un grupo nunca aparece junto en el mismo partido,
-           considera que es el mismo jugador:
-              • Escoge el id más reciente.
-              • Re-escribe el resto de las tablas con ese id.
-              • Borra los ids obsoletos de players_data.
+        This function consolidates duplicate player records by:
+        1. Grouping player IDs by their team and name (disregarding jersey number).
+        2. Identifying groups where IDs never appear together in the same match—these are considered the same player.
+        3. For each group:
+            • Selecting the most recent ID as the canonical one.
+            • Updating all other database tables to reference this canonical ID.
+            • Deleting the obsolete player IDs from the master player table.
         """
-        df = DB.select("SELECT player_id, current_team FROM players_data")
+        df = DB.select("SELECT id, team_id FROM players")
         groups = {}
-        for pid, team in df[["player_id", "current_team"]].itertuples(index=False):
+        for pid, team in df[["id", "team_id"]].itertuples(index=False):
             m = _ID_RE.match(pid)
             if not m:
                 continue
             key = (team, m.group("name").strip().lower())
             groups.setdefault(key, []).append(pid)
         
-        for (team, _), ids in tqdm(groups.items(), desc="Grupo de jugadores por unificar"):
+        for (team, _), ids in tqdm(groups.items(), desc="Group of players to unify:"):
             if len(ids) < 2:
                 continue
             
@@ -1724,15 +1691,11 @@ class Process_Data:
 
             if obsolete:
                 ph = ",".join(["%s"] * len(obsolete))
-                DB.execute(
-                    f"DELETE FROM players_data WHERE player_id IN ({ph})",
-                    tuple(obsolete),
-                )
+                DB.execute(f"DELETE FROM players WHERE id IN ({ph})", tuple(obsolete),)
 
     def _appear_together(self, ids):
         """
-        Devuelve True si cualquier par de ids aparece simultáneamente
-        en la misma lista de jugadores de match_detail.
+        Returns True if any pair of ids appear simultaneously in the same match.
         """
         ors = []
         for i, a in enumerate(ids):
@@ -1743,12 +1706,12 @@ class Process_Data:
                     "  (JSON_CONTAINS(teamB_players, '\"%s\"') AND "
                     "   JSON_CONTAINS(teamB_players, '\"%s\"')) )" % (a, b, a, b)
                 )
-        sql = "SELECT 1 FROM match_detail WHERE " + " OR ".join(ors) + " LIMIT 1"
+        sql = "SELECT 1 FROM match_detailed WHERE " + " OR ".join(ors) + " LIMIT 1"
         return not DB.select(sql, ()).empty
 
     def _most_recent_id(self, ids):
         """
-        Devuelve el id con el match_id más alto (último partido jugado).
+        Returns the most recent id (last match played).
         """
         most_recent   = None
         latest_game   = -1
@@ -1756,7 +1719,7 @@ class Process_Data:
         for pid in ids:
             sql = """
             SELECT MAX(match_id) AS last_game
-            FROM   match_detail
+            FROM   match_detailed
             WHERE  JSON_CONTAINS(teamA_players, JSON_QUOTE(%s), '$')
                OR  JSON_CONTAINS(teamB_players, JSON_QUOTE(%s), '$')
             """
@@ -1770,184 +1733,144 @@ class Process_Data:
 
     def _rewrite_ids(self, olds, new):
         """
-        Sustituye cada id de `olds` por `new` en:
-            • match_detail.teamA_players / teamB_players
-            • match_breakdown.player_id
-            • shots_data.off_players / def_players
+        Replace each id of `olds` with `new` in: 
+        • `match_detailed.teamA_players / teamB_players`
+        • `match_player_breakdown.player_id`
         """
-        # ---------- match_detail ----------
-        cond = " OR ".join(
-            ["JSON_CONTAINS(teamA_players,'\"%s\"') OR JSON_CONTAINS(teamB_players,'\"%s\"')" % (o, o)
-             for o in olds]
-        )
-        rows = DB.select(
-            f"SELECT match_id, teamA_players, teamB_players FROM match_detail WHERE {cond}", ()
-        )
+        # ---------- match_detailed ----------
+        cond = " OR ".join(["JSON_CONTAINS(teamA_players,'\"%s\"') OR JSON_CONTAINS(teamB_players,'\"%s\"')" % (o, o)for o in olds])
+        rows = DB.select(f"SELECT match_id, teamA_players, teamB_players FROM match_detailed WHERE {cond}", ())
 
         for _, r in rows.iterrows():
             a = json.dumps([new if p in olds else p for p in json.loads(r["teamA_players"])])
             b = json.dumps([new if p in olds else p for p in json.loads(r["teamB_players"])])
-            DB.execute(
-                "UPDATE match_detail SET teamA_players=%s, teamB_players=%s WHERE match_id=%s",
-                (a, b, r["match_id"]),
-            )
+            DB.execute("UPDATE match_detailed SET teamA_players=%s, teamB_players=%s WHERE match_id=%s",(a, b, r["match_id"]),)
 
-        # ---------- match_breakdown ----------
+        # ---------- match_player_breakdown ----------
         for o in olds:
-            DB.execute(
-                "UPDATE IGNORE match_breakdown "
-                "SET    player_id = %s "
-                "WHERE  player_id = %s",
-                (new, o),
-            )
+            DB.execute("UPDATE IGNORE match_player_breakdown ""SET player_id = %s ""WHERE player_id = %s",(new, o),)
+            DB.execute("DELETE FROM match_player_breakdown WHERE player_id = %s",(o,),)
 
-            DB.execute(
-                "DELETE FROM match_breakdown WHERE player_id = %s",
-                (o,),
-            )
-
-        # ---------- shots_data ----------
-        cond_sd = " OR ".join(
-            ["JSON_CONTAINS(off_players,'\"%s\"') OR JSON_CONTAINS(def_players,'\"%s\"')" % (o, o)
-             for o in olds]
-        )
-        rows_sd = DB.select(
-            f"SELECT shot_id, off_players, def_players FROM shots_data WHERE {cond_sd}", ()
-        )
-        for _, r in rows_sd.iterrows():
-            off = json.dumps([new if p in olds else p for p in json.loads(r["off_players"])])
-            dfn = json.dumps([new if p in olds else p for p in json.loads(r["def_players"])])
-            DB.execute(
-                "UPDATE shots_data SET off_players=%s, def_players=%s WHERE shot_id=%s",
-                (off, dfn, r["shot_id"]),
-            )
-
-    def update_players_shots_coef(self, upto_date):
+    def _update_players_raxg_coef(self):
         """
-        Function to update players shot types coefficients per league
+        A ridge regression (linear model) that learns individual players offensive and defensive impact. 
+        Having more weight on recent matches, for up to matches for the preceding year.
+        It updates players coefficients per league
         """
-        league_id_df = DB.select("SELECT league_id FROM league_data WHERE is_active = 1")
+        leagues_df = DB.select("SELECT id, date FROM leagues WHERE is_active = 1")
 
-        for league_id in tqdm(league_id_df['league_id'].tolist(), desc="League sh Coeff"):
-            baseline_per_type = {"headers": 0.0, "footers": 0.0}
-            for shot_type in ["headers", "footers"]:
-                league_matches_df = DB.select(f"SELECT match_id FROM match_info WHERE league_id = {league_id} AND date <= '{upto_date}'")
-                matches_ids = league_matches_df['match_id'].tolist()
+        for lid in tqdm(leagues_df['id'].tolist(), desc="League RAxG Coeff"):
+            matches_query = """
+            SELECT 
+                mg.id, 
+                mg.date,
+                md.teamA_players, 
+                md.teamB_players, 
+                md.teamA_xg,
+                md.teamB_xg,
+                md.minutes_played
+            FROM match_general mg
+            LEFT JOIN match_detailed md
+                ON mg.id = md.match_id
+            WHERE league_id = %s
+            """
+            matches_df = DB.select(matches_query, (lid,))
 
-                if not matches_ids:
-                    continue            
+            if matches_df.empty:
+                continue 
 
-                matches_ids_placeholder = ','.join(['%s'] * len(matches_ids))
-                matches_sql = f"""
-                SELECT 
-                    teamA_players, 
-                    teamB_players, 
-                    teamA_{shot_type}, 
-                    teamB_{shot_type}, 
-                    minutes_played 
-                FROM match_detail 
-                WHERE match_id IN ({matches_ids_placeholder});
+            matches_df['date'] = pd.to_datetime(matches_df['date'])
+            matches_df['days_ago'] = (self.current_date - matches_df['date']).dt.days
+
+            matches_df['teamA_players'] = matches_df['teamA_players'].apply(lambda v: v if isinstance(v, list) else ast.literal_eval(v))
+            matches_df['teamB_players'] = matches_df['teamB_players'].apply(lambda v: v if isinstance(v, list) else ast.literal_eval(v))
+            matches_df['time_weight'] = np.exp(-np.log(2) * matches_df['days_ago'] / 180)
+            total_weight = matches_df['time_weight'].sum()
+            matches_df['time_weight'] = matches_df['time_weight'] / total_weight * len(matches_df)
+
+            players_set = set()
+            for idx, row in matches_df.iterrows():
+                teamA = row['teamA_players'] if isinstance(row['teamA_players'], list) else [row['teamA_players']]
+                teamB = row['teamB_players'] if isinstance(row['teamB_players'], list) else [row['teamB_players']]
+                players_set.update(teamA)
+                players_set.update(teamB)
+
+            players = sorted(list(players_set))
+            num_players = len(players)
+            players_to_index = {player: idx for idx, player in enumerate(players)}
+
+            rows = []
+            cols = []
+            data_vals = []
+            y = []
+            sample_weights = []
+            row_num = 0
+
+            for idx, row in matches_df.iterrows():
+                minutes = int(row['minutes_played'])
+                if minutes == 0:
+                    continue
+                
+                time_weight = float(row['time_weight'])
+                teamA_players = row['teamA_players'] if isinstance(row['teamA_players'], list) else [row['teamA_players']]
+                teamB_players = row['teamB_players'] if isinstance(row['teamB_players'], list) else [row['teamB_players']]
+                teamA_xg = float(row['teamA_xg'])
+                teamB_xg = float(row['teamB_xg'])
+
+                # Team A's offensive possessions (positive for offense, negative for defense)
+                for p in teamA_players:
+                    rows.append(row_num)
+                    cols.append(players_to_index[p])
+                    data_vals.append(1)
+                for p in teamB_players:
+                    rows.append(row_num)
+                    cols.append(num_players + players_to_index[p])
+                    data_vals.append(-1)
+                y.append(teamA_xg / minutes)
+                sample_weights.append(np.sqrt(minutes * time_weight))
+                row_num += 1
+
+                # Team B's offensive possessions
+                for p in teamB_players:
+                    rows.append(row_num)
+                    cols.append(players_to_index[p])
+                    data_vals.append(1)
+                for p in teamA_players:
+                    rows.append(row_num)
+                    cols.append(num_players + players_to_index[p])
+                    data_vals.append(-1)
+                y.append(teamB_xg / minutes)
+                sample_weights.append(np.sqrt(minutes * time_weight))
+                row_num += 1
+
+            alphas = np.logspace(-3, 3, 13)
+
+            X = sparse.csr_matrix((data_vals, (rows, cols)), shape=(row_num, 2 * num_players))
+            y_array = np.array(y)
+            sample_weights_array = np.array(sample_weights)
+
+            y_mean = np.average(y_array, weights=sample_weights_array)
+            y_centered = y_array - y_mean
+
+            ridge_cv = RidgeCV(alphas=alphas, fit_intercept=True, cv=5, store_cv_values=True)
+            ridge_cv.fit(X, y_centered, sample_weight=sample_weights_array)
+
+            intercept_adjusted = ridge_cv.intercept_ + y_mean
+
+            offensive_ratings = dict(zip(players, ridge_cv.coef_[:num_players]))
+            defensive_ratings = dict(zip(players, ridge_cv.coef_[num_players:]))
+
+            for player in players:
+                off_xg_coef = offensive_ratings[player]
+                def_xg_coef = defensive_ratings[player]
+                update_coef_query = """
+                UPDATE players
+                SET off_xg_coef = %s, def_xg_coef = %s
+                WHERE id = %s
                 """
-                matches_details_df = DB.select(matches_sql, matches_ids)
+                DB.execute(update_coef_query, (float(off_xg_coef), float(def_xg_coef), player))
 
-                matches_details_df['teamA_players'] = matches_details_df['teamA_players'].apply(
-                    lambda v: v if isinstance(v, list) else ast.literal_eval(v)
-                )
-                matches_details_df['teamB_players'] = matches_details_df['teamB_players'].apply(
-                    lambda v: v if isinstance(v, list) else ast.literal_eval(v)
-                )
-
-                players_set = set()
-                for idx, row in matches_details_df.iterrows():
-                    players_set.update(row['teamA_players'])
-                    players_set.update(row['teamB_players'])
-                players = sorted(list(players_set))
-                num_players = len(players)
-                players_to_index = {player: idx for idx, player in enumerate(players)}
-
-                rows = []
-                cols = []
-                data_vals = []
-                y = []
-                sample_weights = []
-                row_num = 0
-
-                for idx, row in matches_details_df.iterrows():
-                    minutes = row['minutes_played']
-                    if minutes == 0:
-                        continue
-                    teamA_players = row['teamA_players']
-                    teamB_players = row['teamB_players']
-                    teamA_st = row[f'teamA_{shot_type}']
-                    teamB_st = row[f'teamB_{shot_type}']
-
-                    for p in teamA_players:
-                        rows.append(row_num)
-                        cols.append(players_to_index[p])
-                        data_vals.append(1)
-                    for p in teamB_players:
-                        rows.append(row_num)
-                        cols.append(num_players + players_to_index[p])
-                        data_vals.append(-1)
-                    y.append(teamA_st / minutes)
-                    sample_weights.append(minutes)
-                    row_num += 1
-
-                    for p in teamB_players:
-                        rows.append(row_num)
-                        cols.append(players_to_index[p])
-                        data_vals.append(1)
-                    for p in teamA_players:
-                        rows.append(row_num)
-                        cols.append(num_players + players_to_index[p])
-                        data_vals.append(-1)
-                    y.append(teamB_st / minutes)
-                    sample_weights.append(minutes)
-                    row_num += 1
-
-                alphas = np.logspace(-3, 3, 13)
-
-                X = sp.csr_matrix((data_vals, (rows, cols)), shape=(row_num, 2 * num_players))
-                y_array = np.array(y)
-                sample_weights_array = np.array(sample_weights)
-
-                ridge_base = Ridge(fit_intercept=True, solver='sparse_cg')
-                grid = GridSearchCV(ridge_base,
-                                    param_grid={'alpha': alphas},
-                                    scoring='neg_mean_squared_error',
-                                    cv=5,
-                                    n_jobs=-1)
-                y_mean = np.average(y_array, weights=sample_weights_array)
-                y_centered = y_array - y_mean
-                grid.fit(X, y_centered, sample_weight=sample_weights_array)
-
-                best_model = grid.best_estimator_
-                intercept_adjusted = best_model.intercept_ + y_mean
-                baseline_per_type[shot_type] += float(intercept_adjusted)
-
-                offensive_ratings = dict(zip(players, best_model.coef_[:num_players]))
-                defensive_ratings = dict(zip(players, best_model.coef_[num_players:]))
-
-                for player in players:
-                    off_sh = offensive_ratings[player]
-                    def_sh = defensive_ratings[player]
-                    update_coef_query = f"""
-                    UPDATE players_data
-                    SET off_{shot_type}_coef = %s, def_{shot_type}_coef = %s
-                    WHERE player_id = %s
-                    """
-                    DB.execute(update_coef_query, (float(off_sh), float(def_sh), player))
-            DB.execute("""
-                UPDATE league_data
-                SET hsh_baseline_coef = %s, fsh_baseline_coef = %s
-                WHERE league_id = %s
-            """, (float(baseline_per_type["headers"]), float(baseline_per_type["footers"]), league_id))
-        sum_coef_sql = """
-        UPDATE players_data
-        SET off_sh_coef = COALESCE(off_headers_coef, 0) + COALESCE(off_footers_coef, 0),
-            def_sh_coef = COALESCE(def_headers_coef, 0) + COALESCE(def_footers_coef, 0)
-        """
-        DB.execute(sum_coef_sql)
+            DB.execute("UPDATE leagues SET xg_baseline = %s WHERE id = %s", (float(intercept_adjusted), lid))
 
     def update_players_totals(self):
         """
@@ -2691,42 +2614,39 @@ class Process_Data:
 
         _save('psxg', booster, X.columns.tolist())
 
-# ------------------------------ Monte Carlo ------------------------------
-class Alg:
-    def __init__(self, schedule_id, home_initial_goals, away_initial_goals, match_initial_time, home_n_subs_avail, away_n_subs_avail):
-        self.schedule_id = schedule_id
+# ------------------------------ Monte Carlo Sim ------------------------------
+class MonteCarloSim:
+    """
+    Match simulation
+    """
+    def __init__(self, match_id, home_initial_goals=0, away_initial_goals=0, match_initial_time=0, home_subs_avail=5, away_subs_avail=5):
+        self.match_id = match_id
 
-        print(f"Simulating {get_match_name(self.schedule_id)}")
-
-        match_df = DB.select("SELECT * FROM schedule_data WHERE schedule_id = %s", (self.schedule_id,))
+        print(f"Simulating {get_match_title(self.match_id)}")
+        
+        match_df = DB.select("SELECT * FROM schedule WHERE id = %s", (self.match_id,))
 
         self.home_team_id = int(match_df.iloc[0]['home_team_id'])
         self.away_team_id = int(match_df.iloc[0]['away_team_id'])
-        self.home_players_init_data = json.loads(match_df.iloc[0]['home_players_data'])
-        self.away_players_init_data = json.loads(match_df.iloc[0]['away_players_data'])
+
+        home_data_raw = match_df.iloc[0]['home_players_data']
+        away_data_raw = match_df.iloc[0]['away_players_data']
+        if home_data_raw is None or away_data_raw is None:
+            raise ValueError("Players data is None.")
+        self.home_players_init_data = json.loads(home_data_raw)
+        self.away_players_init_data = json.loads(away_data_raw)
         self.league_id = int(match_df.iloc[0]['league_id'])
         self.home_elevation_dif = int(match_df.iloc[0]['home_elevation_dif'])
         self.away_elevation_dif = int(match_df.iloc[0]['away_elevation_dif'])
         self.away_travel = int(match_df.iloc[0]['away_travel'])
-        self.home_rest_days = int(match_df.iloc[0]['home_rest_days'])
-        self.away_rest_days = int(match_df.iloc[0]['away_rest_days'])
-        self.temperature = int(match_df.iloc[0]['temperature'])
-        self.is_raining = int(match_df.iloc[0]['is_raining'])
         self.home_initial_goals = home_initial_goals
         self.away_initial_goals = away_initial_goals
         self.match_initial_time = match_initial_time
-        self.match_time_label = _bucket_time(self.match_initial_time)
-        self.home_n_subs_avail = home_n_subs_avail
-        self.away_n_subs_avail = away_n_subs_avail
-        self.referee_name = match_df.iloc[0]['referee_name']
+        self.home_n_subs_avail = home_subs_avail
+        self.away_n_subs_avail = away_subs_avail
 
-        baseline_df = DB.select("SELECT hsh_baseline_coef, fsh_baseline_coef, hxg_baseline_coef, fxg_baseline_coef FROM league_data WHERE league_id = %s", (self.league_id,)
-        )
-        self.hsh_baseline_coef = float(baseline_df.iloc[0]['hsh_baseline_coef']) if not baseline_df.empty and baseline_df.iloc[0]['hsh_baseline_coef'] is not None else 0.0        
-        self.fsh_baseline_coef = float(baseline_df.iloc[0]['fsh_baseline_coef']) if not baseline_df.empty and baseline_df.iloc[0]['fsh_baseline_coef'] is not None else 0.0
-        self.sh_baseline_coef = self.hsh_baseline_coef + self.fsh_baseline_coef
-        self.hxg_baseline_coef = float(baseline_df.iloc[0]['hxg_baseline_coef']) if not baseline_df.empty and baseline_df.iloc[0]['hxg_baseline_coef'] is not None else 0.0
-        self.fxg_baseline_coef = float(baseline_df.iloc[0]['fxg_baseline_coef']) if not baseline_df.empty and baseline_df.iloc[0]['fxg_baseline_coef'] is not None else 0.0
+        xg_baseline_df = DB.select("SELECT xg_baseline FROM leagues WHERE id = %s", (self.league_id,))
+        self.xg_baseline_coef = float(xg_baseline_df.iloc[0]['xg_baseline']) if not xg_baseline_df.empty and xg_baseline_df.iloc[0]['xg_baseline'] is not None else 0.0      
 
         self.ras_booster, self.ras_cr_columns = _load_model(f'cras')
         self.ctx_mult_home, self.ctx_mult_away = self.precompute_ctx_multipliers()
@@ -2738,7 +2658,7 @@ class Alg:
         self.psg_col_idx     = {c: i for i, c in enumerate(self.psxg_columns)}
         self.ref_stats = self.get_referee_stats()
         self.precompute_card_sim_data()
-
+        """
         self.home_starters, self.home_subs = self.divide_matched_players(self.home_players_init_data)
         self.away_starters, self.away_subs = self.divide_matched_players(self.away_players_init_data)
 
@@ -2767,6 +2687,7 @@ class Alg:
             range_value = 4000
 
         self.run_simulations(range_value, 4)
+        """
 
     def _simulate_single(self, i):
         self.home_players_data = copy.deepcopy(self._base_home_players_data)
@@ -3669,7 +3590,7 @@ class AutoLineups:
     def __init__(self, schedule_id):
         self.schedule_id = schedule_id
 
-        print(f"Getting {get_match_name(self.schedule_id)} lineups")  
+        print(f"Getting {get_match_title(self.schedule_id)} lineups")  
 
         sql_query = f"""
             SELECT 
@@ -3848,7 +3769,7 @@ class AutoMatchInfo:
     def __init__(self, schedule_id):
         self.schedule_id = schedule_id
 
-        print(f"Getting {get_match_name(self.schedule_id)} live info")    
+        print(f"Getting {get_match_title(self.schedule_id)} live info")    
 
         sql_query = f"""
             SELECT 

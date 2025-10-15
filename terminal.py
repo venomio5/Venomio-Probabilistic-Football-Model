@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
                             QDialog, QListWidget, QListWidgetItem, QTabWidget, QFormLayout, QPlainTextEdit, QHeaderView,
                             QGridLayout, QLineEdit, QGroupBox, QSpinBox, QDateEdit, QTableWidget, QTableWidgetItem)
 from functools import partial
-#import core
+import core
 import warnings 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 import pandas as pd
