@@ -235,9 +235,9 @@ def get_saved_lineup(schedule_id, team):
     except (TypeError, json.JSONDecodeError):
         return []
 
-def load_model(name: str) -> tuple[xgb.Booster, list[str]]:
-    booster_path  = f'models/{name}_booster.json'
-    columns_path  = f'models/{name}_columns.json'
+def load_craxg_model() -> tuple[xgb.Booster, list[str]]:
+    booster_path  = f'Database/craxg_booster.json'
+    columns_path  = f'Database/craxg_columns.json'
 
     booster = xgb.Booster()
     booster.load_model(booster_path)
@@ -834,13 +834,15 @@ class UpdateSchedule:
         raining = any(r > 0.0 for r in filtered_rains)
         return avg_temp, raining
 
-class Extract_Data:
-    def __init__(self, upto_date):
+class ScrapeMatchesData:
+    """
+    """
+    def __init__(self, upto_date: datetime = datetime.now()):
         self.upto_date = upto_date
-        self.get_recent_games_match_info()
-        self.update_matches_info() 
-        self.update_pdras()
-        self.remove_old_data()
+        #self.get_recent_games_match_info()
+        #self.update_matches_info() 
+        self._set_pd_raxg()
+        #self.remove_old_data()
 
     def get_recent_games_match_info(self):
         def get_games_basic_info(url, lud):
@@ -1522,54 +1524,51 @@ class Extract_Data:
 
             driver.quit()
             
-    def update_pdras(self):
+    def _set_pd_raxg(self):
         """
-        Before processing new data, update the pre defined RAS for old matches.
+        Before processing new data, update the pre defined RAxG for past matches with the current RAxG coefficients
         """
-        non_pdras_matches_df = DB.select(f"""
+        non_pd_raxg_matches_query = """
             SELECT 
-                md.detail_id,
+                md.id,
                 md.match_id,
-                mi.league_id,
+                mg.league_id,
                 md.teamA_players,
                 md.teamB_players,
                 md.minutes_played
-            FROM match_detail md
-            JOIN match_info mi ON mi.match_id = md.match_id
-            WHERE (md.teamA_pdras IS NULL OR md.teamB_pdras IS NULL)
-            AND mi.date <= '{self.upto_date}';
-        """)
+            FROM match_detailed md
+            JOIN match_general mg
+                ON mg.id = md.match_id
+            WHERE (md.teamA_pd_raxg IS NULL OR md.teamB_pd_raxg IS NULL)
+            AND mg.date <= %s
+        """
+        non_pd_raxg_matches_df = DB.select(non_pd_raxg_matches_query, (self.upto_date,))
 
-        non_pdras_matches_df['teamA_players'] = non_pdras_matches_df['teamA_players'].apply(
-            lambda v: v if isinstance(v, list) else ast.literal_eval(v)
-        )
-        non_pdras_matches_df['teamB_players'] = non_pdras_matches_df['teamB_players'].apply(
-            lambda v: v if isinstance(v, list) else ast.literal_eval(v)
-        )
+        non_pd_raxg_matches_df['teamA_players'] = non_pd_raxg_matches_df['teamA_players'].apply(lambda v: v if isinstance(v, list) else ast.literal_eval(v))
+        non_pd_raxg_matches_df['teamB_players'] = non_pd_raxg_matches_df['teamB_players'].apply(lambda v: v if isinstance(v, list) else ast.literal_eval(v))
 
-        players_needed = set()
-        for _, row in non_pdras_matches_df.iterrows():
-            players_needed.update(row['teamA_players'])
-            players_needed.update(row['teamB_players'])
+        active_players = set()
+        for _, row in non_pd_raxg_matches_df.iterrows():
+            active_players.update(row['teamA_players'])
+            active_players.update(row['teamB_players'])
 
-        if players_needed:
-            placeholders = ','.join(['%s'] * len(players_needed))
-            players_sql = (
-                f"SELECT player_id, off_sh_coef, def_sh_coef "
-                f"FROM players_data "
-                f"WHERE player_id IN ({placeholders});"
-            )
-            players_coef_df = DB.select(players_sql, list(players_needed))
-            off_sh_coef_dict = players_coef_df.set_index("player_id")["off_sh_coef"].to_dict()
-            def_sh_coef_dict = players_coef_df.set_index("player_id")["def_sh_coef"].to_dict()
+        if active_players:
+            placeholders = ','.join(['%s'] * len(active_players))
+            players_sql = f"""
+                SELECT id, off_xg_coef, def_xg_coef
+                FROM players
+                WHERE id IN ({placeholders});
+            """
+            active_players_df = DB.select(players_sql, list(active_players))
+            off_xg_coef_dict = active_players_df.set_index("id")["off_xg_coef"].to_dict()
+            def_xg_coef_dict = active_players_df.set_index("id")["def_xg_coef"].to_dict()
         else:
-            off_sh_coef_dict, def_sh_coef_dict = {}, {}
+            off_xg_coef_dict, def_xg_coef_dict = {}, {}
 
-        baseline_df = DB.select("SELECT league_id, hsh_baseline_coef, fsh_baseline_coef FROM league_data;")
-        baseline_df["sh_baseline_coef"] = baseline_df[["hsh_baseline_coef", "fsh_baseline_coef"]].fillna(0).sum(axis=1)
-        baseline_dict = baseline_df.set_index("league_id")["sh_baseline_coef"].to_dict()
+        league_df = DB.select("SELECT id, xg_baseline FROM leagues")
+        baseline_dict = league_df.set_index("id")["xg_baseline"].to_dict()
 
-        for _, row in non_pdras_matches_df.iterrows():
+        for _, row in non_pd_raxg_matches_df.iterrows():
             minutes = row['minutes_played']
             league_id = row['league_id']
             baseline = baseline_dict.get(league_id, 0.0)
@@ -1577,18 +1576,15 @@ class Extract_Data:
             teamA_ids = row['teamA_players']
             teamB_ids = row['teamB_players']
 
-            teamA_offense = sum(off_sh_coef_dict.get(p, 0) for p in teamA_ids)
-            teamB_defense = sum(def_sh_coef_dict.get(p, 0) for p in teamB_ids)
-            teamA_pdras = (baseline + teamA_offense - teamB_defense) * minutes
+            teamA_offense = sum(off_xg_coef_dict.get(p, 0) for p in teamA_ids)
+            teamB_defense = sum(def_xg_coef_dict.get(p, 0) for p in teamB_ids)
+            teamA_pd_raxg = (baseline + teamA_offense - teamB_defense) * minutes
 
-            teamB_offense = sum(off_sh_coef_dict.get(p, 0) for p in teamB_ids)
-            teamA_defense = sum(def_sh_coef_dict.get(p, 0) for p in teamA_ids)
-            teamB_pdras = (baseline + teamB_offense - teamA_defense) * minutes
+            teamB_offense = sum(off_xg_coef_dict.get(p, 0) for p in teamB_ids)
+            teamA_defense = sum(def_xg_coef_dict.get(p, 0) for p in teamA_ids)
+            teamB_pd_raxg = (baseline + teamB_offense - teamA_defense) * minutes
 
-            DB.execute(
-                "UPDATE match_detail SET teamA_pdras = %s, teamB_pdras = %s WHERE detail_id = %s",
-                (teamA_pdras, teamB_pdras, row['detail_id'])
-            )
+            DB.execute("UPDATE match_detailed SET teamA_pd_raxg = %s, teamB_pd_raxg = %s WHERE id = %s", (teamA_pd_raxg, teamB_pd_raxg, row['id']))
 
     def remove_old_data(self):
         self.a_year_ago_date = self.upto_date - timedelta(days=365)
@@ -1614,7 +1610,7 @@ class ProcessData:
             ("Updating players raxg coef", self._update_players_raxg_coef),
             ("Updating players totals", self._update_players_totals),
             ("Updating reg totals", self._update_reg_totals),
-            ("Training contextual raxg xg model", self._train_contextual_raxg_xg_model)
+            ("Training contextual raxg xgboost model", self._train_contextual_raxg_xgb_model)
         ]
         
         for desc, step_func in tqdm(steps, desc="Progress"):
@@ -1991,7 +1987,7 @@ class ProcessData:
         """
         DB.execute(update_sql)
 
-    def _train_contextual_raxg_xg_model(self):
+    def _train_contextual_raxg_xgb_model(self):
         """
         Train a contextual expected goals (xG) XGBOOST model using regularized adjusted xG (RAxG) as baseline.
         
@@ -2144,13 +2140,13 @@ class MonteCarloSim:
         self.home_initial_goals = home_initial_goals
         self.away_initial_goals = away_initial_goals
         self.match_initial_time = match_initial_time
-        self.home_n_subs_avail = home_subs_avail
-        self.away_n_subs_avail = away_subs_avail
+        self.home_subs_avail = home_subs_avail
+        self.away_subs_avail = away_subs_avail
 
         xg_baseline_df = DB.select("SELECT xg_baseline FROM leagues WHERE id = %s", (self.league_id,))
         self.xg_baseline_coef = float(xg_baseline_df.iloc[0]['xg_baseline']) if not xg_baseline_df.empty and xg_baseline_df.iloc[0]['xg_baseline'] is not None else 0.0      
 
-        self.ras_booster, self.ras_cr_columns = _load_model(f'cras')
+        self.craxg_booster, self.craxg_columns = load_craxg_model()
         self.ctx_mult_home, self.ctx_mult_away = self.precompute_ctx_multipliers()
         self.rsq_booster, self.rsq_columns     = _load_model('rsq')
         self.rsq_pred_cache = {}
