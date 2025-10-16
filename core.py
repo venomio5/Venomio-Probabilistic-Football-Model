@@ -235,18 +235,6 @@ def get_saved_lineup(schedule_id, team):
     except (TypeError, json.JSONDecodeError):
         return []
 
-def load_craxg_model() -> tuple[xgb.Booster, list[str]]:
-    booster_path  = f'Database/craxg_booster.json'
-    columns_path  = f'Database/craxg_columns.json'
-
-    booster = xgb.Booster()
-    booster.load_model(booster_path)
-
-    with open(columns_path, 'r') as fh:
-        columns = json.load(fh)
-
-    return booster, columns
-
 def get_match_title(id: int):
     sql_query = "SELECT home_team_id, away_team_id FROM schedule WHERE id = %s"
     result = DB.select(sql_query, (id,))
@@ -1690,9 +1678,6 @@ class ProcessData:
                 DB.execute(f"DELETE FROM players WHERE id IN ({ph})", tuple(obsolete),)
 
     def _appear_together(self, ids):
-        """
-        Returns True if any pair of ids appear simultaneously in the same match.
-        """
         ors = []
         for i, a in enumerate(ids):
             for b in ids[i + 1 :]:
@@ -1706,9 +1691,6 @@ class ProcessData:
         return not DB.select(sql, ()).empty
 
     def _most_recent_id(self, ids):
-        """
-        Returns the most recent id (last match played).
-        """
         most_recent   = None
         latest_game   = -1
 
@@ -1728,11 +1710,6 @@ class ProcessData:
         return most_recent or sorted(ids)[-1]
 
     def _rewrite_ids(self, olds, new):
-        """
-        Replace each id of `olds` with `new` in: 
-        • `match_detailed.teamA_players / teamB_players`
-        • `match_player_breakdown.player_id`
-        """
         # ---------- match_detailed ----------
         cond = " OR ".join(["JSON_CONTAINS(teamA_players,'\"%s\"') OR JSON_CONTAINS(teamB_players,'\"%s\"')" % (o, o)for o in olds])
         rows = DB.select(f"SELECT match_id, teamA_players, teamB_players FROM match_detailed WHERE {cond}", ())
@@ -2130,7 +2107,7 @@ class MonteCarloSim:
         home_data_raw = match_df.iloc[0]['home_players_data']
         away_data_raw = match_df.iloc[0]['away_players_data']
         if home_data_raw is None or away_data_raw is None:
-            raise ValueError("Players data is None.")
+            raise ValueError("Players data is None")
         self.home_players_init_data = json.loads(home_data_raw)
         self.away_players_init_data = json.loads(away_data_raw)
         self.league_id = int(match_df.iloc[0]['league_id'])
@@ -2146,66 +2123,72 @@ class MonteCarloSim:
         xg_baseline_df = DB.select("SELECT xg_baseline FROM leagues WHERE id = %s", (self.league_id,))
         self.xg_baseline_coef = float(xg_baseline_df.iloc[0]['xg_baseline']) if not xg_baseline_df.empty and xg_baseline_df.iloc[0]['xg_baseline'] is not None else 0.0      
 
-        self.craxg_booster, self.craxg_columns = load_craxg_model()
-        self.ctx_mult_home, self.ctx_mult_away = self.precompute_ctx_multipliers()
-        self.rsq_booster, self.rsq_columns     = _load_model('rsq')
-        self.rsq_pred_cache = {}
-        self.rsq_col_idx    = {c: i for i, c in enumerate(self.rsq_columns)}
-        self.psxg_booster, self.psxg_columns   = _load_model('psxg')
-        self.psxg_pred_cache = {}
-        self.psg_col_idx     = {c: i for i, c in enumerate(self.psxg_columns)}
-        self.ref_stats = self.get_referee_stats()
-        self.precompute_card_sim_data()
-        """
-        self.home_starters, self.home_subs = self.divide_matched_players(self.home_players_init_data)
-        self.away_starters, self.away_subs = self.divide_matched_players(self.away_players_init_data)
+        self.craxg_booster, self.craxg_columns = self._load_craxg_model()
+        #self.ctx_mult_home, self.ctx_mult_away = self.precompute_ctx_multipliers() # This should be checked later
+        #self.ref_stats = self.get_referee_stats() # This should be checked later
+        #self.precompute_card_sim_data() # This should be checked later
 
-        self.home_players_data = self.get_players_data(self.home_team_id, self.home_starters, self.home_subs, self.home_players_init_data)
-        self.away_players_data = self.get_players_data(self.away_team_id, self.away_starters, self.away_subs, self.away_players_init_data)
+        self.home_starters, self.home_subs = self._divide_players("home")
+        self.away_starters, self.away_subs = self._divide_players("away")
 
-        self._base_home_players_data = copy.deepcopy(self.home_players_data)
-        self._base_away_players_data = copy.deepcopy(self.away_players_data)
+        self.home_players_data = self._get_players_data("home")
+        self.away_players_data = self._get_players_data("away")
+        for player in self.home_players_data.keys():
+            print(f"\n{player}")
+            for data in self.home_players_data[player].keys():
+                print(f"{data}: {self.home_players_data[player][data]}")
 
-        self.home_sub_minutes, self.away_sub_minutes = self.get_sub_minutes(self.home_team_id, self.away_team_id, self.match_initial_time, self.home_n_subs_avail, self.away_n_subs_avail)
-        self.all_sub_minutes = list(set(list(self.home_sub_minutes.keys()) + list(self.away_sub_minutes.keys())))
+        #self.home_sub_minutes, self.away_sub_minutes = self.get_sub_minutes(self.home_team_id, self.away_team_id, self.match_initial_time, self.home_subs_avail, self.away_subs_avail) # This should be checked later
+        #self.all_sub_minutes = list(set(list(self.home_sub_minutes.keys()) + list(self.away_sub_minutes.keys()))) # This should be checked later
 
-        if self.match_initial_time >= 80:
-            range_value = 500
-        elif self.match_initial_time > 60:
+        if self.match_initial_time >= 75:
             range_value = 1000
-        elif self.match_initial_time > 45:
+        elif self.match_initial_time > 60:
             range_value = 2000
-        elif self.match_initial_time > 15:
-            range_value = 3000
-        elif self.match_initial_time < 1:
-            range_value = 5000
-            schedule_updater = UpdateSchedule(from_date=datetime.today())
-            schedule_updater.update_game_weather(self.schedule_id)
-        else:
+        elif self.match_initial_time > 45:
             range_value = 4000
+        elif self.match_initial_time > 15:
+            range_value = 6000
+        elif self.match_initial_time <= 1:
+            range_value = 10000
+        else:
+            range_value = 8000
 
-        self.run_simulations(range_value, 4)
+        #self._run_simulations(n_sims=range_value, n_workers=4, flush_every=10000) # 10k for testing
+
+    def _load_craxg_model(self) -> tuple[xgb.Booster, list[str]]:
+        booster_path  = f'Database/craxg_booster.json'
+        columns_path  = f'Database/craxg_columns.json'
+
+        booster = xgb.Booster()
+        booster.load_model(booster_path)
+
+        with open(columns_path, 'r') as fh:
+            columns = json.load(fh)
+
+        return booster, columns
+
+    def _simulate_single(self, i: int) -> list:
         """
-
-    def _simulate_single(self, i):
-        self.home_players_data = copy.deepcopy(self._base_home_players_data)
-        self.away_players_data = copy.deepcopy(self._base_away_players_data)
+        Simulates a single game. 
+        
+        """
+        sim_home_players_data = copy.deepcopy(self.home_players_data)
+        sim_away_players_data = copy.deepcopy(self.away_players_data)
 
         home_goals = self.home_initial_goals
         away_goals = self.away_initial_goals
         home_active_players  = self.home_starters.copy()
         away_active_players  = self.away_starters.copy()
-        home_passive_players = self.home_subs.copy()
-        away_passive_players = self.away_subs.copy()
+        home_inactive_players = self.home_subs.copy()
+        away_inactive_players = self.away_subs.copy()
 
-        shot_rows = []
-        card_rows = []
+        score_rows = []
 
-        home_status, away_status = self.get_status(home_goals, away_goals)
-        time_segment = self.get_time_segment(self.match_initial_time)
+        home_status, away_status = self._get_status(home_goals, away_goals)
 
-        home_ras, home_rahs, home_rafs, home_plhsq, home_plfsq = self.get_teams_ra(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
-        away_ras, away_rahs, away_rafs, away_plhsq, away_plfsq = self.get_teams_ra(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
+        home_raw_raxg = self._get_teams_raw_raxg(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
+        away_raw_raxg = self._get_teams_raw_raxg(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
         home_players_prob = self.build_player_probs(home_active_players, self.home_players_data)
         away_players_prob = self.build_player_probs(away_active_players, self.away_players_data)
 
@@ -2235,7 +2218,7 @@ class MonteCarloSim:
 
         context_ras_change = False
         for minute in range(self.match_initial_time, 91):
-            home_status, away_status = self.get_status(home_goals, away_goals)
+            home_status, away_status = self._get_status(home_goals, away_goals)
             time_segment = self.get_time_segment(minute)
             if minute in [16, 31, 46, 61, 76]:
                 context_ras_change = True
@@ -2339,43 +2322,36 @@ class MonteCarloSim:
                     if fouler in away_active_players:
                         away_active_players.remove(fouler)
                         context_ras_change = True
-        return shot_rows, card_rows
+        return score_rows
 
-    def run_simulations(self, n_sims, n_workers, flush_every: int = 1000):
+    def _run_simulations(self, n_sims: int, n_workers: int, flush_every: int = 1000):
+        """
+        Runs Monte Carlo simulations in parallel (if possible) and saves results to a database in batches to manage memory usage
+        """
         if n_workers is None:
             n_workers = os.cpu_count() or 1
 
-        shot_buf, card_buf = [], []
+        score_buf = []
         first_flush_done = False
 
         def _flush():
             nonlocal first_flush_done
-            if not shot_buf:
+            if not score_buf:
                 return
-            self.insert_sim_data(
-                shot_buf,
-                self.schedule_id,
-                initial_delete=not first_flush_done
-            )
+            self._insert_buf(rows=score_buf, initial_delete=not first_flush_done)
             first_flush_done = True
-            shot_buf.clear()
-            card_buf.clear()
+            score_buf.clear()
 
         if n_workers > 1:
             with multiprocessing.Pool(processes=n_workers) as pool:
-                for idx, (s, c) in enumerate(
-                        tqdm(pool.imap_unordered(self._simulate_single, range(n_sims)),
-                            total=n_sims,
-                            desc=f'Simulations ({n_workers} workers)')):
-                    shot_buf.extend(s)
-                    card_buf.extend(c)
+                for idx, score_rows in enumerate(tqdm(pool.imap_unordered(self._simulate_single, range(n_sims)), total=n_sims, desc=f'Simulations ({n_workers} workers)')):
+                    score_buf.extend(score_rows)
                     if (idx + 1) % flush_every == 0:
                         _flush()
         else:
             for idx in tqdm(range(n_sims), desc='Simulations (1 worker)'):
-                s, c = self._simulate_single(idx)
-                shot_buf.extend(s)
-                card_buf.extend(c)
+                score_rows = self._simulate_single(idx)
+                score_buf.extend(score_rows)
                 if (idx + 1) % flush_every == 0:
                     _flush()
 
@@ -2613,72 +2589,99 @@ class MonteCarloSim:
 
         return out
     
-    def divide_matched_players(self, players_data):
+    def _divide_players(self, team: str) -> tuple[list[str], list[str]]:
+        if team == "home":
+            players_data = self.home_players_init_data
+        elif team == "away":
+            players_data = self.away_players_init_data
+
         starters = [p['player_id'] for p in players_data if p['on_field']]
         subs = [p['player_id'] for p in players_data if p['bench']]
         return starters, subs
 
-    def get_players_data(self, team_id, team_starters, team_subs, initial_data=None):
-        all_players = team_starters + team_subs
+    def _get_players_data(self, team: str) -> dict:
+        if team == "home":
+            all_players = self.home_starters + self.home_subs
+            initial_player_data = self.home_players_init_data
+        elif team == "away":
+            all_players = self.away_starters + self.away_subs
+            initial_player_data = self.away_players_init_data
 
         escaped_players = [player.replace("'", "''") for player in all_players]
-
-        team_player_str = ", ".join([f"'{player}'" for player in escaped_players])
+        players_str = ", ".join([f"'{player}'" for player in escaped_players])
 
         sql_query = f"""
             SELECT 
                 *
-            FROM players_data
-            WHERE current_team = '{team_id}'
-            AND player_id IN ({team_player_str});
+            FROM players
+            WHERE id IN ({players_str});
         """
         players_df = DB.select(sql_query)
-        numeric_cols = ['sub_in', 'sub_out']
-        for col in numeric_cols:
-            players_df[col] = pd.to_numeric(players_df[col], errors='coerce').fillna(0)
 
         initial_mapping = {}
-        if initial_data is not None:
-            initial_mapping = {player['player_id']: player for player in initial_data}
+        if initial_player_data is not None:
+            initial_mapping = {player['player_id']: player for player in initial_player_data}
 
         players_dict = {}
+        for player_id in players_df['id'].unique():
+            player_row = players_df[players_df['id'] == player_id]
+            player_sql_data = player_row.iloc[0].to_dict()
 
-        for player_id in players_df['player_id'].unique():
-            player_rows = players_df[players_df['player_id'] == player_id]
-            player_info = player_rows.iloc[0].to_dict()
+            player_sql_data['fouls_committed_rate'] = self._get_rate(player_sql_data.get('fouls_committed'), player_sql_data.get('minutes_played'))
+            player_sql_data['fouls_drawn_rate'] = self._get_rate(player_sql_data.get('fouls_drawn'), player_sql_data.get('minutes_played'))
+            player_sql_data['yellow_card_rate'] = self._get_rate(player_sql_data.get('yellow_cards'), player_sql_data.get('fouls_committed'))
+            player_sql_data['red_card_rate'] = self._get_rate(player_sql_data.get('red_cards'), player_sql_data.get('fouls_committed'))
+            player_sql_data['sub_in_count'] = self._sub_count(player_sql_data.get('sub_in'))
+            player_sql_data['sub_out_count'] = self._sub_count(player_sql_data.get('sub_out'))
+            player_sql_data['in_status_prob'] = self._status_prob(player_sql_data.get('in_status'))
+            player_sql_data['out_status_prob'] = self._status_prob(player_sql_data.get('out_status'))
 
-            def _status_prob(raw_status):
-                if isinstance(raw_status, str):
-                    try:
-                        counts = ast.literal_eval(raw_status)
-                    except (ValueError, SyntaxError):
-                        counts = {}
-                elif isinstance(raw_status, dict):
-                    counts = raw_status
-                else:
-                    counts = {}
+            delete_columns = ['id', 'team_id', 'fouls_committed', 'fouls_drawn', 'yellow_cards', 'red_cards', 'minutes_played', 'sub_in', 'sub_out', 'in_status', 'out_status']
+            player_sql_data = {k: v for k, v in player_sql_data.items() if k not in delete_columns}
+            players_dict[player_id] = player_sql_data
 
-                counts = {k.title(): v for k, v in counts.items()}
-                base = {'Leading': 0, 'Level': 0, 'Trailing': 0}
-                base.update(counts)
-
-                total = sum(base.values())
-                return {k: v / total if total else 0 for k, v in base.items()}
-
-            player_info['in_status_prob'] = _status_prob(player_info.get('in_status'))
-            player_info['out_status_prob'] = _status_prob(player_info.get('out_status'))
-
-            players_dict[player_id] = player_info
-            
             if player_id in initial_mapping:
                 extracted = initial_mapping[player_id]
-                players_dict[player_id]['sim_yellow'] = 1 if extracted.get('yellow_card') else 0
-                players_dict[player_id]['sim_red'] = extracted.get('red_card', False)
+                players_dict[player_id]['bench'] = extracted.get('bench')
+                players_dict[player_id]['on_field'] = extracted.get('on_field')
+                players_dict[player_id]['yellow_card'] = extracted.get('yellow_card')
+                players_dict[player_id]['red_card'] = extracted.get('red_card')
             else:
-                players_dict[player_id]['sim_yellow'] = 1 if player_info.get('yellow_card') else 0
-                players_dict[player_id]['sim_red'] = player_info.get('red_card', False)
+                continue
 
         return players_dict
+    
+    def _get_rate(self, numerator: int, denominator: int) -> float:
+        if denominator and denominator > 0 and numerator:
+            return numerator / denominator
+        else:
+            return 0.0
+        
+    def _sub_count(self, raw_str: str) -> float:
+        count = 0
+        try:
+            sub_in_list = eval(raw_str)
+            count = len(sub_in_list)
+        except:
+            pass
+
+        return count
+    
+    def _status_prob(self, raw_str: str) -> dict:
+        counts = {}
+        try:
+            counts = ast.literal_eval(raw_str)
+        except:
+            pass
+
+        counts = {k.title(): v for k, v in counts.items()}
+        base = {'Leading': 0, 'Level': 0, 'Trailing': 0}
+        base.update(counts)
+
+        smoothed = {k: v + 1 for k, v in base.items()}
+
+        total = sum(smoothed.values())
+        return {k: v / total for k, v in smoothed.items()}
 
     def get_sub_minutes(self, home_id, away_id, match_initial_time, home_n_subs_avail, away_n_subs_avail):
         teams_data_query = f"""
@@ -2811,7 +2814,7 @@ class MonteCarloSim:
 
         return active_players, passive_players
 
-    def get_teams_ra(self, offensive_players, defensive_players, offensive_data, defensive_data):
+    def _get_teams_raw_raxg(self, offensive_players, defensive_players, offensive_data, defensive_data) -> float:
         # team_total_ras
         team_off_ras = sum(offensive_data[p]['off_sh_coef'] for p in offensive_players)
         opp_def_ras  = sum(defensive_data[p]['def_sh_coef'] for p in defensive_players)
@@ -2837,34 +2840,20 @@ class MonteCarloSim:
         opp_def_plfsq  = sum(defensive_data[p]['def_fxg_coef'] for p in defensive_players)
         team_plfsq = self.fxg_baseline_coef  +team_off_plfsq - opp_def_plfsq
 
-        return team_total_ras, team_rahs, team_rafs, team_plhsq, team_plfsq
+        return total_raw_raxg
  
-    def get_status(self, home_goals, away_goals):
+    def _get_status(self, home_goals: int, away_goals: int) -> tuple[float, float]:
         diff = home_goals - away_goals
         if diff == 0:
             return 0.0, 0.0
         elif diff == 1:
-            return 1.0, -1.0
+            return 0.5, -0.5
         elif diff > 1:
             return 1.5, -1.5
         elif diff == -1:
-            return -1.0, 1.0
+            return -0.5, 0.5
         elif diff < -1:
             return -1.5, 1.5
-
-    def get_time_segment(self, minute):
-        if minute < 15:
-            return 1
-        elif minute < 30:
-            return 2
-        elif minute < 45:
-            return 3
-        elif minute < 60:
-            return 4
-        elif minute < 75:
-            return 5
-        else:
-            return 6
         
     def get_shot_type(self, rahs, rafs):
         rahs = max(0, rahs)
@@ -2949,28 +2938,27 @@ class MonteCarloSim:
         #     print(f"Assister: {player}: {prob * 100:.2f}%")
         return np.random.choice(ass, p=p_vals)
 
-    def insert_sim_data(self, rows, schedule_id, *, initial_delete: bool = False):
+    def _insert_buf(self, rows: list, *, initial_delete: bool):
         def to_builtin(x):
             if isinstance(x, (np.generic,)):
                 return x.item()
             return x
         
         if initial_delete:
-            DB.execute("DELETE FROM simulation_data WHERE schedule_id = %s",
-                    (schedule_id,))
+            DB.execute("DELETE FROM simulation WHERE id = %s", (self.match_id,))
 
         batch_size = 200
         for i in range(0, len(rows), batch_size):
             chunk = rows[i:i + batch_size]
-            placeholders = ', '.join(['(%s, %s, %s, %s, %s, %s, %s, %s)'] * len(chunk))
+            placeholders = ', '.join(['(%s, %s, %s, %s, %s)'] * len(chunk))
             insert_sql = f"""
-            INSERT INTO simulation_data 
-                (sim_id, schedule_id, minute, shooter, squad, outcome, body_part, assister)
+            INSERT INTO simulation 
+                (sim_id, match_id, minute, home_goals, away_goals)
             VALUES {placeholders}
             """
             params = []
             for row in chunk:
-                params.extend([to_builtin(row[0]), to_builtin(schedule_id)] + [to_builtin(x) for x in row[1:]])
+                params.extend([to_builtin(row[0]), to_builtin(self.match_id)] + [to_builtin(x) for x in row[1:]])
 
             DB.execute(insert_sql, params)
 
