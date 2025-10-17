@@ -2124,7 +2124,8 @@ class MonteCarloSim:
         self.xg_baseline_coef = float(xg_baseline_df.iloc[0]['xg_baseline']) if not xg_baseline_df.empty and xg_baseline_df.iloc[0]['xg_baseline'] is not None else 0.0      
 
         self.craxg_booster, self.craxg_columns = self._load_craxg_model()
-        #self.ctx_mult_home, self.ctx_mult_away = self.precompute_ctx_multipliers() # This should be checked later
+        self.craxg_home_multipliers, self.craxg_away_multipliers = self._precompute_craxg_multipliers()
+
         #self.ref_stats = self.get_referee_stats() # This should be checked later
         #self.precompute_card_sim_data() # This should be checked later
 
@@ -2183,16 +2184,13 @@ class MonteCarloSim:
 
         home_status, away_status = self._get_status(home_goals, away_goals)
 
-        home_raw_raxg = self._get_teams_raw_raxg(75, home_active_players, away_active_players, sim_home_players_data, sim_away_players_data)
-        away_raw_raxg = self._get_teams_raw_raxg(75, away_active_players, home_active_players, sim_away_players_data, sim_home_players_data)
-        input(f"{home_raw_raxg*90}, {away_raw_raxg*90}")
-        home_players_prob = self.build_player_probs(home_active_players, self.home_players_data)
-        away_players_prob = self.build_player_probs(away_active_players, self.away_players_data)
+        home_raw_raxg = self._get_teams_raw_raxg(0, home_active_players, away_active_players, sim_home_players_data, sim_away_players_data)
+        away_raw_raxg = self._get_teams_raw_raxg(0, away_active_players, home_active_players, sim_away_players_data, sim_home_players_data)
 
-        home_mult = self.ctx_mult_home[(home_status, time_segment, 0)]
-        away_mult = self.ctx_mult_away[(away_status, time_segment, 0)]
-        home_context_ras = max(1e-6, home_ras) * home_mult
-        away_context_ras = max(1e-6, away_ras) * away_mult
+        home_mult = self.craxg_home_multipliers[(0, 0)]
+        away_mult = self.craxg_away_multipliers[(0, 0)]
+        home_context_raxg = max(1e-6, home_raw_raxg) * home_mult
+        away_context_raxg = max(1e-6, away_raw_raxg) * away_mult
 
         home_psxg_cache = self.build_psxg_cache(home_active_players, self.home_players_data,
                                                 home_plhsq, home_plfsq,
@@ -2354,64 +2352,53 @@ class MonteCarloSim:
 
         _flush()
 
-    def predict_context_ras(self, booster, feature_columns, new_match, *, raw=False):
-        categorical_cols = ['match_state', 'match_segment', 'player_dif', 'match_time']
-        bool_cols = ['team_is_home', 'is_raining']
-        num_cols = ['team_elevation_dif', 'opp_elevation_dif', 'team_travel', 'opp_travel', 'team_rest_days', 'opp_rest_days', 'temperature_c']
+    def _predict_craxg(self, new_match, *, raw=False):
+        match_data = new_match.copy()
+
+        cat_cols  = ['match_state', 'player_dif']
+        bool_cols = ['is_home']
+        num_cols  = ['elevation_dif', 'travel']
         
-        base_margin = np.log(new_match.pop('total_ras').clip(lower=1e-6))
+        base_margin = np.log(match_data.pop('pd_raxg').clip(lower=0.01))
 
-        for col in categorical_cols:
-            new_match[col] = new_match[col].astype(str).str.lower()
-        new_match[bool_cols] = new_match[bool_cols].astype(int)
+        for col in cat_cols:
+            match_data[col] = match_data[col].astype(str).str.lower()
+        
+        for col in bool_cols:
+            match_data[col] = match_data[col].astype(int)
 
-        new_cat = pd.get_dummies(new_match[categorical_cols], prefix=categorical_cols)
-        new_cat = new_cat.reindex(columns=[col for col in feature_columns if any(col.startswith(prefix + "_") for prefix in categorical_cols)], fill_value=0)
+        new_cat = pd.get_dummies(match_data[cat_cols], prefix=cat_cols)
 
-        new_X = pd.concat([
-            new_match[num_cols + bool_cols].reset_index(drop=True),
-            new_cat.reset_index(drop=True)
-        ], axis=1)
-
-        new_X = new_X.reindex(columns=feature_columns, fill_value=0)
+        new_X = pd.concat([match_data[num_cols + bool_cols].reset_index(drop=True), new_cat.reset_index(drop=True)], axis=1)
+        new_X = new_X.reindex(columns=self.craxg_columns, fill_value=0)
 
         dmatrix = xgb.DMatrix(new_X, base_margin=base_margin)
-        prediction = booster.predict(dmatrix, output_margin=raw)
+        prediction = self.craxg_booster.predict(dmatrix, output_margin=raw)
+
         return prediction[0]
 
-    def precompute_ctx_multipliers(self):
+    def _precompute_craxg_multipliers(self):
+        """
+        Precomputes the predictions of the XG Boost model on RAxG for efficiency
+        """
         def _template(is_home: bool):
             return {
-                'team_is_home'     : int(is_home),
-                'team_elevation_dif': self.home_elevation_dif if is_home else self.away_elevation_dif,
-                'opp_elevation_dif' : self.away_elevation_dif if is_home else self.home_elevation_dif,
-                'team_travel'       : 0 if is_home else self.away_travel,
-                'opp_travel'        : self.away_travel if is_home else 0,
-                'team_rest_days'    : self.home_rest_days if is_home else self.away_rest_days,
-                'opp_rest_days'     : self.away_rest_days if is_home else self.home_rest_days,
-                'temperature_c'     : self.temperature,
-                'is_raining'        : self.is_raining,
-                'match_time'        : self.match_time_label,
-                'total_ras'         : 1.0          # 1 ⇒  log(1)=0  ⇒  pure model effect
+                'is_home'       : int(is_home),
+                'elevation_dif' : self.home_elevation_dif if is_home else self.away_elevation_dif,
+                'travel'        : -self.away_travel if is_home else self.away_travel,
+                'pd_raxg'       : 1.0          # 1 ⇒  log(1)=0  ⇒  pure model effect
             }
 
-        states       = [-1.5, -1, 0, 1, 1.5]
-        segments     = [1, 2, 3, 4, 5, 6]
-        player_diffs = [-1.5, -1, 0, 1, 1.5]
+        states       = [-1.5, -0.5, 0, 0.5, 1.5]
+        player_diffs = [-1.5, -0.5, 0, 0.5, 1.5]
 
         home_cache, away_cache = {}, {}
-        for st, sg, pdif in itertools.product(states, segments, player_diffs):
+        for st, pdif in itertools.product(states, player_diffs):
             for is_home, cache in ((True, home_cache), (False, away_cache)):
                 row = _template(is_home)
-                row.update({'match_state': st,
-                            'match_segment': sg,
-                            'player_dif'  : pdif})
-                # raw=True ⇒ get the margin only
-                raw_margin = self.predict_context_ras(self.ras_booster,
-                                                      self.ras_cr_columns,
-                                                      pd.DataFrame([row]),
-                                                      raw=True)
-                cache[(st, sg, pdif)] = np.exp(raw_margin)
+                row.update({'match_state': st, 'player_dif': pdif})
+                raw_margin = self._predict_craxg(pd.DataFrame([row]))
+                cache[(st, pdif)] = np.exp(raw_margin)
         return home_cache, away_cache
 
     def _predict_refined_sq_bulk(self, df: pd.DataFrame) -> np.ndarray:
@@ -2930,55 +2917,6 @@ class MonteCarloSim:
         selected_index = np.random.choice([0, 1], p=probs)
         return "Head" if selected_index == 0 else "Foot"
     
-    def build_player_probs(self, active_players, players_data):
-        def _normalise(rate_dict):
-            tot = sum(rate_dict.values())
-            if tot == 0:
-                n = len(rate_dict)
-                return {k: 1 / n for k in rate_dict}
-            return {k: v / tot for k, v in rate_dict.items()}
-
-        rates = {
-            'headers': {},
-            'footers': {},
-            'non_assisted_footers': {},
-            'key_passes': {}
-        }
-
-        for player in active_players:
-            data    = players_data[player]
-            minutes = max(1, data.get('minutes_played', 1))
-
-            rates['headers'][player]              = data.get('headers', 0) / minutes
-            rates['footers'][player]              = data.get('footers', 0) / minutes
-            rates['non_assisted_footers'][player] = data.get('non_assisted_footers', 0) / minutes
-            rates['key_passes'][player]              = data.get('key_passes', 0) / minutes
-
-        shooter_prob = {
-            'headers': _normalise(rates['headers']),
-            'footers': _normalise(rates['footers'])
-        }
-
-        assist_prob = {'headers': {}, 'footers': {}}
-
-        for shooter in active_players:
-            dist_f = {}
-            dist_f[None] = rates['non_assisted_footers'][shooter]
-            for assister in active_players:
-                if assister == shooter:
-                    continue
-                dist_f[assister] = rates['key_passes'][assister]
-            assist_prob['footers'][shooter] = _normalise(dist_f)
-
-            dist_h = {}
-            for assister in active_players:
-                if assister == shooter:
-                    continue
-                dist_h[assister] = rates['key_passes'][assister]
-            assist_prob['headers'][shooter] = _normalise(dist_h)
-
-        return {'shooter': shooter_prob, 'assist': assist_prob}
-
     def get_shooter(self, prob_dicts, body_part):
         _body_part_key = {'Head': 'headers', 'Foot': 'footers'}
 
