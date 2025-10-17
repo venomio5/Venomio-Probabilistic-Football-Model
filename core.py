@@ -2133,13 +2133,10 @@ class MonteCarloSim:
 
         self.home_players_data = self._get_players_data("home")
         self.away_players_data = self._get_players_data("away")
-        for player in self.home_players_data.keys():
-            print(f"\n{player}")
-            for data in self.home_players_data[player].keys():
-                print(f"{data}: {self.home_players_data[player][data]}")
 
-        #self.home_sub_minutes, self.away_sub_minutes = self.get_sub_minutes(self.home_team_id, self.away_team_id, self.match_initial_time, self.home_subs_avail, self.away_subs_avail) # This should be checked later
+        self.home_sub_minutes, self.away_sub_minutes = self._get_sub_minutes()
         #self.all_sub_minutes = list(set(list(self.home_sub_minutes.keys()) + list(self.away_sub_minutes.keys()))) # This should be checked later
+        print(self.home_sub_minutes)
 
         if self.match_initial_time >= 75:
             range_value = 1000
@@ -2701,71 +2698,76 @@ class MonteCarloSim:
         matches_data_df['days_ago'] = (self.match_date - matches_data_df['date']).dt.days
 
         # Fatigue calculation (3-day decay)
-        total_decayed_minutes_fatigue = sum(minutes * math.exp(-days / 3) for minutes, days in home_matches)
-        initial_fatigue = min(1, home_total_decayed_minutes_fatigue / 90)
+        total_decayed_minutes_fatigue = sum(minutes * math.exp(-days / 3) for minutes, days in zip(matches_data_df['minutes_played'], matches_data_df['days_ago']))
+        initial_fatigue = min(1, total_decayed_minutes_fatigue / 90)
 
         # Rhythm calculation (14-day decay)
-        total_decayed_minutes_rhythm = sum(minutes * math.exp(-days / 14) for minutes, days in home_matches)
-        rhythm_start = min(1, home_total_decayed_minutes_rhythm / 90)
+        total_decayed_minutes_rhythm = sum(minutes * math.exp(-days / 14) for minutes, days in zip(matches_data_df['minutes_played'], matches_data_df['days_ago']))
+        initial_rhythm = min(1, total_decayed_minutes_rhythm / 90)
 
-        print(f"Home Team - Initial Fatigue: {home_initial_fatigue:.3f}, Starting Rhythm: {home_rhythm_start:.3f}")
-        print(f"Away Team - Initial Fatigue: {away_initial_fatigue:.3f}, Starting Rhythm: {away_rhythm_start:.3f}")
+        return initial_fatigue, initial_rhythm
 
-        return None, None
-
-    def get_sub_minutes(self, home_id, away_id, match_initial_time, home_n_subs_avail, away_n_subs_avail):
-        teams_data_query = f"""
+    def _get_sub_minutes(self) -> tuple[dict, dict]:
+        sub_minutes_query = """ 
             SELECT 
-                mb.match_id,
-                mb.sub_in,
-                pd.current_team AS team_id
-            FROM match_breakdown mb
-            JOIN match_info mi ON mb.match_id = mi.match_id
-            JOIN players_data pd ON mb.player_id = pd.player_id
-            WHERE (mi.home_team_id IN ({home_id}, {away_id}) OR mi.away_team_id IN ({home_id}, {away_id}));
+                mpb.match_id,
+                mpb.sub_in,
+                p.team_id
+            FROM match_player_breakdown mpb
+            JOIN players p
+                ON mpb.player_id = p.id
+            WHERE p.team_id IN (%s, %s)
         """
 
-        query_df = DB.select(teams_data_query)
-        valid_subs_df = query_df[(query_df['sub_in'].notnull()) & (query_df['sub_in'] != 0)]
+        sub_minutes_df = DB.select(sub_minutes_query, (self.home_team_id, self.away_team_id))
+        sub_minutes_df = sub_minutes_df.dropna()
 
-        home_avg_subs = round(valid_subs_df[valid_subs_df['team_id'] == home_id].groupby('match_id').size().mean())
-        away_avg_subs = round(valid_subs_df[valid_subs_df['team_id'] == away_id].groupby('match_id').size().mean())
+        home_avg_subs = round(sub_minutes_df[sub_minutes_df['team_id'] == self.home_team_id].groupby('match_id').size().mean())
+        away_avg_subs = round(sub_minutes_df[sub_minutes_df['team_id'] == self.away_team_id].groupby('match_id').size().mean())
 
-        effective_home_subs = max(0, min(home_avg_subs - (5 - home_n_subs_avail), home_n_subs_avail))
-        effective_away_subs = max(0, min(away_avg_subs - (5 - away_n_subs_avail), away_n_subs_avail))
+        effective_home_subs = max(0, min(home_avg_subs - (5 - self.home_subs_avail), self.home_subs_avail))
+        effective_away_subs = max(0, min(away_avg_subs - (5 - self.away_subs_avail), self.away_subs_avail))
 
-        def get_distribution(team_id, avail_subs):
-            if avail_subs == 0:
-                return {100: 0}
-            if avail_subs == 1:
-                n_windows = 1
-            elif avail_subs < 5:
-                n_windows = 2
-            else:
-                n_windows = 3
-
-            top_minutes = (valid_subs_df[(valid_subs_df['team_id'] == team_id) &
-                            (valid_subs_df['sub_in'] > match_initial_time)]['sub_in']
-                            .value_counts().head(n_windows).index.tolist())
-            
-            if len(top_minutes) < n_windows:
-                if top_minutes:
-                    top_minutes.extend([top_minutes[-1]] * (n_windows - len(top_minutes)))
-                else:
-                    top_minutes = [match_initial_time] * n_windows
-
-            base = avail_subs // n_windows
-            remainder = avail_subs % n_windows
-            distribution = {}
-            for i in range(n_windows):
-                minute = top_minutes[i]
-                distribution[minute] = distribution.get(minute, 0) + (base + 1 if i < remainder else base)
-            return distribution
-
-        home_distribution = get_distribution(home_id, effective_home_subs)
-        away_distribution = get_distribution(away_id, effective_away_subs)
+        home_distribution = self._get_distribution(sub_minutes_df, "home", effective_home_subs)
+        away_distribution = self._get_distribution(sub_minutes_df, "away", effective_away_subs)
 
         return home_distribution, away_distribution
+
+    def _get_distribution(self, df: pd.DataFrame, team: str, effective_subs: int) -> dict:
+        if team == "home":
+            team_id = self.home_team_id
+            avail_subs = self.home_subs_avail
+        else:
+            team_id = self.away_team_id
+            avail_subs = self.away_subs_avail
+
+        if effective_subs == 0:
+            return {100: 0}
+        elif effective_subs == 1:
+            n_windows = 1
+        elif effective_subs < 5:
+            n_windows = 2
+        else:
+            n_windows = 3
+
+        top_minutes = (df[(df['team_id'] == team_id) & (df['sub_in'] > self.match_initial_time)]['sub_in'].value_counts().head(n_windows).index.tolist())
+        
+        if len(top_minutes) < n_windows:
+            if top_minutes:
+                k = n_windows - len(top_minutes)
+                last_minute = top_minutes[-1]
+                random_minutes = np.random.randint(last_minute, 91, size=k).tolist()
+                top_minutes.extend(random_minutes)
+            else:
+                top_minutes = np.random.randint(self.match_initial_time, 91, size=n_windows).tolist()
+
+        base = avail_subs // n_windows
+        remainder = avail_subs % n_windows
+        distribution = {}
+        for i in range(n_windows):
+            minute = top_minutes[i]
+            distribution[round(min(90, minute))] = distribution.get(minute, 0) + (base + 1 if i < remainder else base)
+        return distribution
 
     def swap_players(self, active_players, passive_players, players_data, subs, game_status_n):
         def interpret_game_status(status_code):
