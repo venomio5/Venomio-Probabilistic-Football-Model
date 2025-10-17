@@ -2135,8 +2135,7 @@ class MonteCarloSim:
         self.away_players_data = self._get_players_data("away")
 
         self.home_sub_minutes, self.away_sub_minutes = self._get_sub_minutes()
-        #self.all_sub_minutes = list(set(list(self.home_sub_minutes.keys()) + list(self.away_sub_minutes.keys()))) # This should be checked later
-        print(self.home_sub_minutes)
+        self.all_sub_minutes = list(set(list(self.home_sub_minutes.keys()) + list(self.away_sub_minutes.keys())))
 
         if self.match_initial_time >= 75:
             range_value = 1000
@@ -2151,7 +2150,7 @@ class MonteCarloSim:
         else:
             range_value = 8000
 
-        #self._run_simulations(n_sims=range_value, n_workers=4, flush_every=10000) # 10k for testing
+        self._run_simulations(n_sims=1, n_workers=1, flush_every=10000) # 1 & 1(4) & 10k (1k) for testing
 
     def _load_craxg_model(self) -> tuple[xgb.Booster, list[str]]:
         booster_path  = f'Database/craxg_booster.json'
@@ -2184,8 +2183,9 @@ class MonteCarloSim:
 
         home_status, away_status = self._get_status(home_goals, away_goals)
 
-        home_raw_raxg = self._get_teams_raw_raxg(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
-        away_raw_raxg = self._get_teams_raw_raxg(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
+        home_raw_raxg = self._get_teams_raw_raxg(75, home_active_players, away_active_players, sim_home_players_data, sim_away_players_data)
+        away_raw_raxg = self._get_teams_raw_raxg(75, away_active_players, home_active_players, sim_away_players_data, sim_home_players_data)
+        input(f"{home_raw_raxg*90}, {away_raw_raxg*90}")
         home_players_prob = self.build_player_probs(home_active_players, self.home_players_data)
         away_players_prob = self.build_player_probs(away_active_players, self.away_players_data)
 
@@ -2597,6 +2597,9 @@ class MonteCarloSim:
         return starters, subs
 
     def _get_players_data(self, team: str) -> dict:
+        """
+        Returns all the neccesary data for each active player
+        """
         if team == "home":
             all_players = self.home_starters + self.home_subs
             initial_player_data = self.home_players_init_data
@@ -2645,6 +2648,7 @@ class MonteCarloSim:
                 players_dict[player_id]['on_field'] = extracted.get('on_field')
                 players_dict[player_id]['yellow_card'] = extracted.get('yellow_card')
                 players_dict[player_id]['red_card'] = extracted.get('red_card')
+                players_dict[player_id]['in'] = 0 if extracted.get('on_field') else None # Fix this? This should be exctracted only too. so code it elsewehere
             else:
                 continue
 
@@ -2708,6 +2712,9 @@ class MonteCarloSim:
         return initial_fatigue, initial_rhythm
 
     def _get_sub_minutes(self) -> tuple[dict, dict]:
+        """
+        Returns a dctionary per team for the most common sub windows, and how many subs to do
+        """
         sub_minutes_query = """ 
             SELECT 
                 mpb.match_id,
@@ -2846,33 +2853,56 @@ class MonteCarloSim:
 
         return active_players, passive_players
 
-    def _get_teams_raw_raxg(self, offensive_players, defensive_players, offensive_data, defensive_data) -> float:
-        # team_total_ras
-        team_off_ras = sum(offensive_data[p]['off_sh_coef'] for p in offensive_players)
-        opp_def_ras  = sum(defensive_data[p]['def_sh_coef'] for p in defensive_players)
-        team_total_ras = self.sh_baseline_coef + team_off_ras - opp_def_ras
+    def _get_teams_raw_raxg(self, minute: int, offensive_players: list, defensive_players: list, offensive_data: dict, defensive_data: dict) -> float:
+        # Shared parameters
+        max_fatigue_increase = 1
+        improvement_rate = 0.2
+        tau_inmatch = 20
+        omega = 0.80
+        halftime_recovery_factor = 0.85
 
-        # team_rahs
-        team_off_rahs = sum(offensive_data[p]['off_headers_coef'] for p in offensive_players)
-        opp_def_rahs  = sum(defensive_data[p]['def_headers_coef'] for p in defensive_players)
-        team_rahs = self.hsh_baseline_coef + team_off_rahs - opp_def_rahs
+        # Calculate updated offensive raxg (Rhythm) for each offensive player
+        team_off_raxg = 0
+        for player in offensive_players:
+            player_data = offensive_data[player]
+            initial_rhythm = player_data['initial_rhythm']
+            minutes_on_field = minute - player_data.get('in')
+            current_rhythm = initial_rhythm + (1 - initial_rhythm) * improvement_rate * (1 - math.exp(-minutes_on_field / tau_inmatch))
 
-        # team_rafs
-        team_off_rafs = sum(offensive_data[p]['off_footers_coef'] for p in offensive_players)
-        opp_def_rafs  = sum(defensive_data[p]['def_footers_coef'] for p in defensive_players)
-        team_rafs = self.fsh_baseline_coef + team_off_rafs - opp_def_rafs
+            if player_data['off_xg_coef'] >= 0:
+                updated_off_raxg = player_data['off_xg_coef'] * (0.9 + 0.1 * current_rhythm)
+            else:
+                updated_off_raxg = player_data['off_xg_coef'] * (1 + 0.1 * current_rhythm)
+            team_off_raxg += updated_off_raxg
 
-        # team_plhsq
-        team_off_plhsq = sum(offensive_data[p]['off_hxg_coef'] for p in offensive_players)
-        opp_def_plhsq  = sum(defensive_data[p]['def_hxg_coef'] for p in defensive_players)
-        team_plhsq = self.hxg_baseline_coef + team_off_plhsq - opp_def_plhsq
+        # Calculate updated defensive raxg (Fatigue) for each defensive player
+        opp_def_raxg = 0
+        for player in defensive_players:
+            player_data = defensive_data[player]
+            initial_fatigue = player_data['initial_fatigue']
+            in_minute = player_data.get('in')
 
-        # team_plfsq
-        team_off_plfsq = sum(offensive_data[p]['off_fxg_coef'] for p in offensive_players)
-        opp_def_plfsq  = sum(defensive_data[p]['def_fxg_coef'] for p in defensive_players)
-        team_plfsq = self.fxg_baseline_coef  +team_off_plfsq - opp_def_plfsq
+            if minute > 45 and in_minute < 45:
+                minutes_played_first_half = 45 - in_minute
+                fatigue_increase_first_half = (minutes_played_first_half / 45) * max_fatigue_increase * initial_fatigue
+                fatigue_at_45 = initial_fatigue + fatigue_increase_first_half
+                fatigue_after_halftime = fatigue_at_45 * halftime_recovery_factor
+                minutes_in_second_half = minute - 45
+                fatigue_increase_2nd = (minutes_in_second_half / 45) * max_fatigue_increase * fatigue_after_halftime
+                current_fatigue = min(1.0, fatigue_after_halftime + fatigue_increase_2nd)
+            else:
+                minutes_on_field = minute - in_minute
+                fatigue_increase = (minutes_on_field / 45) * max_fatigue_increase * initial_fatigue
+                current_fatigue = min(1.0, initial_fatigue + fatigue_increase)
 
-        return total_raw_raxg
+            fatigue_impact = omega * current_fatigue * abs(player_data['def_xg_coef'])
+
+            updated_def_raxg = player_data['def_xg_coef'] - fatigue_impact 
+            opp_def_raxg += updated_def_raxg
+
+        raw_raxg = self.xg_baseline_coef + team_off_raxg - opp_def_raxg
+
+        return raw_raxg
  
     def _get_status(self, home_goals: int, away_goals: int) -> tuple[float, float]:
         diff = home_goals - away_goals
