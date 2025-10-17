@@ -2103,7 +2103,7 @@ class MonteCarloSim:
 
         self.home_team_id = int(match_df.iloc[0]['home_team_id'])
         self.away_team_id = int(match_df.iloc[0]['away_team_id'])
-
+        self.match_date = pd.to_datetime(match_df.iloc[0]['date'])
         home_data_raw = match_df.iloc[0]['home_players_data']
         away_data_raw = match_df.iloc[0]['away_players_data']
         if home_data_raw is None or away_data_raw is None:
@@ -2635,6 +2635,8 @@ class MonteCarloSim:
             player_sql_data['sub_out_count'] = self._sub_count(player_sql_data.get('sub_out'))
             player_sql_data['in_status_prob'] = self._status_prob(player_sql_data.get('in_status'))
             player_sql_data['out_status_prob'] = self._status_prob(player_sql_data.get('out_status'))
+            player_sql_data['initial_fatigue'], player_sql_data['initial_rhythm'] = self._get_initial_fr(player_sql_data.get('id'))
+            player_sql_data['out_status_prob'] = self._status_prob(player_sql_data.get('out_status'))
 
             delete_columns = ['id', 'team_id', 'fouls_committed', 'fouls_drawn', 'yellow_cards', 'red_cards', 'minutes_played', 'sub_in', 'sub_out', 'in_status', 'out_status']
             player_sql_data = {k: v for k, v in player_sql_data.items() if k not in delete_columns}
@@ -2682,6 +2684,34 @@ class MonteCarloSim:
 
         total = sum(smoothed.values())
         return {k: v / total for k, v in smoothed.items()}
+
+    def _get_initial_fr(self, player_id: int) -> tuple[float, float]:
+        matches_data_query = """
+        SELECT
+            mpb.minutes_played,
+            mg.date
+        FROM vpfm.match_player_breakdown mpb
+        LEFT JOIN vpfm.match_general mg
+            ON mpb.match_id = mg.id
+        WHERE mpb.player_id = %s
+        """
+        matches_data_df = DB.select(matches_data_query, (player_id,))
+        matches_data_df['date'] = pd.to_datetime(matches_data_df['date'])
+
+        matches_data_df['days_ago'] = (self.match_date - matches_data_df['date']).dt.days
+
+        # Fatigue calculation (3-day decay)
+        total_decayed_minutes_fatigue = sum(minutes * math.exp(-days / 3) for minutes, days in home_matches)
+        initial_fatigue = min(1, home_total_decayed_minutes_fatigue / 90)
+
+        # Rhythm calculation (14-day decay)
+        total_decayed_minutes_rhythm = sum(minutes * math.exp(-days / 14) for minutes, days in home_matches)
+        rhythm_start = min(1, home_total_decayed_minutes_rhythm / 90)
+
+        print(f"Home Team - Initial Fatigue: {home_initial_fatigue:.3f}, Starting Rhythm: {home_rhythm_start:.3f}")
+        print(f"Away Team - Initial Fatigue: {away_initial_fatigue:.3f}, Starting Rhythm: {away_rhythm_start:.3f}")
+
+        return None, None
 
     def get_sub_minutes(self, home_id, away_id, match_initial_time, home_n_subs_avail, away_n_subs_avail):
         teams_data_query = f"""
