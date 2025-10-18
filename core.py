@@ -2171,7 +2171,6 @@ class MonteCarloSim:
         """
         sim_home_players_data = copy.deepcopy(self.home_players_data)
         sim_away_players_data = copy.deepcopy(self.away_players_data)
-        print(sim_home_players_data)
 
         home_goals = self.home_initial_goals
         away_goals = self.away_initial_goals
@@ -2192,16 +2191,15 @@ class MonteCarloSim:
         home_context_raxg = max(1e-6, home_raw_raxg) * home_mult
         away_context_raxg = max(1e-6, away_raw_raxg) * away_mult
         
-        home_foul_p = self._get_team_foul_prob(home_active_players, away_active_players, home_status, is_home=True)
-        away_foul_p = self._get_team_foul_prob(away_active_players, home_active_players, away_status, is_home=False)
-        print(home_foul_p)
+        home_foul_rate = self._get_team_foul_prob(home_active_players, away_active_players, sim_home_players_data, sim_away_players_data, home_status, 1, is_home=True)
+        away_foul_rate = self._get_team_foul_prob(away_active_players, home_active_players, sim_away_players_data, sim_home_players_data, away_status, 1, is_home=False)
 
-        context_ras_change = False
+        raxg_change = False
         for minute in range(self.match_initial_time, 91):
             home_status, away_status = self._get_status(home_goals, away_goals)
-            time_segment = self.get_time_segment(minute)
+            #time_segment = self._get_time_segment(minute) just in the funciton
             if minute in [16, 31, 46, 61, 76]:
-                context_ras_change = True
+                raxg_change = True
 
             if minute in self.all_sub_minutes:
                 context_ras_change = True
@@ -2816,7 +2814,21 @@ class MonteCarloSim:
             return -0.5, 0.5
         elif diff < -1:
             return -1.5, 1.5
-        
+
+    def _get_time_segment(self, minute):
+        if minute < 15:
+            return 1
+        elif minute < 30:
+            return 2
+        elif minute < 45:
+            return 3
+        elif minute < 60:
+            return 4
+        elif minute < 75:
+            return 5
+        else:
+            return 6
+
     def get_shot_type(self, rahs, rafs):
         rahs = max(0, rahs)
         rafs = max(0, rafs)
@@ -2898,46 +2910,20 @@ class MonteCarloSim:
         lrs_df = DB.select(reg_sql, (self.league_id,))
         return lrs_df.iloc[0].to_dict()
 
-    def _calc_team_fouls_per90(self, active_players, opponent_players, players_data, opp_data):
-        minutes_team = sum(players_data[p]['minutes_played'] for p in active_players) or 1
-        minutes_opp  = sum(opp_data[p]['minutes_played']    for p in opponent_players) or 1
+    def _get_team_foul_prob(self, team_players: list, opp_players: list, team_data: dict, opp_data: dict, status: float, time_segment:int, is_home: bool) -> float:
+        league_foul_rate = self.league_regulation_data['foul_rate']
 
-        commits_per90 = sum(
-            (players_data[p]['fouls_committed'] / max(1, players_data[p]['minutes_played'])) * 90
-            for p in active_players
-        )
-        drawn_per90 = sum(
-            (opp_data[p]['fouls_drawn'] / max(1, opp_data[p]['minutes_played'])) * 90
-            for p in opponent_players
-        )
+        team_foul_committed_rate = 0
+        for player in team_players:
+            team_foul_committed_rate += team_data[player]['fouls_committed_rate']
 
-        return (commits_per90 + drawn_per90) / 2.0
+        opp_foul_drawn_rate = 0
+        for player in opp_players:
+            opp_foul_drawn_rate += opp_data[player]['fouls_drawn_rate']
+        
+        reg_factor = self._regulation_factors(is_home, status, time_segment)
 
-    def _get_team_foul_prob(self, active_players, opponent_players, status, is_home):
-        if isinstance(status, (int, float)):
-            status = 1 if status > 0 else -1 if status < 0 else 0
-        key = (frozenset(active_players), frozenset(opponent_players), status, is_home)
-        if key not in self.foul_prob_cache:
-            players_data = self.home_players_data if is_home else self.away_players_data
-            opp_data     = self.away_players_data if is_home else self.home_players_data
-
-            team_f90  = self._calc_team_fouls_per90(active_players, opponent_players,
-                                                    players_data, opp_data)
-            
-            opp_f90  = self._calc_team_fouls_per90(opponent_players,
-                                                active_players,
-                                                opp_data, players_data)
-
-            sum_f90      = team_f90 + opp_f90
-            normaliser   = (sum_f90 + self.ref_fouls_pm) / 2.0
-            adjust_fac   = team_f90 / max(1e-5, normaliser)
-
-            raw_per_min = team_f90 / 90.0 
-
-            per_min = raw_per_min * adjust_fac * self.team_factor[is_home] * self.status_factor[status]
-
-            self.foul_prob_cache[key] = max(per_min, 1e-6)   # keep ≥ very small
-        return self.foul_prob_cache[key]
+        return ((0.5 * league_foul_rate) + (0.25 * team_foul_committed_rate) + (0.25 * opp_foul_drawn_rate)) * reg_factor
     
     def choose_fouler(self, active_players, players_dict):
         weights = [(players_dict[p]['fouls_committed'] / max(1, players_dict[p]['minutes_played']))
