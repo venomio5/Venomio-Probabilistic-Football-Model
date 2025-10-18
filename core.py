@@ -2194,79 +2194,55 @@ class MonteCarloSim:
         home_foul_rate = self._get_team_foul_prob(home_active_players, away_active_players, sim_home_players_data, sim_away_players_data, home_status, 1, is_home=True)
         away_foul_rate = self._get_team_foul_prob(away_active_players, home_active_players, sim_away_players_data, sim_home_players_data, away_status, 1, is_home=False)
 
-        raxg_change = False
+        raxg_change = False 
         for minute in range(self.match_initial_time, 91):
             home_status, away_status = self._get_status(home_goals, away_goals)
-            #time_segment = self._get_time_segment(minute) just in the funciton
             if minute in [16, 31, 46, 61, 76]:
                 raxg_change = True
 
             if minute in self.all_sub_minutes:
-                context_ras_change = True
+                raxg_change = True
+                home_in_players = []
+                away_in_players = []
+
                 if minute in list(self.home_sub_minutes.keys()):
-                    home_active_players, home_passive_players = self.swap_players(home_active_players, home_passive_players, self.home_players_data, self.home_sub_minutes[minute], home_status)
+                    home_active_players, home_inactive_players, home_in_players = self._swap_players(home_active_players, home_inactive_players, sim_home_players_data, self.home_sub_minutes[minute], home_status)
                 if minute in list(self.away_sub_minutes.keys()):
-                    away_active_players, away_passive_players = self.swap_players(away_active_players, away_passive_players, self.away_players_data, self.away_sub_minutes[minute], away_status)
-                home_ras, home_rahs, home_rafs, home_plhsq, home_plfsq = self.get_teams_ra(home_active_players, away_active_players, self.home_players_data, self.away_players_data)
-                away_ras, away_rahs, away_rafs, away_plhsq, away_plfsq = self.get_teams_ra(away_active_players, home_active_players, self.away_players_data, self.home_players_data)
-                home_players_prob = self.build_player_probs(home_active_players, self.home_players_data)
-                away_players_prob = self.build_player_probs(away_active_players, self.away_players_data)
+                    away_active_players, away_inactive_players, away_in_players = self._swap_players(away_active_players, away_inactive_players, sim_away_players_data, self.away_sub_minutes[minute], away_status)
 
-            if context_ras_change:
-                context_ras_change = False
-                home_mult = self.ctx_mult_home[(home_status, time_segment, 0)]
-                away_mult = self.ctx_mult_away[(away_status, time_segment, 0)]
-                home_context_ras = max(1e-6, home_ras) * home_mult
-                away_context_ras = max(1e-6, away_ras) * away_mult
+                sim_home_players_data = self._in_players_minute(minute, home_in_players, sim_home_players_data)
+                sim_away_players_data = self._in_players_minute(minute, away_in_players, sim_away_players_data)
 
-                home_psxg_cache = self.build_psxg_cache(home_active_players, self.home_players_data,
-                                                    home_plhsq, home_plfsq,
-                                                    home_status,  0,
-                                                    True, self.away_players_data)
-                away_psxg_cache = self.build_psxg_cache(away_active_players, self.away_players_data,
-                                                    away_plhsq, away_plfsq,
-                                                    away_status, 0,
-                                                    False, self.home_players_data)
-                
-                home_foul_p = self.get_team_foul_prob(home_active_players,
-                                                        away_active_players,
-                                                        home_status,
-                                                        is_home=True)
+            if raxg_change:
+                raxg_change = False
 
-                away_foul_p = self.get_team_foul_prob(away_active_players,
-                                                        home_active_players,
-                                                        away_status,
-                                                        is_home=False)
+                home_raw_raxg = self._get_teams_raw_raxg(minute, home_active_players, away_active_players, sim_home_players_data, sim_away_players_data)
+                away_raw_raxg = self._get_teams_raw_raxg(minute, away_active_players, home_active_players, sim_away_players_data, sim_home_players_data)
 
-            home_shots = np.random.poisson(home_context_ras)
-            away_shots = np.random.poisson(away_context_ras)
+                home_mult = self.craxg_home_multipliers[(home_status, 0)]
+                away_mult = self.craxg_away_multipliers[(away_status, 0)]
+                home_context_raxg = max(1e-6, home_raw_raxg) * home_mult
+                away_context_raxg = max(1e-6, away_raw_raxg) * away_mult
 
-            if home_shots:
-                for _ in range(home_shots):
-                    body_part = self.get_shot_type(home_rahs, home_rafs)
-                    shooter = self.get_shooter(home_players_prob, body_part)
-                    assister = self.get_assister(home_players_prob, body_part, shooter)
-                    xg_prob   = home_psxg_cache.get((shooter, assister, body_part), 0.0)
-                    outcome = int(np.random.rand() < xg_prob)
-                    # print(f"({shooter}, {assister}, home) = {xg_prob} = {outcome}")
-                    if outcome == 1:
-                        home_goals += 1
-                        context_ras_change = True
-                    shot_rows.append((i, minute, shooter, self.home_team_id, outcome, body_part, assister))
+                home_foul_rate = self._get_team_foul_prob(home_active_players, away_active_players, sim_home_players_data, sim_away_players_data, home_status, self._get_time_segment(minute), is_home=True)
+                away_foul_rate = self._get_team_foul_prob(away_active_players, home_active_players, sim_away_players_data, sim_home_players_data, away_status, self._get_time_segment(minute), is_home=False)
 
-            if away_shots:
-                for _ in range(away_shots):
-                    body_part = self.get_shot_type(away_rahs, away_rafs)
-                    shooter = self.get_shooter(away_players_prob, body_part)
-                    assister = self.get_assister(away_players_prob, body_part, shooter)
-                    xg_prob   = away_psxg_cache.get((shooter, assister, body_part), 0.0)
-                    outcome = int(np.random.rand() < xg_prob) 
-                    # print(f"({shooter}, {assister}, away) = {xg_prob} = {outcome}")
-                    if outcome == 1:
-                        away_goals += 1
-                        context_ras_change = True
-                    shot_rows.append((i, minute, shooter, self.away_team_id, outcome, body_part, assister)) 
+            home_scored_goals = np.random.poisson(home_context_raxg)
+            away_scored_goals = np.random.poisson(away_context_raxg)
 
+            if home_scored_goals:
+                home_goals += home_scored_goals
+                raxg_change = True
+
+            if away_scored_goals:
+                away_goals += away_scored_goals
+                raxg_change = True
+
+            if home_scored_goals or away_scored_goals:
+                score_rows.append((i, minute, home_goals, away_goals))
+            if minute == 90:
+                print(minute, home_goals, away_goals)
+            """
             home_fouls = np.random.poisson(home_foul_p)
             for _ in range(home_fouls):
                 fouler     = self.choose_fouler(home_active_players, self.home_players_data)
@@ -2300,6 +2276,7 @@ class MonteCarloSim:
                     if fouler in away_active_players:
                         away_active_players.remove(fouler)
                         context_ras_change = True
+            """
         return score_rows
 
     def _run_simulations(self, n_sims: int, n_workers: int, flush_every: int = 1000):
@@ -2384,106 +2361,6 @@ class MonteCarloSim:
                 cache[(st, pdif)] = np.exp(raw_margin)
         return home_cache, away_cache
 
-    def _predict_refined_sq_bulk(self, df: pd.DataFrame) -> np.ndarray:
-        cat_cols = ['match_state', 'player_dif']
-        num_cols = ['total_plsqa', 'shooter_sq', 'assister_sq']
-
-        missing = [c for c in num_cols + cat_cols if c not in df.columns]
-        if missing:
-            raise KeyError(f'Refined-SQ prediction failed; missing columns: {missing}')
-
-        n_rows = len(df)
-        X = np.zeros((n_rows, len(self.rsq_columns)), dtype=np.float32)
-
-        for col in num_cols:
-            X[:, self.rsq_col_idx[col]] = (
-                pd.to_numeric(df[col], errors='coerce')
-                  .fillna(0)
-                  .to_numpy(dtype=np.float32)
-            )
-
-        for col in cat_cols:
-            pref = f'{col}_'
-            for i, v in enumerate(df[col].astype(str).fillna('nan')):
-                idx = self.rsq_col_idx.get(f'{pref}{v}')
-                if idx is not None:
-                    X[i, idx] = 1.0
-
-        return self.rsq_booster.inplace_predict(X)
-
-    def _predict_post_shot_bulk(self, df: pd.DataFrame) -> np.ndarray:
-        cat_cols  = ['match_time']
-        bool_cols = ['team_is_home', 'is_raining']
-        num_cols  = ['RSQ', 'shooter_A', 'GK_A',
-                    'team_elevation_dif', 'team_travel',
-                    'team_rest_days', 'temperature_c']
-
-        X_num_bool = df[num_cols + bool_cols].astype(float)
-        X_cat = pd.get_dummies(df[cat_cols], prefix=cat_cols, dummy_na=True)
-        X_all = pd.concat([X_num_bool, X_cat], axis=1)
-        X_all = X_all.reindex(columns=self.psxg_columns, fill_value=0).astype(float)
-        dmatrix = xgb.DMatrix(X_all)
-        return self.psxg_booster.predict(dmatrix)
-
-    def build_xg_cache(self,
-                       active_ids      : list[int],
-                       players_df      ,
-                       plsqa_head      : float,
-                       plsqa_foot      : float,
-                       match_state_num : int,
-                       player_dif_num  : int) -> dict:
-
-        def _safe_sq(src, pid, fallback: float) -> float:
-            if isinstance(src, pd.DataFrame):
-                if pid in src.index:
-                    if 'sq' in src.columns:
-                        return float(src.at[pid, 'sq'])
-                    if 'shooter_sq' in src.columns:
-                        return float(src.at[pid, 'shooter_sq'])
-            elif isinstance(src, dict):
-                rec = src.get(pid, {})
-                if isinstance(rec, dict) and 'sq' in rec:
-                    return float(rec['sq'])
-            return fallback
-
-        state = 'Trailing' if match_state_num < 0 else 'Leading' if match_state_num > 0 else 'Level'
-        pdif  = 'Neg'      if player_dif_num  < 0 else 'Pos'     if player_dif_num  > 0 else 'Neu'
-
-        assist_pool = [None] + active_ids
-        cache_keys, new_rows, out = [], [], {}
-
-        for shooter in active_ids:
-            for body, plsqa in (('Head', plsqa_head), ('Foot', plsqa_foot)):
-                base_sq_default = (self.hxg_baseline_coef if body == 'Head'
-                                   else self.fxg_baseline_coef)
-
-                shooter_sq = _safe_sq(players_df, shooter, base_sq_default)
-
-                for assister in assist_pool:
-                    assister_sq = 0.0 if assister is None else \
-                                  _safe_sq(players_df, assister, base_sq_default)
-
-                    key = (round(plsqa, 4), shooter_sq, assister_sq, state, pdif)
-                    cache_keys.append((shooter, assister, body, key))
-
-                    if key not in self.rsq_pred_cache:
-                        new_rows.append(dict(total_plsqa=plsqa,
-                                             shooter_sq=shooter_sq,
-                                             assister_sq=assister_sq,
-                                             match_state=state,
-                                             player_dif=pdif))
-
-        if new_rows:
-            preds = self._predict_refined_sq_bulk(pd.DataFrame(new_rows))
-            for k, p in zip([ck[-1] for ck in cache_keys if ck[-1] not in self.rsq_pred_cache],
-                            preds):
-                self.rsq_pred_cache[k] = float(p)
-
-        for shooter, assister, body, k in cache_keys:
-            out[(shooter, assister, body)] = self.rsq_pred_cache[k]
-
-        return out
- 
     def _divide_players(self, team: str) -> tuple[list[str], list[str]]:
         if team == "home":
             players_data = self.home_players_init_data
@@ -2674,82 +2551,40 @@ class MonteCarloSim:
             distribution[round(min(90, minute))] = distribution.get(minute, 0) + (base + 1 if i < remainder else base)
         return distribution
 
-    def swap_players(self, active_players, passive_players, players_data, subs, game_status_n):
-        def interpret_game_status(status_code):
-            if status_code > 0:
-                return "Leading"
-            elif status_code < 0:
-                return "Trailing"
-            else:
-                return "Level"
-            
-        game_status = interpret_game_status(game_status_n)
-
-        total_active_minutes = 0
-        for player in active_players:
-            total_active_minutes += players_data[player]['minutes_played']
-
-        active_players_dict = {}
-
-        for player in active_players:
-            active_players_dict[player] = (1 - (players_data[player]['minutes_played'] / total_active_minutes)) * (players_data[player]['out_status_prob'][game_status])
-
-        total_active_p = sum(active_players_dict.values())
-        if total_active_p == 0:
-            num_players = len(active_players_dict)
-            normalized_active_p = {key: 1.0 / num_players for key in active_players_dict.keys()}
+    def _swap_players(self, active_players: list, inactive_players: list, players_data: dict, subs: int, status: float) -> tuple[list, list, list]:
+        if status > 0:
+            status = "Leading"
+        elif status < 0:
+            status = "Trailing"
         else:
-            normalized_active_p = {key: value / total_active_p for key, value in active_players_dict.items()}
-            probabilities = list(normalized_active_p.values())
-            if subs > 1 and probabilities.count(1.0) == 1:
-                max_index = probabilities.index(1.0)
-                probabilities[max_index] = 0.99
-                small_probability = 0.01 / (len(probabilities) - 1)
-                for i in range(len(probabilities)):
-                    if i != max_index:
-                        probabilities[i] = small_probability
-            for i, key in enumerate(normalized_active_p.keys()):
-                normalized_active_p[key] = probabilities[i]
+            status = "Level"
 
-        active_weights = list(normalized_active_p.values())     
-        
+        total_sub_out_count = sum(players_data[player]['sub_out_count'] + 1 for player in active_players)
+        raw_out_prob = {player: (((players_data[player]['sub_out_count'] + 1) / total_sub_out_count)) * (players_data[player]['out_status_prob'][status]) for player in active_players}
+        total_raw_out_prob = sum(raw_out_prob.values())
+        normalized_out_prob = {player: raw_prob / total_raw_out_prob for player, raw_prob in raw_out_prob.items()}
+
+        active_weights = list(normalized_out_prob.values())
         picked_out_players = np.random.choice(active_players, p=active_weights, replace=False, size=subs)
 
-        total_passive_minutes = 0
-        for player in passive_players:
-            total_passive_minutes += players_data[player]['minutes_played']
+        total_sub_in_count = sum(players_data[player]['sub_in_count'] + 1 for player in inactive_players)
+        raw_in_prob = {player: (((players_data[player]['sub_in_count'] + 1)/ total_sub_in_count)) * (players_data[player]['in_status_prob'][status]) for player in inactive_players}
+        total_raw_in_prob = sum(raw_in_prob.values())
+        normalized_in_prob = {player: raw_prob / total_raw_in_prob for player, raw_prob in raw_in_prob.items()}
 
-        passive_players_dict = {}
-
-        for player in passive_players:
-            passive_players_dict[player] = (players_data[player]['minutes_played'] / total_passive_minutes) * (players_data[player]['in_status_prob'][game_status])
-
-        total_passive_p = sum(passive_players_dict.values())
-        if total_passive_p == 0:
-            num_players = len(passive_players_dict)
-            normalized_passive_p = {key: 1.0 / num_players for key in passive_players_dict.keys()}
-        else:
-            normalized_passive_p = {key: value / total_passive_p for key, value in passive_players_dict.items()}
-            probabilities = list(normalized_passive_p.values())
-            if subs > 1 and probabilities.count(1.0) == 1:
-                max_index = probabilities.index(1.0)
-                probabilities[max_index] = 0.99
-                small_probability = 0.01 / (len(probabilities) - 1)
-                for i in range(len(probabilities)):
-                    if i != max_index:
-                        probabilities[i] = small_probability
-            for i, key in enumerate(normalized_passive_p.keys()):
-                normalized_passive_p[key] = probabilities[i]
-
-        passive_weights = list(normalized_passive_p.values())   
-
-        picked_in_players = np.random.choice(passive_players, p=passive_weights, replace=False, size=subs)
+        inactive_weights = list(normalized_in_prob.values())
+        picked_in_players = np.random.choice(inactive_players, p=inactive_weights, replace=False, size=subs)
 
         active_players = [player for player in active_players if player not in picked_out_players]
         active_players.extend(picked_in_players)
-        passive_players = [player for player in passive_players if player not in picked_in_players]
+        inactive_players = [player for player in inactive_players if player not in picked_in_players]
 
-        return active_players, passive_players
+        return active_players, inactive_players, picked_in_players
+
+    def _in_players_minute(self, minute: int, new_players: list, players_data: dict) -> dict:
+        for player in new_players:
+            players_data[player]['in'] = minute
+        return players_data
 
     def _get_teams_raw_raxg(self, minute: int, offensive_players: list, defensive_players: list, offensive_data: dict, defensive_data: dict) -> float:
         # Shared parameters
@@ -2815,7 +2650,7 @@ class MonteCarloSim:
         elif diff < -1:
             return -1.5, 1.5
 
-    def _get_time_segment(self, minute):
+    def _get_time_segment(self, minute: int) -> int:
         if minute < 15:
             return 1
         elif minute < 30:
@@ -2829,40 +2664,6 @@ class MonteCarloSim:
         else:
             return 6
 
-    def get_shot_type(self, rahs, rafs):
-        rahs = max(0, rahs)
-        rafs = max(0, rafs)
-        
-        total = rahs + rafs
-        if total == 0:
-            probs = [0.2, 0.8]
-        else:
-            probs = [rahs / total, rafs / total]
-
-        selected_index = np.random.choice([0, 1], p=probs)
-        return "Head" if selected_index == 0 else "Foot"
-    
-    def get_shooter(self, prob_dicts, body_part):
-        _body_part_key = {'Head': 'headers', 'Foot': 'footers'}
-
-        key      = _body_part_key[body_part] 
-        probs    = prob_dicts['shooter'][key]
-        players  = list(probs.keys())
-        p_vals   = list(probs.values())
-        # for player, prob in probs.items():
-        #     print(f"Shooter: {player}: {prob * 100:.2f}%")
-        return np.random.choice(players, p=p_vals)
-    
-    def get_assister(self, prob_dicts, body_part, shooter):
-        _body_part_key = {'Head': 'headers', 'Foot': 'footers'}
-        key      = _body_part_key[body_part]
-        probs    = prob_dicts['assist'][key][shooter]
-        ass      = list(probs.keys())
-        p_vals   = list(probs.values())
-        # for player, prob in probs.items():
-        #     print(f"Assister: {player}: {prob * 100:.2f}%")
-        return np.random.choice(ass, p=p_vals)
-
     def _insert_buf(self, rows: list, *, initial_delete: bool) -> None:
         def to_builtin(x):
             if isinstance(x, (np.generic,)):
@@ -2870,7 +2671,7 @@ class MonteCarloSim:
             return x
         
         if initial_delete:
-            DB.execute("DELETE FROM simulation WHERE id = %s", (self.match_id,))
+            DB.execute("DELETE FROM simulation WHERE match_id = %s", (self.match_id,))
 
         batch_size = 200
         for i in range(0, len(rows), batch_size):
