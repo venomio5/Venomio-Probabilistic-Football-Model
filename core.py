@@ -2182,12 +2182,14 @@ class MonteCarloSim:
         score_rows = []
 
         home_status, away_status = self._get_status(home_goals, away_goals)
+        home_player_dif = 0
+        away_player_dif = 0
 
         home_raw_raxg = self._get_teams_raw_raxg(0, home_active_players, away_active_players, sim_home_players_data, sim_away_players_data)
         away_raw_raxg = self._get_teams_raw_raxg(0, away_active_players, home_active_players, sim_away_players_data, sim_home_players_data)
 
-        home_mult = self.craxg_home_multipliers[(0, 0)]
-        away_mult = self.craxg_away_multipliers[(0, 0)]
+        home_mult = self.craxg_home_multipliers[(0, home_player_dif)]
+        away_mult = self.craxg_away_multipliers[(0, away_player_dif)]
         home_context_raxg = max(1e-6, home_raw_raxg) * home_mult
         away_context_raxg = max(1e-6, away_raw_raxg) * away_mult
         
@@ -2219,8 +2221,8 @@ class MonteCarloSim:
                 home_raw_raxg = self._get_teams_raw_raxg(minute, home_active_players, away_active_players, sim_home_players_data, sim_away_players_data)
                 away_raw_raxg = self._get_teams_raw_raxg(minute, away_active_players, home_active_players, sim_away_players_data, sim_home_players_data)
 
-                home_mult = self.craxg_home_multipliers[(home_status, 0)]
-                away_mult = self.craxg_away_multipliers[(away_status, 0)]
+                home_mult = self.craxg_home_multipliers[(home_status, home_player_dif)]
+                away_mult = self.craxg_away_multipliers[(away_status, away_player_dif)]
                 home_context_raxg = max(1e-6, home_raw_raxg) * home_mult
                 away_context_raxg = max(1e-6, away_raw_raxg) * away_mult
 
@@ -2240,43 +2242,48 @@ class MonteCarloSim:
 
             if home_scored_goals or away_scored_goals:
                 score_rows.append((i, minute, home_goals, away_goals))
-            if minute == 90:
-                print(minute, home_goals, away_goals)
-            """
-            home_fouls = np.random.poisson(home_foul_p)
-            for _ in range(home_fouls):
-                fouler     = self.choose_fouler(home_active_players, self.home_players_data)
-                card_type  = self.determine_card(fouler, self.home_players_data)
-                if card_type != 'NONE':
-                    card_rows.append((i, minute, fouler, self.home_team_id, card_type))
-                if card_type == 'YC':
-                    self.home_players_data[fouler]['sim_yellow'] += 1
-                    if self.home_players_data[fouler]['sim_yellow'] >= 2:
-                        home_active_players.remove(fouler)
-                        context_ras_change = True
-                elif card_type == 'RC':
-                    self.home_players_data[fouler]['sim_red'] = True
-                    if fouler in home_active_players:
-                        home_active_players.remove(fouler)
-                        context_ras_change = True
 
-            away_fouls = np.random.poisson(away_foul_p)
-            for _ in range(away_fouls):
-                fouler     = self.choose_fouler(away_active_players, self.away_players_data)
-                card_type  = self.determine_card(fouler, self.away_players_data)
-                if card_type != 'NONE':
-                    card_rows.append((i, minute, fouler, self.away_team_id, card_type))
+            home_fouls = np.random.poisson(home_foul_rate)
+            for _ in range(home_fouls):
+                fouler = self._choose_fouler(home_active_players, sim_home_players_data)
+                card_type  = self._determine_card(fouler, self.home_players_data)
+
                 if card_type == 'YC':
-                    self.away_players_data[fouler]['sim_yellow'] += 1
-                    if self.away_players_data[fouler]['sim_yellow'] >= 2:
-                        away_active_players.remove(fouler)
-                        context_ras_change = True
+                    if sim_home_players_data[fouler]['yellow_card'] == True:
+                        sim_home_players_data[fouler]['red_card'] = True
+                        home_active_players.remove(fouler)
+                        home_player_dif = 1 # ADD THE PLAYER DIF
+                        raxg_change = True
+                    else:
+                        sim_home_players_data[fouler]['yellow_card'] = True
+
                 elif card_type == 'RC':
-                    self.away_players_data[fouler]['sim_red'] = True
-                    if fouler in away_active_players:
+                    sim_home_players_data[fouler]['red_card'] = True
+                    home_active_players.remove(fouler)
+                    home_player_dif = 1
+                    raxg_change = True
+                    
+
+            away_fouls = np.random.poisson(away_foul_rate)
+            for _ in range(away_fouls):
+                fouler = self._choose_fouler(away_active_players, sim_away_players_data)
+                card_type  = self._determine_card(fouler, self.away_players_data)
+
+                if card_type == 'YC':
+                    if sim_away_players_data[fouler]['yellow_card'] == True:
+                        sim_away_players_data[fouler]['red_card'] = True
                         away_active_players.remove(fouler)
-                        context_ras_change = True
-            """
+                        away_player_dif = 1
+                        raxg_change = True
+                    else:
+                        sim_away_players_data[fouler]['yellow_card'] = True
+
+                elif card_type == 'RC':
+                    sim_away_players_data[fouler]['red_card'] = True
+                    away_active_players.remove(fouler)
+                    away_player_dif = 1
+                    raxg_change = True
+                    
         return score_rows
 
     def _run_simulations(self, n_sims: int, n_workers: int, flush_every: int = 1000):
@@ -2714,58 +2721,37 @@ class MonteCarloSim:
     def _get_team_foul_prob(self, team_players: list, opp_players: list, team_data: dict, opp_data: dict, status: float, time_segment:int, is_home: bool) -> float:
         league_foul_rate = self.league_regulation_data['foul_rate']
 
-        team_foul_committed_rate = 0
-        for player in team_players:
-            team_foul_committed_rate += team_data[player]['fouls_committed_rate']
-
-        opp_foul_drawn_rate = 0
-        for player in opp_players:
-            opp_foul_drawn_rate += opp_data[player]['fouls_drawn_rate']
+        team_foul_committed_rate = sum(team_data[player]['fouls_committed_rate'] for player in team_players)
+        opp_foul_drawn_rate = sum(opp_data[player]['fouls_drawn_rate'] for player in opp_players)
         
         reg_factor = self._regulation_factors(is_home, status, time_segment)
 
         return ((0.5 * league_foul_rate) + (0.25 * team_foul_committed_rate) + (0.25 * opp_foul_drawn_rate)) * reg_factor
     
-    def choose_fouler(self, active_players, players_dict):
-        weights = [(players_dict[p]['fouls_committed'] / max(1, players_dict[p]['minutes_played']))
-                   for p in active_players]
-        total = sum(weights)
-        if total == 0:
-            weights = [1 / len(active_players)] * len(active_players)
-        else:
-            weights = [w / total for w in weights]
+    def _choose_fouler(self, active_players: list, players_data: dict) -> str:
+        total_foul_rate = sum(players_data[player]['fouls_committed_rate'] + 0.001 for player in active_players)
+        foul_prob = {player: (((players_data[player]['fouls_committed_rate'] + 0.001) / total_foul_rate)) for player in active_players}
+
+        weights = list(foul_prob.values())
+
         return np.random.choice(active_players, p=weights)
     
-    def determine_card(self, player_id, players_dict, k: int = 10):
-        pdata = players_dict[player_id]
+    def _determine_card(self, player_id: str, players_data: dict) -> str:
+        player_data = players_data[player_id]
 
-        fouls = pdata.get('fouls_committed', 0)
-        ycs   = pdata.get('yellow_cards',     0)
-        rcs   = pdata.get('red_cards',        0)
+        player_yellow_card_rate = player_data.get('yellow_card_rate')
+        player_red_card_rate = player_data.get('red_card_rate')
 
-        player_yc_rate = (ycs + k * self.yc_prob_given_foul) / (fouls + k)
-        player_rc_rate = (rcs + k * self.rc_prob_given_foul) / (fouls + k)
+        league_yellow_card_rate = self.league_regulation_data.get('yc_rate')
+        league_red_card_rate = self.league_regulation_data.get('rc_rate')
 
-        weight_player = 0.5
-        weight_ref    = 1.0 - weight_player
+        yc_prob = (league_yellow_card_rate * 0.75) + (player_yellow_card_rate * 0.25)
+        rc_prob = (league_red_card_rate * 0.75) + (player_red_card_rate * 0.25)
+        none_prob = 1 - yc_prob - rc_prob
 
-        yc_prob = weight_player * player_yc_rate + weight_ref * self.yc_prob_given_foul
-        rc_prob = weight_player * player_rc_rate + weight_ref * self.rc_prob_given_foul
+        probs = [yc_prob, rc_prob, none_prob]
 
-        total = yc_prob + rc_prob
-        if total > 1.0:
-            yc_prob /= total
-            rc_prob /= total
-            total = 1.0
-
-        none_prob = 1.0 - total 
-        probs     = [yc_prob, rc_prob, none_prob]
-
-        probs = [max(p, 0.0) for p in probs]
-        probs = np.array(probs) / np.sum(probs)
-
-        outcome = np.random.choice(['YC', 'RC', 'NONE'], p=probs)
-        return outcome
+        return np.random.choice(['YC', 'RC', 'NONE'], p=probs)
 
 # ------------------------------ Automatization ------------------------------
 class AutoLineups:
