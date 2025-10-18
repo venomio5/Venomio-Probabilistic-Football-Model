@@ -2150,7 +2150,7 @@ class MonteCarloSim:
         else:
             range_value = 8000
 
-        self._run_simulations(n_sims=1, n_workers=1, flush_every=10000) # 1 & 1(4) & 10k (1k) for testing
+        self._run_simulations(n_sims=range_value, n_workers=1, flush_every=10000) # 1 & 1(4) & 10k (1k) for testing
 
     def _load_craxg_model(self) -> tuple[xgb.Booster, list[str]]:
         booster_path  = f'Database/craxg_booster.json'
@@ -2182,14 +2182,12 @@ class MonteCarloSim:
         score_rows = []
 
         home_status, away_status = self._get_status(home_goals, away_goals)
-        home_player_dif = 0
-        away_player_dif = 0
 
         home_raw_raxg = self._get_teams_raw_raxg(0, home_active_players, away_active_players, sim_home_players_data, sim_away_players_data)
         away_raw_raxg = self._get_teams_raw_raxg(0, away_active_players, home_active_players, sim_away_players_data, sim_home_players_data)
 
-        home_mult = self.craxg_home_multipliers[(0, home_player_dif)]
-        away_mult = self.craxg_away_multipliers[(0, away_player_dif)]
+        home_mult = self.craxg_home_multipliers[(0, 0)]
+        away_mult = self.craxg_away_multipliers[(0, 0)]
         home_context_raxg = max(1e-6, home_raw_raxg) * home_mult
         away_context_raxg = max(1e-6, away_raw_raxg) * away_mult
         
@@ -2221,8 +2219,8 @@ class MonteCarloSim:
                 home_raw_raxg = self._get_teams_raw_raxg(minute, home_active_players, away_active_players, sim_home_players_data, sim_away_players_data)
                 away_raw_raxg = self._get_teams_raw_raxg(minute, away_active_players, home_active_players, sim_away_players_data, sim_home_players_data)
 
-                home_mult = self.craxg_home_multipliers[(home_status, home_player_dif)]
-                away_mult = self.craxg_away_multipliers[(away_status, away_player_dif)]
+                home_mult = self.craxg_home_multipliers[(home_status, self._get_player_dif(len(home_active_players), len(away_active_players)))]
+                away_mult = self.craxg_away_multipliers[(away_status, self._get_player_dif(len(away_active_players), len(home_active_players)))]
                 home_context_raxg = max(1e-6, home_raw_raxg) * home_mult
                 away_context_raxg = max(1e-6, away_raw_raxg) * away_mult
 
@@ -2252,7 +2250,6 @@ class MonteCarloSim:
                     if sim_home_players_data[fouler]['yellow_card'] == True:
                         sim_home_players_data[fouler]['red_card'] = True
                         home_active_players.remove(fouler)
-                        home_player_dif = 1 # ADD THE PLAYER DIF
                         raxg_change = True
                     else:
                         sim_home_players_data[fouler]['yellow_card'] = True
@@ -2260,7 +2257,6 @@ class MonteCarloSim:
                 elif card_type == 'RC':
                     sim_home_players_data[fouler]['red_card'] = True
                     home_active_players.remove(fouler)
-                    home_player_dif = 1
                     raxg_change = True
                     
 
@@ -2273,7 +2269,6 @@ class MonteCarloSim:
                     if sim_away_players_data[fouler]['yellow_card'] == True:
                         sim_away_players_data[fouler]['red_card'] = True
                         away_active_players.remove(fouler)
-                        away_player_dif = 1
                         raxg_change = True
                     else:
                         sim_away_players_data[fouler]['yellow_card'] = True
@@ -2281,7 +2276,6 @@ class MonteCarloSim:
                 elif card_type == 'RC':
                     sim_away_players_data[fouler]['red_card'] = True
                     away_active_players.remove(fouler)
-                    away_player_dif = 1
                     raxg_change = True
                     
         return score_rows
@@ -2656,6 +2650,23 @@ class MonteCarloSim:
             return -0.5, 0.5
         elif diff < -1:
             return -1.5, 1.5
+
+    def _get_player_dif(self, team_n_players: int, opp_n_players: int) -> float:
+        team_player_dif = team_n_players - opp_n_players
+        output = 0.0
+
+        if team_player_dif > 1:
+            output = 1.5
+        elif team_player_dif == 1:
+            output = 0.5
+        elif team_player_dif < -1:
+            output = -1.5
+        elif team_player_dif == -1:
+            output = -0.5
+        else:
+            pass
+
+        return output
 
     def _get_time_segment(self, minute: int) -> int:
         if minute < 15:
