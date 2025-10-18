@@ -2126,8 +2126,7 @@ class MonteCarloSim:
         self.craxg_booster, self.craxg_columns = self._load_craxg_model()
         self.craxg_home_multipliers, self.craxg_away_multipliers = self._precompute_craxg_multipliers()
 
-        #self.ref_stats = self.get_referee_stats() # This should be checked later
-        #self.precompute_card_sim_data() # This should be checked later
+        self.league_regulation_data = self._get_league_regulation_data()
 
         self.home_starters, self.home_subs = self._divide_players("home")
         self.away_starters, self.away_subs = self._divide_players("away")
@@ -2172,6 +2171,7 @@ class MonteCarloSim:
         """
         sim_home_players_data = copy.deepcopy(self.home_players_data)
         sim_away_players_data = copy.deepcopy(self.away_players_data)
+        print(sim_home_players_data)
 
         home_goals = self.home_initial_goals
         away_goals = self.away_initial_goals
@@ -2191,25 +2191,10 @@ class MonteCarloSim:
         away_mult = self.craxg_away_multipliers[(0, 0)]
         home_context_raxg = max(1e-6, home_raw_raxg) * home_mult
         away_context_raxg = max(1e-6, away_raw_raxg) * away_mult
-
-        home_psxg_cache = self.build_psxg_cache(home_active_players, self.home_players_data,
-                                                home_plhsq, home_plfsq,
-                                                home_status,  0,
-                                                True, self.away_players_data)
-        away_psxg_cache = self.build_psxg_cache(away_active_players, self.away_players_data,
-                                                away_plhsq, away_plfsq,
-                                                away_status, 0,
-                                                False, self.home_players_data)
         
-        home_foul_p = self.get_team_foul_prob(home_active_players,
-                                                away_active_players,
-                                                home_status,
-                                                is_home=True)
-
-        away_foul_p = self.get_team_foul_prob(away_active_players,
-                                                home_active_players,
-                                                away_status,
-                                                is_home=False)
+        home_foul_p = self._get_team_foul_prob(home_active_players, away_active_players, home_status, is_home=True)
+        away_foul_p = self._get_team_foul_prob(away_active_players, home_active_players, away_status, is_home=False)
+        print(home_foul_p)
 
         context_ras_change = False
         for minute in range(self.match_initial_time, 91):
@@ -2500,79 +2485,7 @@ class MonteCarloSim:
             out[(shooter, assister, body)] = self.rsq_pred_cache[k]
 
         return out
-
-    def build_psxg_cache(self,
-                         active_ids      : list[int],
-                         players_df      ,
-                         plsqa_head      : float,
-                         plsqa_foot      : float,
-                         match_state_num : int,
-                         player_dif_num  : int,
-                         is_home         : bool,
-                         opp_players_df  ) -> dict:
-
-        rsq_cache = self.build_xg_cache(active_ids, players_df,
-                                        plsqa_head, plsqa_foot,
-                                        match_state_num, player_dif_num)
-
-        def _safe(src, pid, col):
-            if isinstance(src, pd.DataFrame):
-                if pid in src.index and col in src.columns:
-                    return float(src.at[pid, col])
-                if 'player_id' in src.columns:
-                    row = src[src['player_id'] == pid]
-                    return float(row.iloc[0][col]) if not row.empty else 0.0
-                return 0.0
-            rec = src.get(pid, {})
-            return float(rec.get(col, 0.0)) if isinstance(rec, dict) else 0.0
-
-        if isinstance(opp_players_df, pd.DataFrame):
-            gk_rows = opp_players_df.loc[opp_players_df.get('position') == 'GK']
-            gk_ability = float(gk_rows['GK_A'].iloc[0]) if not gk_rows.empty else 0.0
-        else:
-            gk_id = next((pid for pid, rec in opp_players_df.items()
-                          if rec.get('position') == 'GK'), None)
-            gk_ability = float(opp_players_df.get(gk_id, {}).get('GK_A', 0.0)) if gk_id else 0.0
-
-        team_elev   = self.home_elevation_dif if is_home else self.away_elevation_dif
-        team_travel = 0.0 if is_home else self.away_travel
-        team_rest   = self.home_rest_days  if is_home else self.away_rest_days
-        match_time  = self.match_time_label
-
-        cache_keys, new_rows, out = [], [], {}
-        assist_pool = [None] + active_ids
-
-        for shooter in active_ids:
-            shooter_ability = _safe(players_df, shooter, 'shooter_A')
-            for assister in assist_pool:
-                for body, rsq in (('Head', rsq_cache.get((shooter, assister, 'Head'), 0.0)),
-                                  ('Foot', rsq_cache.get((shooter, assister, 'Foot'), 0.0))):
-                    key = (round(rsq, 6), shooter_ability, gk_ability, is_home, body)
-                    cache_keys.append((shooter, assister, body, key))
-                    if key not in self.psxg_pred_cache:
-                        new_rows.append(dict(
-                            RSQ=rsq,
-                            shooter_A=shooter_ability,
-                            GK_A=gk_ability,
-                            team_is_home=int(is_home),
-                            team_elevation_dif=team_elev,
-                            team_travel=team_travel,
-                            team_rest_days=team_rest,
-                            temperature_c=self.temperature,
-                            is_raining=int(self.is_raining),
-                            match_time=match_time
-                        ))
-
-        if new_rows:
-            preds = self._predict_post_shot_bulk(pd.DataFrame(new_rows))
-            for k, p in zip([ck[-1] for ck in cache_keys if ck[-1] not in self.psxg_pred_cache], preds):
-                self.psxg_pred_cache[k] = float(p)
-
-        for shooter, assister, body, k in cache_keys:
-            out[(shooter, assister, body)] = self.psxg_pred_cache[k]
-
-        return out
-    
+ 
     def _divide_players(self, team: str) -> tuple[list[str], list[str]]:
         if team == "home":
             players_data = self.home_players_init_data
@@ -2938,7 +2851,7 @@ class MonteCarloSim:
         #     print(f"Assister: {player}: {prob * 100:.2f}%")
         return np.random.choice(ass, p=p_vals)
 
-    def _insert_buf(self, rows: list, *, initial_delete: bool):
+    def _insert_buf(self, rows: list, *, initial_delete: bool) -> None:
         def to_builtin(x):
             if isinstance(x, (np.generic,)):
                 return x.item()
@@ -2962,32 +2875,28 @@ class MonteCarloSim:
 
             DB.execute(insert_sql, params)
 
-    def get_referee_stats(self):
-        sql = f"""
-            SELECT fouls, yellow_cards, red_cards, matches_played
-            FROM referee_data
-            WHERE referee_name = '{self.referee_name}'
+    def _regulation_factors(self, ha: bool, status: float, time: int) -> float:
+        ha_factor   = {True: 0.95, False: 1.05}
+        status_factor = {-1.5: 1.1, -0.5: 1.05, 0: 1.0, 0.5: 0.95, 1.5: 0.9}
+        time_factor = {1: 0.90, 2: 0.95, 3: 0.98, 4: 1.02, 5: 1.05, 6: 1.10}
+
+        ha_val = ha_factor[ha]
+        status_val = status_factor[status]
+        time_val = time_factor[time]
+        
+        return ha_val * status_val * time_val
+
+    def _get_league_regulation_data(self) -> dict:
+        reg_sql = """
+            SELECT
+                foul_rate / 90 / 2 AS foul_rate,
+                yc_rate / foul_rate AS yc_rate,
+                rc_rate / foul_rate AS rc_rate
+            FROM leagues
+            WHERE id = %s
         """
-        df = DB.select(sql)
-        if df.empty:
-            return {'fouls': 26.5, 'yellow_cards': 3.8, 'red_cards': 0.14, 'matches_played': 1}
-        return df.iloc[0].to_dict()
-
-    def precompute_card_sim_data(self):
-        self.team_factor   = {True: 0.95, False: 1.05}
-        self.status_factor = {'Leading': 0.88, 'Level': 1.0, 'Trailing': 1.11,
-                              1: 0.88, 0: 1.0, -1: 1.11}      # handles numeric status too
-
-        rf                 = max(1, self.ref_stats['matches_played'])
-        self.ref_fouls_pm  = self.ref_stats['fouls']        / rf
-        self.ref_ycs_pm    = self.ref_stats['yellow_cards'] / rf
-        self.ref_rcs_pm    = self.ref_stats['red_cards']    / rf
-
-        self.yc_prob_given_foul   = self.ref_ycs_pm / max(1e-5, self.ref_fouls_pm)
-        self.rc_prob_given_foul   = self.ref_rcs_pm / max(1e-5, self.ref_fouls_pm)
-        self.none_prob_given_foul = max(0.0, 1.0 - self.yc_prob_given_foul - self.rc_prob_given_foul)
-
-        self.foul_prob_cache = {}
+        lrs_df = DB.select(reg_sql, (self.league_id,))
+        return lrs_df.iloc[0].to_dict()
 
     def _calc_team_fouls_per90(self, active_players, opponent_players, players_data, opp_data):
         minutes_team = sum(players_data[p]['minutes_played'] for p in active_players) or 1
@@ -3004,7 +2913,7 @@ class MonteCarloSim:
 
         return (commits_per90 + drawn_per90) / 2.0
 
-    def get_team_foul_prob(self, active_players, opponent_players, status, is_home):
+    def _get_team_foul_prob(self, active_players, opponent_players, status, is_home):
         if isinstance(status, (int, float)):
             status = 1 if status > 0 else -1 if status < 0 else 0
         key = (frozenset(active_players), frozenset(opponent_players), status, is_home)
