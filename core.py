@@ -2194,6 +2194,8 @@ class MonteCarloSim:
         home_foul_rate = self._get_team_foul_prob(home_active_players, away_active_players, sim_home_players_data, sim_away_players_data, home_status, 1, is_home=True)
         away_foul_rate = self._get_team_foul_prob(away_active_players, home_active_players, sim_away_players_data, sim_home_players_data, away_status, 1, is_home=False)
 
+        score_rows.append((i, 0, home_goals, away_goals))
+
         raxg_change = False 
         for minute in range(self.match_initial_time, 91):
             home_status, away_status = self._get_status(home_goals, away_goals)
