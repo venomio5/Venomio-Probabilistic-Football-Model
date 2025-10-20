@@ -30,7 +30,7 @@ import copy
 import unicodedata
 from dotenv import load_dotenv
 
-# ------------------------------ Database ------------------------------
+# ------------------------------ Database Manager ------------------------------
 class DatabaseManager:
     """
     Optimizes the initializaiton of a MySQLConnectionPool with UTF-8MB4 encoding.
@@ -128,6 +128,51 @@ try:
 except Exception as e:
     print(f"[INFO] Could not connect to DB: {e}")
     DB = None
+
+# ------------------------------ Scraping Manager ------------------------------
+"""
+Chromedriver at https://googlechromelabs.github.io/chrome-for-testing/
+"""
+class SeleniumManager:
+    """
+    Manages Chrome driver setup and lifecycle.
+    """
+    def __init__(self, simple_mode=False):
+        self.simple_mode = simple_mode
+        self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        self.driver = None
+
+    def __enter__(self):
+        service = Service('chromedriver.exe')
+        options = webdriver.ChromeOptions()
+        
+        if not self.simple_mode:
+            performance_args = [
+                "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage",
+                "--disable-extensions", "--disable-plugins", "--disable-notifications",
+                "--disable-popup-blocking", "--disable-default-apps", "--headless=new",
+                "--disable-background-timer-throttling", "--disable-renderer-backgrounding", 
+                "--disable-client-side-phishing-detection",
+                "--blink-settings=imagesEnabled=false",
+                "--ignore-certificate-errors",
+                "--ignore-ssl-errors",
+                f"--user-agent={self.user_agent}"
+            ]
+        
+            for arg in performance_args:
+                options.add_argument(arg)
+
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            options.add_experimental_option('useAutomationExtension', False)
+            options.add_argument('--disable-blink-features=AutomationControlled')
+
+        self.driver = webdriver.Chrome(service=service, options=options)
+        self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        return self.driver
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.driver:
+            self.driver.quit()
 
 # --------------- Useful Functions & Variables ---------------
 def get_team_name_by_id(id: int):
@@ -254,95 +299,80 @@ def flip(series: pd.Series) -> pd.Series:
 
 _ID_RE = re.compile(r"(?P<name>.+?)_\d+_[A-Z]{1,2}$")
 # ------------------------------ Fetch & Remove Data ------------------------------
-class Fill_Teams_Data:
+class FillTeamsData:
     """
-    - Fetches the fixture URL from the league_data table.
-    - Scrapes team names, venues, and fixture URLs using Selenium.
-    - Resolves each venue to precise geographic coordinates via Nominatim.
-    - Retrieves elevation data for each location via Open-Elevation API.
-    - Extracts direct 'Scores & Fixtures' URLs for each team.
-    - Inserts or updates team_data table with enriched team metadata.
-    - Removes obsolete team entries for the league. 
+    Provides a complete refresh of team metadata for a league by scraping and enriching fixture information.  
+    Ensures that every team entry in the database reflects accurate, up-to-date details including location and elevation,
+    while removing outdated or missing records to maintain data consistency and reliability.
     """
     def __init__(self, league_id):
         self.league_id = int(league_id)
-        league_df = DB.select(f"SELECT league_id, fbref_fixtures_url FROM league_data WHERE league_id = {self.league_id}")
-        league_url = league_df['fbref_fixtures_url'].values[0]
+        league_df = DB.select("SELECT id, fixtures_url FROM leagues WHERE id = %s", (self.league_id,))
+        self.league_url = league_df['fixtures_url'].values[0]
 
-        teams_dict = self.get_teams(league_url)
+        teams_venue_data = self._get_teams()
         insert_data = []
 
-        for team, (venue, team_page_url) in teams_dict.items():
-            lat, lon = self.get_coordinates(team, venue)
+        for team, venue in teams_venue_data.items():
+            lat, lon = self._get_coordinates(team, venue)
             coordinates_str = f"{lat},{lon}"
-            elevation = self.get_elevation(lat, lon)
-            fixtures_url = self.get_scores_fixtures_url(team_page_url)
-            insert_data.append((team, elevation, coordinates_str, fixtures_url, self.league_id))
+            elevation = self._get_elevation(lat, lon)
+            insert_data.append((team, elevation, coordinates_str, self.league_id))
 
         DB.execute(
             """
-            INSERT INTO team_data (team_name, team_elevation, team_coordinates, team_fixtures_url, league_id)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO teams (name, elevation, coordinates, league_id)
+            VALUES (%s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
-                team_elevation = VALUES(team_elevation),
-                team_coordinates = VALUES(team_coordinates),
-                team_fixtures_url  = VALUES(team_fixtures_url)
+                elevation = VALUES(elevation),
+                coordinates = VALUES(coordinates),
             """,
             insert_data,
             many=True
         )
 
-        current_team_names = tuple(teams_dict.keys())
+        current_team_names = tuple(teams_venue_data.keys())
 
         if current_team_names:
             placeholders = ','.join(['%s'] * len(current_team_names))
             DB.execute(
                 f"""
-                DELETE FROM team_data
-                WHERE league_id = %s AND team_name NOT IN ({placeholders})
+                DELETE FROM teams
+                WHERE league_id = %s AND name NOT IN ({placeholders})
                 """,
                 (self.league_id, *current_team_names)
             )
 
-    def get_teams(self, url):
-        s = Service('chromedriver.exe')
-        options = webdriver.ChromeOptions()
-        options.add_argument("--headless=new")  
-        options.add_argument("--disable-gpu")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--blink-settings=imagesEnabled=false")
-        options.add_argument("--ignore-certificate-errors")
-        driver = webdriver.Chrome(service=s, options=options)
-        driver.get(url)
-        driver.execute_script("window.scrollTo(0, 1000);")
+    def _get_teams(self) -> dict:
+        with SeleniumManager() as driver:
+            driver.get(self.league_url)
+            driver.execute_script("window.scrollTo(0, 1000);")
 
-        fixtures_table = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.stats_table")))
-        rows = fixtures_table.find_elements(By.XPATH, "./tbody/tr")
-        team_venue_map = {}
+            fixtures_table = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.stats_table")))
+            rows = fixtures_table.find_elements(By.XPATH, "./tbody/tr")
+            team_venue_map = {}
 
-        for row in rows:
-            try:
-                home_element = row.find_element(By.CSS_SELECTOR, "[data-stat='home_team']")
-                venue_element = row.find_element(By.CSS_SELECTOR, "[data-stat='venue']")
-                anchor        = home_element.find_element(By.TAG_NAME, "a")  
-                home_team     = anchor.text.strip()
-                team_page_url = anchor.get_attribute("href")
-                venue         = venue_element.text.strip()
+            for row in tqdm(rows, desc="Processing fixtures rows"):
+                try:
+                    home_element = row.find_element(By.CSS_SELECTOR, "[data-stat='home_team']")
+                    venue_element = row.find_element(By.CSS_SELECTOR, "[data-stat='venue']")
+                    anchor        = home_element.find_element(By.TAG_NAME, "a")  
+                    home_team     = anchor.text.strip()
+                    #team_page_url = anchor.get_attribute("href") maybe needed later?
+                    venue         = venue_element.text.strip()
 
-                if home_team == "Home":
+                    if home_team == "Home":
+                        continue
+
+                    if home_team and home_team not in team_venue_map:
+                        team_venue_map[home_team] = venue
+
+                except NoSuchElementException:
                     continue
-
-                if home_team and home_team not in team_venue_map:
-                    team_venue_map[home_team] = (venue, team_page_url)
-
-            except NoSuchElementException:
-                continue
-        driver.quit()
         
         return team_venue_map
 
-    def get_coordinates(self, team, place_name):
+    def _get_coordinates(self, team: str, place_name: str) -> tuple[float, float]:
         url = "https://nominatim.openstreetmap.org/search"
         params = {
             'q': place_name,
@@ -357,21 +387,47 @@ class Fill_Teams_Data:
         response.raise_for_status()
         data = response.json()
 
-        if not data:
-            refined_input = input(f"No coordinates found for '{team}: {place_name}'\nEnter a more precise address for this location: ").strip()
-            return self.get_coordinates(team, refined_input)
+        if data:
+            location = data[0]
+            print(f"\n=== Ubicación encontrada para {team} ===")
+            print(f"📍 {location['display_name']}")
+            latitude = float(location['lat'])
+            longitude = float(location['lon'])
+
+            self._open_map_for_confirmation(latitude, longitude)
+            
+            confirm = input("Confirm this location? (y/n): ").strip().lower()
+            if confirm == 'y':
+                return latitude, longitude
         
-        print(f"{team}: {data[0]['display_name']}")
+        print(f"No coordinates found for '{team}: {place_name}")
+        return self._manual_coordinate_input(team, place_name)
 
-        latitude = float(data[0]['lat'])
-        longitude = float(data[0]['lon'])
-        return latitude, longitude
+    def _open_map_for_confirmation(self, lat: float, lon: float) -> None:
+        with SeleniumManager(simple_mode=True) as driver:
+            driver.get(f"https://www.google.com/maps?q={lat},{lon}")
 
-    def get_elevation(self, latitude, longitude):
+            while driver.service.is_connectable():
+                pass
+
+    def _manual_coordinate_input(self, team: str, place_name: str) -> tuple[float, float]:
+        with SeleniumManager(simple_mode=True) as driver:
+            driver.get(f"https://www.google.com/maps/search/{team}+{place_name}")
+
+            while True:
+                try:
+                    coords_input = input("Ingresa las coordenadas (latitud, longitud): ").strip()
+                    
+                    lat, lon = self._get_coordinates(team, coords_input)
+
+                    return lat, lon
+                        
+                except ValueError:
+                    print("❌ Formato inválido. Usa: 12.345, -67.890")
+
+    def _get_elevation(self, latitude: float, longitude: float) -> int:
         url = "https://api.open-elevation.com/api/v1/lookup"
-        params = {
-            "locations": f"{latitude},{longitude}"
-        }
+        params = {"locations": f"{latitude},{longitude}"}
 
         response = requests.get(url, params=params)
         response.raise_for_status()
@@ -382,27 +438,6 @@ class Fill_Teams_Data:
 
         elevation_meters = data['results'][0]['elevation']
         return int(elevation_meters)
-
-    def get_scores_fixtures_url(self, team_page_url):
-        s = Service('chromedriver.exe')
-        options = webdriver.ChromeOptions()
-        options.add_argument("--headless=new")  
-        options.add_argument("--disable-gpu")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--blink-settings=imagesEnabled=false")
-        options.add_argument("--ignore-certificate-errors")
-        driver = webdriver.Chrome(service=s, options=options)
-        driver.get(team_page_url)
-
-        nav  = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.ID, "inner_nav"))
-        )
-        link = nav.find_element(By.XPATH, ".//a[normalize-space(text())='Scores & Fixtures']")
-        fixtures_url = link.get_attribute("href")
-
-        driver.quit()
-        return fixtures_url
 
 class UpdateSchedule:
     def __init__(self, from_date):

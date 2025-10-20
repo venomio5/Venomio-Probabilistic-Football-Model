@@ -11,7 +11,8 @@ WITH minute_scores AS (
     SELECT
         sim_id,
         home_goals,
-        away_goals
+        away_goals,
+        home_goals + away_goals as total_goals
     FROM minute_scores
     WHERE rn = 1
 )
@@ -19,5 +20,9 @@ SELECT
     COUNT(*) AS total_simulations,
     ROUND(100.0 * SUM(CASE WHEN home_goals > away_goals THEN 1 ELSE 0 END) / COUNT(*), 2) AS home_win_percent,
     ROUND(100.0 * SUM(CASE WHEN away_goals > home_goals THEN 1 ELSE 0 END) / COUNT(*), 2) AS away_win_percent,
-    ROUND(100.0 * SUM(CASE WHEN home_goals = away_goals THEN 1 ELSE 0 END) / COUNT(*), 2) AS draw_percent
+    ROUND(100.0 * SUM(CASE WHEN home_goals = away_goals THEN 1 ELSE 0 END) / COUNT(*), 2) AS draw_percent,
+    ROUND(100.0 * SUM(CASE WHEN home_goals + away_goals > 2.5 THEN 1 ELSE 0 END) / COUNT(*), 2) AS over_2_5_percent,
+    ROUND(100.0 * SUM(CASE WHEN home_goals + away_goals < 2.5 THEN 1 ELSE 0 END) / COUNT(*), 2) AS under_2_5_percent,
+    ROUND(AVG(home_goals), 2) AS xg_home,
+    ROUND(AVG(away_goals), 2) AS xg_away
 FROM final_scores;
