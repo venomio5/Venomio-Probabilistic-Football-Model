@@ -953,7 +953,7 @@ class ScrapeMatchesData:
             DB.execute("UPDATE match_detailed SET teamA_pd_raxg = %s, teamB_pd_raxg = %s WHERE id = %s", (teamA_pd_raxg, teamB_pd_raxg, row['id']))
 
     def _remove_old_data(self):
-        self.last_date = self.to_date - timedelta(days=550)
+        self.last_date = self.to_date - timedelta(days=1000)
 
         delete_query  = """
         DELETE FROM match_general 
@@ -1033,6 +1033,7 @@ class UpdateSchedule:
             SET mg.home_elevation_dif = s.home_elevation_dif,
                 mg.away_elevation_dif = s.away_elevation_dif,
                 mg.away_travel        = s.away_travel,
+                mg.minutes_strength = s.minutes_strength
             WHERE s.date < %s
             AND s.league_id = %s
             """
@@ -1050,7 +1051,7 @@ class UpdateSchedule:
             AND s.league_id = %s
             """
             DB.execute(delete_query, (self.from_date, league_id))
-
+            
             cutoff_date = self.from_date - timedelta(days=30)
             
             stale_delete_sql = """
@@ -1059,7 +1060,7 @@ class UpdateSchedule:
             WHERE s.date < %s
             AND s.league_id = %s
             """
-            DB.execute(stale_delete_sql, (cutoff_date, league_id))
+            #DB.execute(stale_delete_sql, (cutoff_date, league_id)) DELETE THIS COMMENT OUT WHEN IN LIVE TESTING
         pbar.close()
 
     def _get_matches_basic_data(self, url: str) -> tuple[list, list, list, list]:
@@ -1537,7 +1538,6 @@ class ProcessData:
         uses Poisson regression with RAxG as base margin and applies sample weighting based
         on minutes played.
         """
-        # DELETE THE SUMS AND THE GROUP WHEN THATS FIXED ON THE DAT SCRAPING SECTION
         data_query = """ 
         SELECT 
             mg.id,
@@ -1545,17 +1545,18 @@ class ProcessData:
             mg.away_elevation_dif,
             mg.away_travel,
             mg.date,
-            SUM(md.teamA_pd_raxg) AS teamA_pd_raxg,
-            SUM(md.teamB_pd_raxg) AS teamB_pd_raxg,
-            SUM(md.minutes_played) AS minutes_played,
+            md.teamA_pd_raxg,
+            md.teamB_pd_raxg,
+            md.minutes_played,
             md.match_state,
             md.player_dif,
-            SUM(md.teamA_xg) AS teamA_xg,
-            SUM(md.teamB_xg) AS teamB_xg
+            md.teamA_xg,
+            md.teamB_xg
         FROM match_general mg
-        LEFT JOIN match_detailed md
+        JOIN match_detailed md
             ON mg.id = md.match_id
-        GROUP BY mg.id, md.match_state, md.player_dif
+        WHERE mg.minutes_strength >= 0.6
+        AND md.minutes_played >= 10
         """
         context_df = DB.select(data_query)
         context_df = context_df.replace([np.inf, -np.inf], np.nan).dropna()
@@ -1570,7 +1571,6 @@ class ProcessData:
         context_df['player_dif']  = pd.to_numeric(context_df['player_dif'],  errors='raise').astype(float)
         context_df['teamA_xg']  = pd.to_numeric(context_df['teamA_xg'],  errors='raise').astype(float)
         context_df['teamB_xg']  = pd.to_numeric(context_df['teamB_xg'],  errors='raise').astype(float)
-
 
         home_df = pd.DataFrame({
             'xg'                 : context_df['teamA_xg'],
@@ -1596,7 +1596,6 @@ class ProcessData:
         
         concat_df = pd.concat([home_df, away_df], ignore_index=True)
         clean_df = concat_df.copy()
-        clean_df = clean_df[clean_df['minutes_played'] >= 10]
 
         clean_df['xg90'] = (clean_df['xg'] / clean_df['minutes_played']) * 90
         clean_df['raxg90'] = (clean_df['pd_raxg'] / clean_df['minutes_played']) * 90
@@ -2331,8 +2330,8 @@ class MonteCarloSim:
         return np.random.choice(['YC', 'RC', 'NONE'], p=probs)
 
 # ------------------------------ Automatization ------------------------------
-class AutoLineups:
-    def __init__(self, schedule_id):
+class GetLineups:
+    def __init__(self, schedule_id: int, backtesting: bool):
         self.schedule_id = schedule_id
 
         print(f"Getting {get_match_title(self.schedule_id)} lineups")  

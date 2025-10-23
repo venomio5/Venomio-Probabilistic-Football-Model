@@ -98,6 +98,7 @@ CREATE TABLE `match_general` (
   `away_elevation_dif` int DEFAULT NULL,
   `away_travel` int DEFAULT NULL,
   `url` varchar(200) DEFAULT NULL,
+  `minutes_strength` float DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `home_team_id` (`home_team_id`,`away_team_id`,`date`)
 ) ENGINE=InnoDB AUTO_INCREMENT=19 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
@@ -199,7 +200,7 @@ CREATE TABLE `schedule` (
   `away_travel` int DEFAULT NULL,
   `home_players_data` json DEFAULT NULL,
   `away_players_data` json DEFAULT NULL,
-  `game_strength` float DEFAULT NULL,
+  `minutes_strength` float DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `home_team_id` (`home_team_id`,`away_team_id`,`date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
@@ -278,4 +279,4 @@ UNLOCK TABLES;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2025-10-22 21:12:07
+-- Dump completed on 2025-10-22 22:37:39
