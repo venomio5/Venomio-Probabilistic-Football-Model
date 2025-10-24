@@ -257,10 +257,10 @@ def match_players(team_id, raw_source):
     matched_benchers = _resolve(unmatched_benchers)
     return matched_starters, matched_benchers
 
-def send_lineup_to_db(players_list, schedule_id, team):
+def send_lineup_to_db(players_list, match_id, team):
     column_name = f"{team}_players_data"
-    sql_query = f"UPDATE schedule_data SET {column_name} = %s WHERE schedule_id = %s"
-    DB.execute(sql_query, (json.dumps(players_list, ensure_ascii=False), schedule_id))
+    sql_query = f"UPDATE schedule SET {column_name} = %s WHERE id = %s"
+    DB.execute(sql_query, (json.dumps(players_list, ensure_ascii=False), match_id))
 
 def get_saved_lineup(schedule_id, team):
     column_name = f"{team}_players_data"
@@ -389,7 +389,7 @@ class FillTeamsData:
 
         if data:
             location = data[0]
-            print(f"\n=== Ubicación encontrada para {team} ===")
+            print(f"\n=== Location found for {team} ===")
             print(f"📍 {location['display_name']}")
             latitude = float(location['lat'])
             longitude = float(location['lon'])
@@ -423,7 +423,7 @@ class FillTeamsData:
                     return lat, lon
                         
                 except ValueError:
-                    print("❌ Formato inválido. Usa: 12.345, -67.890")
+                    print("❌ Invalid format. Use: 12.345, -67.890")
 
     def _get_elevation(self, latitude: float, longitude: float) -> int:
         url = "https://api.open-elevation.com/api/v1/lookup"
@@ -443,13 +443,14 @@ class ScrapeMatchesData:
     """
     Scrapes and extracts data from matches froom fbref and saves them into the database
     """
-    def __init__(self, to_date: str):
-        
+    def __init__(self, to_date: str, backtesting: bool=False):
         self.to_date = datetime.strptime(to_date, '%Y-%m-%d').date()
+        self.backtesting = backtesting
         self._update_recent_games_match_general_data()
         self._update_matches_data() 
         self._set_pd_raxg()
         self._remove_old_data()
+
 
     def _update_recent_games_match_general_data(self):
         active_leagues_df = DB.select("SELECT * FROM leagues WHERE is_active = 1")
@@ -577,6 +578,11 @@ class ScrapeMatchesData:
 
                 home_players = self._extract_players(home_data, home_team)
                 away_players = self._extract_players(away_data, away_team)
+                if self.backtesting:
+                    home_players_data = self._build_player_dicts(home_players)
+                    away_players_data = self._build_player_dicts(away_players)
+                    send_lineup_to_db(home_players_data, match_id=match_id, team="home")
+                    send_lineup_to_db(away_players_data, match_id=match_id, team="away")
 
                 try:
                     events_wrap = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, '//*[@id="events_wrap"]')))
@@ -654,13 +660,14 @@ class ScrapeMatchesData:
                 selected_columns['xG'] = selected_columns['xG'].astype(float)
 
                 event_minutes = [se[0] for se in subs_events] + [ge[0] for ge in goal_events] + [re[0] for re in red_events]
-                boundaries = sorted(set(event_minutes) | {total_minutes})
+                boundaries = sorted(set(event_minutes) | {0, total_minutes})
 
                 for seg_start, seg_end in zip(boundaries, boundaries[1:]):
                     seg_duration = seg_end - seg_start
 
                     teamA_lineup = self._get_lineups(home_players, subs_events, seg_start, "home", red_events)
                     teamB_lineup = self._get_lineups(away_players, subs_events, seg_start, "away", red_events)
+                    minutes_strength = self._get_minutes_strength(teamA_lineup, teamB_lineup)
 
                     seg_shots = selected_columns[(selected_columns['Minute'] >= seg_start) & (selected_columns['Minute'] < seg_end)]
                     teamA_xg = 0.0
@@ -700,8 +707,20 @@ class ScrapeMatchesData:
                     else:
                         player_dif = "-1.5"
 
-                    insert_detailed_query = "INSERT IGNORE INTO match_detailed (match_id, teamA_players, teamB_players, teamA_xg, teamB_xg, minutes_played, match_state, player_dif) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
-                    params = (match_id, json.dumps(teamA_lineup, ensure_ascii=False), json.dumps(teamB_lineup, ensure_ascii=False), teamA_xg, teamB_xg, seg_duration, match_state, player_dif)
+                    insert_detailed_query = """
+                    INSERT IGNORE INTO match_detailed (
+                        match_id, 
+                        teamA_players, 
+                        teamB_players, 
+                        teamA_xg, 
+                        teamB_xg, 
+                        minutes_played, 
+                        match_state, 
+                        player_dif),
+                        minutes_strength
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """
+                    params = (match_id, json.dumps(teamA_lineup, ensure_ascii=False), json.dumps(teamB_lineup, ensure_ascii=False), teamA_xg, teamB_xg, seg_duration, match_state, player_dif, minutes_strength)
                     DB.execute(insert_detailed_query, params)
 
                 # Player breakdown
@@ -889,6 +908,60 @@ class ScrapeMatchesData:
 
         lineup = [roster_mapping.get(p.split("_")[0], p) for p in lineup]
         return lineup
+
+    def _build_player_dicts(self, players: list[str]) -> dict:
+        player_dicts = []
+
+        for i, player_id in enumerate(players):
+            if i < 11:
+                player_dicts.append({
+                    'player_id': player_id,
+                    'yellow_card': False,
+                    'red_card': False,
+                    'on_field': True,
+                    'bench': False
+                })
+            else:
+                player_dicts.append({
+                    'player_id': player_id,
+                    'yellow_card': False,
+                    'red_card': False,
+                    'on_field': False,
+                    'bench': True
+                })
+        
+        return player_dicts
+
+    def _get_minutes_strength(self, teamA_players: list[str], teamB_players: list[str]) -> float:
+        def _fetch_minutes(player_ids: list[str]) -> dict[str, int]:
+            if not player_ids:
+                return {}
+
+            placeholders = ",".join(["%s"] * len(player_ids))
+            minutes_query = f"""
+                SELECT id, minutes_played
+                FROM   players
+                WHERE  id IN ({placeholders})
+            """
+            df = DB.select(minutes_query, tuple(player_ids))
+            return dict(zip(df["id"], df["minutes_played"]))
+
+        teamA_minutes = _fetch_minutes(teamA_players)
+        teamB_minutes = _fetch_minutes(teamB_players)
+
+        # Calculate average for Team A
+        total_A_minutes = 0
+        for player in teamA_players:
+            total_A_minutes += min(teamA_minutes.get(player, 0) / 540, 1)
+        avg_A = total_A_minutes / len(teamA_players) if teamA_players else 0
+        
+        # Calculate average for Team B
+        total_B_minutes = 0
+        for player in teamB_players:
+            total_B_minutes += min(teamB_minutes.get(player, 0) / 540, 1)
+        avg_B = total_B_minutes / len(teamB_players) if teamB_players else 0
+
+        return (avg_A + avg_B) / 2
 
     def _set_pd_raxg(self):
         """
@@ -1555,7 +1628,7 @@ class ProcessData:
         FROM match_general mg
         JOIN match_detailed md
             ON mg.id = md.match_id
-        WHERE mg.minutes_strength >= 0.6
+        WHERE md.minutes_strength >= 0.7
         AND md.minutes_played >= 10
         """
         context_df = DB.select(data_query)
@@ -2330,19 +2403,23 @@ class MonteCarloSim:
         return np.random.choice(['YC', 'RC', 'NONE'], p=probs)
 
 # ------------------------------ Automatization ------------------------------
-class GetLineups:
-    def __init__(self, schedule_id: int, backtesting: bool):
-        self.schedule_id = schedule_id
+class GetLineupsData:
+    def __init__(self, match_id: int):
+        self.match_id = match_id
 
-        print(f"Getting {get_match_title(self.schedule_id)} lineups")  
+        self._get_lineups()
 
-        sql_query = f"""
+    def _get_lineups(self) -> None:
+        # FIX THIS LATER
+        print(f"Getting {get_match_title(self.match_id)} lineups")  
+
+        schedule_query = """
             SELECT 
                 *
-            FROM schedule_data
-            WHERE schedule_id = '{self.schedule_id}';
+            FROM schedule
+            WHERE id = %s
         """
-        result = DB.select(sql_query)
+        result = DB.select(schedule_query, (self.match_id,))
         home_team_id = int(result["home_team_id"].iloc[0])
         away_team_id = int(result["away_team_id"].iloc[0])
         match_url = result['ss_url'].iloc[0]
@@ -2417,32 +2494,9 @@ class GetLineups:
         home_total_extracted = len(self.home_starters) + len(self.home_subs)
         away_total_extracted = len(self.away_starters) + len(self.away_subs)
 
-        def _fetch_minutes(pids: list[int]) -> dict[int, int]:
-            if not pids:
-                return {}
-
-            placeholders = ",".join(["%s"] * len(pids))
-            sql = f"""
-                SELECT player_id, minutes_played
-                FROM   players_data
-                WHERE  player_id IN ({placeholders})
-            """
-            df = DB.select(sql, tuple(pids))
-            return dict(zip(df["player_id"], df["minutes_played"]))
-
-        def _calc_strength(matched_ids: list[int], total_extracted: int) -> float:
-            if total_extracted == 0:
-                return 0.0
-
-            minutes = _fetch_minutes(matched_ids)
-            total_pct = 0
-            for pid in matched_ids:
-                total_pct += min(minutes.get(pid, 0) / 500, 1)
-            return total_pct / total_extracted
-
         home_all_ids = home_ids_st + home_ids_bn
         away_all_ids = away_ids_st + away_ids_bn
-        self.game_strength = _calc_strength(home_all_ids, home_total_extracted) * _calc_strength(away_all_ids, away_total_extracted)
+        self.game_strength = self.get_min_strength(home_all_ids, home_total_extracted) * self.get_min_strength(away_all_ids, away_total_extracted)
 
         def _build_dicts(starters, bench):
             data = []
@@ -2467,8 +2521,8 @@ class GetLineups:
         self.home_players_data = _build_dicts(home_ids_st, home_ids_bn)
         self.away_players_data = _build_dicts(away_ids_st, away_ids_bn)
 
-        send_lineup_to_db(self.home_players_data, schedule_id=self.schedule_id, team="home")
-        send_lineup_to_db(self.away_players_data, schedule_id=self.schedule_id, team="away")
+        send_lineup_to_db(self.home_players_data, schedule_id=self.match_id, team="home")
+        send_lineup_to_db(self.away_players_data, schedule_id=self.match_id, team="away")
 
         sql_query = """
             UPDATE schedule_data
@@ -2487,7 +2541,7 @@ class GetLineups:
                                0,
                                match_timestamp,
                                "period1",
-                               schedule_id))
+                               match_id))
 
     def _fetch_json_wsel(self, url):
         s = Service('chromedriver.exe')
@@ -2508,6 +2562,29 @@ class GetLineups:
 
         driver.quit()
         return json_data
+
+    def _fetch_minutes(self, pids: list[int]) -> dict[int, int]:
+        if not pids:
+            return {}
+
+        placeholders = ",".join(["%s"] * len(pids))
+        sql = f"""
+            SELECT player_id, minutes_played
+            FROM   players_data
+            WHERE  player_id IN ({placeholders})
+        """
+        df = DB.select(sql, tuple(pids))
+        return dict(zip(df["player_id"], df["minutes_played"]))
+
+    def get_min_strength(self, matched_ids: list[int], total_extracted: int) -> float:
+        if total_extracted == 0:
+            return 0.0
+
+        minutes = self._fetch_minutes(matched_ids)
+        total_pct = 0
+        for pid in matched_ids:
+            total_pct += min(minutes.get(pid, 0) / 500, 1)
+        return total_pct / total_extracted
 
 class AutoMatchInfo:
     def __init__(self, schedule_id):

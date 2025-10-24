@@ -66,6 +66,7 @@ CREATE TABLE `match_detailed` (
   `teamB_pd_raxg` float DEFAULT NULL,
   `match_state` float NOT NULL,
   `player_dif` float NOT NULL,
+  `minutes_strength` float DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `match_detailed_ibfk_1_idx` (`match_id`),
   CONSTRAINT `match_detailed_ibfk_1` FOREIGN KEY (`match_id`) REFERENCES `match_general` (`id`) ON DELETE CASCADE
@@ -98,7 +99,6 @@ CREATE TABLE `match_general` (
   `away_elevation_dif` int DEFAULT NULL,
   `away_travel` int DEFAULT NULL,
   `url` varchar(200) DEFAULT NULL,
-  `minutes_strength` float DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `home_team_id` (`home_team_id`,`away_team_id`,`date`)
 ) ENGINE=InnoDB AUTO_INCREMENT=19 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
@@ -279,4 +279,4 @@ UNLOCK TABLES;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2025-10-22 22:37:39
+-- Dump completed on 2025-10-23 20:05:52
