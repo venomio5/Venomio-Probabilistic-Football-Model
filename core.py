@@ -12,6 +12,7 @@ from selenium.common.exceptions import TimeoutException
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
+import webbrowser
 import requests
 import math
 from rapidfuzz import process, fuzz
@@ -325,7 +326,7 @@ class FillTeamsData:
             VALUES (%s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 elevation = VALUES(elevation),
-                coordinates = VALUES(coordinates),
+                coordinates = VALUES(coordinates)
             """,
             insert_data,
             many=True
@@ -404,11 +405,7 @@ class FillTeamsData:
         return self._manual_coordinate_input(team, place_name)
 
     def _open_map_for_confirmation(self, lat: float, lon: float) -> None:
-        with SeleniumManager(simple_mode=True) as driver:
-            driver.get(f"https://www.google.com/maps?q={lat},{lon}")
-
-            while driver.service.is_connectable():
-                pass
+        webbrowser.open(f"https://www.google.com/maps?q={lat},{lon}")
 
     def _manual_coordinate_input(self, team: str, place_name: str) -> tuple[float, float]:
         with SeleniumManager(simple_mode=True) as driver:
@@ -450,7 +447,6 @@ class ScrapeMatchesData:
         self._update_matches_data() 
         self._set_pd_raxg()
         self._remove_old_data()
-
 
     def _update_recent_games_match_general_data(self):
         active_leagues_df = DB.select("SELECT * FROM leagues WHERE is_active = 1")
@@ -559,7 +555,7 @@ class ScrapeMatchesData:
 
         pbar = tqdm(missing_matches_df.iterrows(), total=len(missing_matches_df), desc="Processing Matches", unit="match")
         for _, row in pbar:
-            pbar.set_postfix({"match": row['id']})
+            pbar.set_postfix({"match": get_match_title(row['id'])})
 
             with SeleniumManager() as driver:
                 driver.get(row['url'])
@@ -716,9 +712,9 @@ class ScrapeMatchesData:
                         teamB_xg, 
                         minutes_played, 
                         match_state, 
-                        player_dif),
+                        player_dif,
                         minutes_strength
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """
                     params = (match_id, json.dumps(teamA_lineup, ensure_ascii=False), json.dumps(teamB_lineup, ensure_ascii=False), teamA_xg, teamB_xg, seg_duration, match_state, player_dif, minutes_strength)
                     DB.execute(insert_detailed_query, params)
@@ -1105,8 +1101,7 @@ class UpdateSchedule:
                 AND mg.league_id   = s.league_id
             SET mg.home_elevation_dif = s.home_elevation_dif,
                 mg.away_elevation_dif = s.away_elevation_dif,
-                mg.away_travel        = s.away_travel,
-                mg.minutes_strength = s.minutes_strength
+                mg.away_travel        = s.away_travel
             WHERE s.date < %s
             AND s.league_id = %s
             """
@@ -1234,9 +1229,9 @@ class ProcessData:
         steps = [
             ("Inserting players basics and unifying duplicates", self._insert_players_basics),
             ("Updating players raxg coef", self._update_players_raxg_coef),
-            ("Updating players totals", self._update_players_totals),
-            ("Updating reg totals", self._update_reg_totals),
-            ("Training contextual raxg xgboost model", self._train_contextual_raxg_xgb_model)
+            ("Updating players totals", self._update_players_totals) # ,
+            #("Updating reg totals", self._update_reg_totals),
+            #("Training contextual raxg xgboost model", self._train_contextual_raxg_xgb_model)
         ]
         
         for desc, step_func in tqdm(steps, desc="Progress"):
