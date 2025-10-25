@@ -30,7 +30,7 @@ def save_teams_data():
         core.FillTeamsData(league_id)
     pbar.close()
 
-def update_active_leagues(current_date):
+def update_active_leagues(current_date): 
     core.DB.execute("UPDATE leagues SET is_active = 0")
 
     activate_sql = """

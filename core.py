@@ -674,8 +674,8 @@ class ScrapeMatchesData:
                         elif away_team in seg_row['Squad']:
                             teamB_xg += seg_row['xG']
 
-                    cum_goal_home = sum(1 for minute, t in goal_events if minute <= seg_end and t == "home")
-                    cum_goal_away = sum(1 for minute, t in goal_events if minute <= seg_end and t == "away")
+                    cum_goal_home = sum(1 for minute, t in goal_events if minute < seg_end and t == "home")
+                    cum_goal_away = sum(1 for minute, t in goal_events if minute < seg_end and t == "away")
 
                     goal_diff = cum_goal_home - cum_goal_away
                     if goal_diff == 0:
@@ -689,8 +689,8 @@ class ScrapeMatchesData:
                     else:
                         match_state = "-1.5"
 
-                    cum_red_home = sum(1 for minute, _, t in red_events if minute <= seg_end and t == "home")
-                    cum_red_away = sum(1 for minute, _, t in red_events if minute <= seg_end and t == "away")
+                    cum_red_home = sum(1 for minute, _, t in red_events if minute < seg_end and t == "home")
+                    cum_red_away = sum(1 for minute, _, t in red_events if minute < seg_end and t == "away")
                     red_diff = cum_red_away - cum_red_home
                     if red_diff == 0:
                         player_dif = "0"
